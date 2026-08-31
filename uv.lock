@@ -2337,8 +2337,8 @@ wheels = [
 ]
 
 [[package]]
-name = "pararnn"
-version = "0.1.0"
+name = "pararnn-torch"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "python_full_version < '3.11'" },

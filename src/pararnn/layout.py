@@ -34,12 +34,20 @@ LSTM_HIDDEN = 1
 
 
 def prepend_zero_state(states: torch.Tensor) -> torch.Tensor:
-    """Shift the trajectory right by one step and put zeros at t=0.
+    """Shift the trajectory right by one step and put zeros at t=0."""
+    return prepend_state(states, None)
+
+
+def prepend_state(states: torch.Tensor, h0: torch.Tensor | None) -> torch.Tensor:
+    """Shift right; ``h0`` (paper ``h_0``) at t=0, else zeros.
 
     ``states[:, t]`` is the paper's ``h_{t+1}``. The previous state at code
-    index t is paper's ``h_t`` (and 0 when t=0).
+    index t is paper's ``h_t``.
     """
     out = states.new_empty(states.shape)
-    out[:, 0] = 0
+    if h0 is None:
+        out[:, 0] = 0
+    else:
+        out[:, 0] = h0
     out[:, 1:] = states[:, :-1]
     return out

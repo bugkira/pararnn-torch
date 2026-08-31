@@ -15,14 +15,14 @@ Triton on CUDA (``W_x`` GEMM still PyTorch). Custom cells use Autograd on
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 from torch import Tensor, nn
 
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
-from pararnn.layout import prepend_zero_state
+from pararnn.layout import prepend_state
 from pararnn.solvers.jacobian import step_and_jacobian
 from pararnn.solvers.scan import (
     reverse_scan_block2,
@@ -59,8 +59,14 @@ def newton_apply(
     cell: nn.Module,
     x: Tensor,
     config: NewtonConfig | None = None,
+    *,
+    h0: Tensor | None = None,
 ) -> Tensor:
     """Parallel forward: Newton on F(H)=0, inner solve via associative scan.
+
+    ``h0`` is the paper's ``h_0`` (default 0). If it is nonzero and
+    ``scan_backend='fused'``, fall back to eager (fused kernels prepend zeros)
+    and log it.
 
     If gradients are enabled, the backward uses eq. 2.6 (reverse scan) instead
     of differentiating the Newton loop.
@@ -70,24 +76,26 @@ def newton_apply(
         raise ValueError(f"unknown scan backend {config.scan_backend!r}")
     if config.jacobian not in ("auto", "analytic", "autograd"):
         raise ValueError(f"unknown jacobian {config.jacobian!r}")
+    config = _maybe_unfuse_h0(config, h0)
     params = tuple(cell.parameters())
     needs_grad = torch.is_grad_enabled() and (
         x.requires_grad or any(p.requires_grad for p in params)
     )
     if not needs_grad:
-        return _newton_forward(cell, x, config)
+        return _newton_forward(cell, x, config, h0=h0)
 
     class _NewtonFixedPoint(torch.autograd.Function):
         @staticmethod
         def forward(ctx, x_in: Tensor, *param_tensors: Tensor) -> Tensor:
             del param_tensors
             with torch.no_grad():
-                states = _newton_forward(cell, x_in, config)
+                states = _newton_forward(cell, x_in, config, h0=h0)
             ctx.scan_backend = (
                 "triton" if config.scan_backend == "fused" else config.scan_backend
             )
             ctx.jacobian = config.jacobian
             ctx.jac_structure = config.jac_structure
+            ctx.h0 = h0.detach() if h0 is not None else None
             ctx.save_for_backward(states, x_in)
             return states
 
@@ -102,6 +110,7 @@ def newton_apply(
                 backend=ctx.scan_backend,
                 jacobian=ctx.jacobian,
                 jac_structure=ctx.jac_structure,
+                h0=ctx.h0,
             )
             if not x_in.requires_grad:
                 grad_x = None
@@ -110,10 +119,32 @@ def newton_apply(
     return _NewtonFixedPoint.apply(x, *params)
 
 
-def _newton_forward(cell: nn.Module, x: Tensor, config: NewtonConfig) -> Tensor:
+def _h0_nonzero(h0: Tensor | None) -> bool:
+    if h0 is None:
+        return False
+    return bool((h0.detach().abs().amax() > 0).item())
+
+
+def _maybe_unfuse_h0(config: NewtonConfig, h0: Tensor | None) -> NewtonConfig:
+    if config.scan_backend == "fused" and _h0_nonzero(h0):
+        log.warning(
+            "fused_h0_fallback_eager",
+            extra={"reason": "fused kernels prepend zeros; h0 is nonzero"},
+        )
+        return replace(config, scan_backend="eager")
+    return config
+
+
+def _newton_forward(
+    cell: nn.Module,
+    x: Tensor,
+    config: NewtonConfig,
+    *,
+    h0: Tensor | None = None,
+) -> Tensor:
     if config.scan_backend == "fused":
         return _newton_fused(cell, x, config)
-    h_prev0 = _zero_state_like_input(cell, x)
+    h_prev0 = _init_h_prev(cell, x, h0)
     wx = _wx_if_analytic(cell, x, config)
     states, _ = step_and_jacobian(
         cell,
@@ -125,7 +156,7 @@ def _newton_forward(cell: nn.Module, x: Tensor, config: NewtonConfig) -> Tensor:
     )
 
     for it in range(config.max_iters):
-        h_prev = prepend_zero_state(states)
+        h_prev = prepend_state(states, h0)
         pred, jac = step_and_jacobian(
             cell,
             h_prev,
@@ -211,9 +242,10 @@ def _eq26_vjp(
     backend: str = "eager",
     jacobian: str = "auto",
     jac_structure: str | None = None,
+    h0: Tensor | None = None,
 ) -> tuple[Tensor | None, tuple[Tensor | None, ...]]:
     """``∇_x L`` and per-parameter grads from direct ``∂_H L`` (eq. 2.6 + cell VJP)."""
-    h_prev = prepend_zero_state(states)
+    h_prev = prepend_state(states, h0)
     wx = _wx_if_analytic(cell, x, NewtonConfig(jacobian=jacobian, jac_structure=jac_structure))
     with torch.no_grad():
         _, jac = step_and_jacobian(
@@ -227,6 +259,14 @@ def _eq26_vjp(
         mu = _reverse_scan(jac, partial, backend=backend)
     packed = isinstance(cell, (ParaGRU, ParaLSTM))
     return cell_vjp(cell, h_prev, x, mu, packed=packed)
+
+
+def _init_h_prev(cell: nn.Module, x: Tensor, h0: Tensor | None) -> Tensor:
+    """App. A: ``H^0_t = f(h_{t-1}, x_t)`` in parallel; only t=0 sees ``h0``."""
+    h_prev0 = _zero_state_like_input(cell, x)
+    if h0 is not None:
+        h_prev0[:, 0] = h0
+    return h_prev0
 
 
 def _wx_if_analytic(cell: nn.Module, x: Tensor, config: NewtonConfig) -> Tensor | None:

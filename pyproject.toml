@@ -1,11 +1,22 @@
 [project]
-name = "pararnn"
-version = "0.1.0"
-description = "PyTorch ParaRNN cells and Newton+PCR solvers"
+name = "pararnn-torch"
+version = "0.2.0"
+description = "PyTorch sequence module for parallel RNN training (ParaRNN / Newton+scan)"
+readme = "README.md"
+license = { file = "LICENSE" }
 authors = [
     { name = "Daniil Sereda", email = "dsereda@ptsecurity.com" }
 ]
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "numpy>=2.2.6",
     "torch>=2.11.0",
@@ -28,6 +39,9 @@ dev = [
 
 [[tool.uv.index]]
 url = "https://download.pytorch.org/whl/cu128"
+
+[tool.uv.build-backend]
+module-name = "pararnn"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

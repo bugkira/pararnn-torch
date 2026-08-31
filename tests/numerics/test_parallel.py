@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import torch
 
 from pararnn.cells import ParaGRU, ParaLSTM
@@ -501,3 +503,54 @@ def test_fused_rejects_bf16():
         assert "bfloat16" in str(exc)
         return
     raise AssertionError("fused Newton must reject bfloat16 on Turing")
+
+
+@torch.no_grad()
+def test_paragru_newton_h0_matches_sequential():
+    torch.manual_seed(80)
+    device = _device()
+    cell = ParaGRU(d_in=8, d_h=16).to(device)
+    x = torch.randn(3, 24, 8, device=device)
+    # App. A init is for h0=0; unit-scale randn leaves ~2e-4 after K=3.
+    h0 = 0.3 * torch.randn(3, 16, device=device)
+    seq = sequential_apply(cell, x, h0)
+    par = newton_apply(cell, x, NewtonConfig(max_iters=3), h0=h0)
+    err = (par - seq).abs().amax()
+    assert err < 1e-4, err
+
+
+@torch.no_grad()
+def test_paralstm_newton_h0_matches_sequential():
+    torch.manual_seed(81)
+    device = _device()
+    cell = ParaLSTM(d_in=8, d_h=12).to(device)
+    x = torch.randn(3, 20, 8, device=device)
+    h0 = 0.3 * torch.randn(3, 2, 12, device=device)
+    seq = sequential_apply(cell, x, h0)
+    par = newton_apply(cell, x, NewtonConfig(max_iters=3), h0=h0)
+    err = (par - seq).abs().amax()
+    assert err < 1e-4, err
+
+
+@torch.no_grad()
+def test_fused_nonzero_h0_falls_back_eager(caplog):
+    torch.manual_seed(82)
+    device = _cuda_or_skip()
+    if device is None:
+        return
+    cell = ParaGRU(d_in=8, d_h=16).to(device)
+    x = torch.randn(2, 32, 8, device=device)
+    h0 = 0.3 * torch.randn(2, 16, device=device)
+    cfg = NewtonConfig(max_iters=3, scan_backend="fused")
+    with caplog.at_level(logging.WARNING, logger="pararnn.solvers.newton"):
+        par = newton_apply(cell, x, cfg, h0=h0)
+    assert "fused_h0_fallback_eager" in caplog.text
+    seq = sequential_apply(cell, x, h0)
+    err = (par - seq).abs().amax()
+    assert err < 1e-4, err
+    assert cfg.scan_backend == "fused"
+    caplog.clear()
+    zeros = torch.zeros_like(h0)
+    with caplog.at_level(logging.WARNING, logger="pararnn.solvers.newton"):
+        newton_apply(cell, x, cfg, h0=zeros)
+    assert "fused_h0_fallback_eager" not in caplog.text

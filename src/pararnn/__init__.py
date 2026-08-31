@@ -1,19 +1,13 @@
 from pararnn.cells import ParaGRU, ParaLSTM
-from pararnn.device import experiment_device
-from pararnn.solvers import (
-    NewtonConfig,
-    newton_apply,
-    sequential_apply,
-    sequential_apply_compiled,
-)
+from pararnn.layers import ParaRNN
+from pararnn.solvers import NewtonConfig, newton_apply, sequential_apply
 
 __all__ = [
     "NewtonConfig",
     "ParaGRU",
     "ParaLSTM",
-    "experiment_device",
+    "ParaRNN",
     "newton_apply",
     "sequential_apply",
-    "sequential_apply_compiled",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
