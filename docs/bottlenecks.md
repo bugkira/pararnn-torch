@@ -10,17 +10,27 @@ Verify runtime changes with numerics tests, then [`scripts/bench_time.py`](../sc
 
 ## Next
 
+Library completeness after v0.2 is **done** (`scan_backend=auto`, NewtonStats /
+early-stop, fused `h0`, layer list / `return_hidden` / `output_hidden`).
+Remaining items are **other science**, not package polish.
+
 | Pri | Change | Why this high | Effect | Confidence |
 |---|---|---|---|---|
-| 1 | \(K=2\) or residual early-stop | \(K=2\) ~1e-4; \(K=3\) fp32 floor. LM needs PPL. | Forward **≤25%**. | Bench **medium**; train **low** |
-| 2 | Hybrid Mamba-2 predictor + **one** Newton (ours, not Apple) | DEER: Newton wants a good guess. | **Up to ~3×** if the guess is close. | **Low** until ablation |
-| 3 | IFT adjoint (Bai / DEQ) | Eq. 2.6 is in. IFT is extra. | \(O(1)\) in solver depth. | **Low** until 2.6 is the bottleneck |
+| 1 | Hybrid Mamba-2 predictor + **one** Newton (ours, not Apple) | DEER: Newton wants a good guess. After residual early-stop. | **Up to ~3×** if the guess is close. | **Low** until ablation |
+| 2 | IFT adjoint (Bai / DEQ) | Eq. 2.6 is in. IFT is extra. | \(O(1)\) in solver depth. | **Low** until 2.6 is the bottleneck |
+| 3 | Para-sLSTM (mixing + exp gates) | Not diag/2×2; new cell, not wrapping GRU. | New Jacobian structure. | **Low** until sequential tests |
+| 4 | HF / SlimPajama / 125M | Empty `PreTrainedModel` is worse than none. | Paper-scale claim. | **Low** until a real train loop |
+
+Do **not** bake `torch.compile` into `src/` (Dynamo 4–113 s per new \(T\)).
+Do **not** pick `pararnn.device` inside `ParaRNN.forward`.
+Do **not** treat `fused` as “any \(f\)”.
 
 ## Done
 
 | Pri | Change | Why this was first | Result |
 |---|---|---|---|
-| 1 | Any ``step(h, x)`` via Autograd Jacobian (DEER / Lim et al.). ``jacobian="auto"``: analytic if the cell has ``step_with_jacobian``, else ``torch.func``. | Two hardcoded cells is not a library. | Custom channelwise cell and dense mix (``jac_structure="dense"``) match sequential. Ones-JVP is exact iff ``f`` is channelwise; otherwise set ``dense``. Fused Newton stays ParaGRU/LSTM. |
+| 0 | ``scan_backend="auto"`` by tensor (fused if CUDA GRU/LSTM fp16/32, else Triton scan, else eager). Log the choice. Fused kernels prepend ``h0``. Early-stop + ``NewtonStats``. Layer: list of cells, ``return_hidden``, LSTM ``output_hidden``. | Default eager hid fused; fused ignored nonzero ``h0``. | Default is ``auto``. Fused+``h0`` matches sequential. Residual is an API. |
+| 1 | Any ``step(h, x)`` via Autograd Jacobian (DEER / Lim et al.). ``jacobian="auto"``: analytic if the cell has ``step_with_jacobian``, else ``torch.func``. | Two hardcoded cells is not a library. | Custom channelwise cell and dense mix (``jac_structure="dense"``) match sequential. Ones-JVP is exact iff ``f`` is channelwise; otherwise set ``dense``. Fused Newton stays ParaGRU/LSTM (not any ``f``). |
 | 2 | Eq. 2.6 cell VJP packed on CUDA for ParaGRU/ParaLSTM (Triton elementwise + ``W_x`` GEMM). Reverse scan already Triton when ``scan_backend`` is ``triton``/``fused``. | Backward was ``autograd.grad(cell.step)``. | Packed VJP matches Autograd VJP. Existing BPTT tests still pass. Custom cells keep Autograd on ``step`` (their ops are already CUDA). |
 | 3 | fp16 DRAM / fp32 Newton accumulators on Turing. Agreement tests **separately** (atol \(2\times10^{-3}\)). **Not bf16**. | Halves scan DRAM. TC help `W_x` only. | Smoke 10/50, same process as fp32 fused: at \(T=2048\) GRU **1.80 vs 2.61 ms** (**1.45×**), **66 vs 123 MiB** (**1.86×**); LSTM **5.45 vs 6.41 ms** (**1.18×**), **107 vs 205 MiB** (**1.91×**). Short \(T\) is slower. Residual \(\sim10^{-3}\). See [fp16](#fp16). |
 | 4 | Triton **fused Newton** (cell + J + scan per Alg. 1 iter). Opt-in `scan_backend="fused"`. GEMM `W_x` stays in PyTorch. Not Apple's kernel. Backward still eq. 2.6. | Newton still launched the eager cell \(K+1\) times after the scans landed. Paper 665× is fused CUDA, not this. | Smoke 10/50, \(T=2048\): GRU fused **2.4 ms** vs naive ParaRNN 27 ms (**11×**) vs naive RNN 959 ms (**400×**); LSTM **6.5 ms** vs 62 ms (**9.6×**) vs 1338 ms (**207×**). Peak mem vs naive ParaRNN **~3–4×** lower. See [Fused Newton](#fused-newton). |

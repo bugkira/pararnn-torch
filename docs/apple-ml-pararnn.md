@@ -17,7 +17,7 @@ A **cell + solver library**, not a Hugging Face LM. Four application modes:
 | `parallel_CUDA` | Jacobian in PyTorch, PCR in CUDA |
 | `parallel_FUSED` | Whole Newton routine in CUDA |
 
-Our `NewtonConfig(scan_backend="fused")` is a **Triton** reimplementation of paper Alg. 1 (cell + J + scan; `W_x` still a PyTorch GEMM). It is not a port of their `csrc/fused_*.cu`.
+Our `NewtonConfig(scan_backend="fused")` is a **Triton** reimplementation of paper Alg. 1 (cell + J + scan; `W_x` still a PyTorch GEMM). It is not a port of their `csrc/fused_*.cu`. Fused is handwritten for ParaGRU/ParaLSTM, not any \(f\). Library default is `auto` (fused on CUDA ParaGRU/LSTM fp16/fp32, else Triton scan, else eager).
 
 CUDA is **required** to install their package (`pip install -e . --no-build-isolation`). Our v0 is PyTorch-only so it can run on CPU.
 

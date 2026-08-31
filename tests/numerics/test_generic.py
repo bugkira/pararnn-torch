@@ -5,16 +5,11 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
+from pararnn import NewtonConfig, device, newton_apply, sequential_apply
 from pararnn.cells import ParaGRU, ParaLSTM
-from pararnn.device import experiment_device
-from pararnn.solvers import NewtonConfig, newton_apply, sequential_apply
 from pararnn.solvers.jacobian import jacobian_autograd
 from pararnn.solvers.scan import scan_dense
 from pararnn.solvers.vjp import cell_vjp
-
-
-def _device() -> torch.device:
-    return experiment_device(allow_cpu=True)
 
 
 class DiagTanh(nn.Module):
@@ -54,7 +49,6 @@ class MixTanh(nn.Module):
 
 def test_scan_dense_matches_forward_substitution():
     torch.manual_seed(50)
-    device = _device()
     b, t, d = 2, 7, 3
     jac = torch.randn(b, t, d, d, device=device) * 0.15
     residual = torch.randn(b, t, d, device=device)
@@ -69,7 +63,6 @@ def test_scan_dense_matches_forward_substitution():
 @torch.no_grad()
 def test_paragru_autograd_jac_matches_analytic():
     torch.manual_seed(51)
-    device = _device()
     cell = ParaGRU(d_in=6, d_h=8).to(device)
     h = torch.randn(2, 11, 8, device=device)
     x = torch.randn(2, 11, 6, device=device)
@@ -82,7 +75,6 @@ def test_paragru_autograd_jac_matches_analytic():
 @torch.no_grad()
 def test_paralstm_autograd_jac_matches_analytic():
     torch.manual_seed(52)
-    device = _device()
     cell = ParaLSTM(d_in=5, d_h=6).to(device)
     state = torch.randn(2, 9, 2, 6, device=device)
     x = torch.randn(2, 9, 5, device=device)
@@ -95,7 +87,6 @@ def test_paralstm_autograd_jac_matches_analytic():
 @torch.no_grad()
 def test_custom_diag_newton_matches_sequential():
     torch.manual_seed(53)
-    device = _device()
     cell = DiagTanh(d_in=4, d_h=7).to(device)
     x = torch.randn(3, 20, 4, device=device)
     seq = sequential_apply(cell, x)
@@ -107,7 +98,6 @@ def test_custom_diag_newton_matches_sequential():
 @torch.no_grad()
 def test_custom_dense_newton_matches_sequential():
     torch.manual_seed(54)
-    device = _device()
     cell = MixTanh(d_in=3, d_h=4).to(device)
     x = torch.randn(2, 12, 3, device=device)
     seq = sequential_apply(cell, x)
@@ -123,7 +113,6 @@ def test_custom_dense_newton_matches_sequential():
 @torch.no_grad()
 def test_paragru_newton_autograd_matches_sequential():
     torch.manual_seed(55)
-    device = _device()
     cell = ParaGRU(d_in=6, d_h=8).to(device)
     x = torch.randn(2, 16, 6, device=device)
     seq = sequential_apply(cell, x)
@@ -134,7 +123,6 @@ def test_paragru_newton_autograd_matches_sequential():
 
 def test_custom_diag_bwd_matches_sequential_bptt():
     torch.manual_seed(56)
-    device = _device()
     d_in, d_h, t = 4, 6, 10
     x = torch.randn(2, t, d_in, device=device)
     w = torch.randn(2, t, d_h, device=device)
@@ -153,16 +141,8 @@ def test_custom_diag_bwd_matches_sequential_bptt():
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=2e-4, rtol=1e-4)
 
 
-def _cuda_or_skip() -> torch.device | None:
-    device = _device()
-    if device.type != "cuda":
-        return None
-    return device
-
-
 def test_paragru_packed_vjp_matches_autograd_vjp():
     torch.manual_seed(57)
-    device = _cuda_or_skip() or _device()
     cell = ParaGRU(d_in=5, d_h=7).to(device)
     h = torch.randn(2, 9, 7, device=device)
     x = torch.randn(2, 9, 5, device=device)
@@ -178,7 +158,6 @@ def test_paragru_packed_vjp_matches_autograd_vjp():
 
 def test_paralstm_packed_vjp_matches_autograd_vjp():
     torch.manual_seed(58)
-    device = _cuda_or_skip() or _device()
     cell = ParaLSTM(d_in=5, d_h=6).to(device)
     h = torch.randn(2, 8, 2, 6, device=device)
     x = torch.randn(2, 8, 5, device=device)

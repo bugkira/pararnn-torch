@@ -1,5 +1,6 @@
 # Fused Newton (Triton cell + J + scan). Same shapes as cell_forward.yaml.
-# scan_backend=fused is opt-in; eager remains the library default.
+# scan_backend=fused is the handwritten GRU/LSTM kernel (not any f).
+# Library default is auto, not silent fused. This bench pins fused.
 # GEMM W_x stays in PyTorch (eq. 3.1). Not Apple's fused CUDA.
 #
 # Protocol: 10 warmup / 50 runs — smoke, not App. B (20/100).

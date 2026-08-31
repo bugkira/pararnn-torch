@@ -6,8 +6,8 @@ import logging
 
 import torch
 
+from pararnn import device
 from pararnn.cells import ParaGRU, ParaLSTM
-from pararnn.device import experiment_device
 from pararnn.solvers import (
     NewtonConfig,
     newton_apply,
@@ -22,13 +22,8 @@ from pararnn.solvers.scan import (
 )
 
 
-def _device() -> torch.device:
-    return experiment_device(allow_cpu=True)
-
-
 def test_scan_diag_matches_forward_substitution():
     torch.manual_seed(2)
-    device = _device()
     b, t, d = 4, 17, 5  # 17 is not a power of two
     jac = torch.randn(b, t, d, device=device) * 0.3
     residual = torch.randn(b, t, d, device=device)
@@ -42,7 +37,6 @@ def test_scan_diag_matches_forward_substitution():
 
 def test_scan_diag_power_of_two():
     torch.manual_seed(13)
-    device = _device()
     b, t, d = 2, 8, 3
     jac = torch.randn(b, t, d, device=device) * 0.3
     residual = torch.randn(b, t, d, device=device)
@@ -56,7 +50,6 @@ def test_scan_diag_power_of_two():
 
 def test_scan_block2_matches_forward_substitution():
     torch.manual_seed(3)
-    device = _device()
     b, t, d = 2, 9, 4
     jac = torch.randn(b, t, 2, 2, d, device=device) * 0.2
     residual = torch.randn(b, t, 2, d, device=device)
@@ -72,7 +65,6 @@ def test_scan_block2_matches_forward_substitution():
 @torch.no_grad()
 def test_paragru_newton_matches_sequential():
     torch.manual_seed(4)
-    device = _device()
     cell = ParaGRU(d_in=8, d_h=16).to(device)
     x = torch.randn(3, 32, 8, device=device)
     seq = sequential_apply(cell, x)
@@ -84,7 +76,6 @@ def test_paragru_newton_matches_sequential():
 @torch.no_grad()
 def test_paralstm_newton_matches_sequential():
     torch.manual_seed(5)
-    device = _device()
     cell = ParaLSTM(d_in=8, d_h=12).to(device)
     x = torch.randn(3, 32, 8, device=device)
     seq = sequential_apply(cell, x)
@@ -95,7 +86,6 @@ def test_paralstm_newton_matches_sequential():
 
 def test_reverse_scan_diag_matches_backward_substitution():
     torch.manual_seed(8)
-    device = _device()
     b, t, d = 3, 11, 6
     jac = torch.randn(b, t, d, device=device) * 0.3
     partial = torch.randn(b, t, d, device=device)
@@ -109,7 +99,6 @@ def test_reverse_scan_diag_matches_backward_substitution():
 
 def test_reverse_scan_block2_matches_backward_substitution():
     torch.manual_seed(9)
-    device = _device()
     b, t, d = 2, 7, 4
     jac = torch.randn(b, t, 2, 2, d, device=device) * 0.2
     partial = torch.randn(b, t, 2, d, device=device)
@@ -131,7 +120,6 @@ def _assert_param_grads_close(cell_a: torch.nn.Module, cell_b: torch.nn.Module, 
 
 def test_paragru_newton_bwd_matches_sequential_bptt():
     torch.manual_seed(10)
-    device = _device()
     d_in, d_h, t = 5, 7, 16
     x = torch.randn(2, t, d_in, device=device)
     w = torch.randn(2, t, d_h, device=device)
@@ -150,7 +138,6 @@ def test_paragru_newton_bwd_matches_sequential_bptt():
 
 def test_paralstm_newton_bwd_matches_sequential_bptt():
     torch.manual_seed(11)
-    device = _device()
     d_in, d_h, t = 5, 6, 12
     x = torch.randn(2, t, d_in, device=device)
     w = torch.randn(2, t, 2, d_h, device=device)
@@ -170,7 +157,6 @@ def test_paralstm_newton_bwd_matches_sequential_bptt():
 @torch.no_grad()
 def test_compiled_sequential_matches_eager():
     torch.manual_seed(12)
-    device = _device()
     if device.type != "cuda":
         return
     cell = ParaGRU(d_in=8, d_h=16).to(device).eval()
@@ -184,7 +170,6 @@ def test_compiled_sequential_matches_eager():
 def test_compiled_newton_matches_sequential():
     """Call-site torch.compile(newton_apply); not a library solver."""
     torch.manual_seed(16)
-    device = _device()
     if device.type != "cuda":
         return
     cfg = NewtonConfig(max_iters=3)
@@ -207,7 +192,6 @@ def test_compiled_newton_matches_sequential():
 
 
 def _cuda_or_skip() -> torch.device | None:
-    device = _device()
     if device.type != "cuda":
         return None
     return device
@@ -508,7 +492,6 @@ def test_fused_rejects_bf16():
 @torch.no_grad()
 def test_paragru_newton_h0_matches_sequential():
     torch.manual_seed(80)
-    device = _device()
     cell = ParaGRU(d_in=8, d_h=16).to(device)
     x = torch.randn(3, 24, 8, device=device)
     # App. A init is for h0=0; unit-scale randn leaves ~2e-4 after K=3.
@@ -522,7 +505,6 @@ def test_paragru_newton_h0_matches_sequential():
 @torch.no_grad()
 def test_paralstm_newton_h0_matches_sequential():
     torch.manual_seed(81)
-    device = _device()
     cell = ParaLSTM(d_in=8, d_h=12).to(device)
     x = torch.randn(3, 20, 8, device=device)
     h0 = 0.3 * torch.randn(3, 2, 12, device=device)
@@ -533,7 +515,7 @@ def test_paralstm_newton_h0_matches_sequential():
 
 
 @torch.no_grad()
-def test_fused_nonzero_h0_falls_back_eager(caplog):
+def test_fused_nonzero_h0_matches_sequential(caplog):
     torch.manual_seed(82)
     device = _cuda_or_skip()
     if device is None:
@@ -544,13 +526,26 @@ def test_fused_nonzero_h0_falls_back_eager(caplog):
     cfg = NewtonConfig(max_iters=3, scan_backend="fused")
     with caplog.at_level(logging.WARNING, logger="pararnn.solvers.newton"):
         par = newton_apply(cell, x, cfg, h0=h0)
-    assert "fused_h0_fallback_eager" in caplog.text
+    assert "fused_h0_fallback_eager" not in caplog.text
     seq = sequential_apply(cell, x, h0)
     err = (par - seq).abs().amax()
     assert err < 1e-4, err
-    assert cfg.scan_backend == "fused"
-    caplog.clear()
     zeros = torch.zeros_like(h0)
-    with caplog.at_level(logging.WARNING, logger="pararnn.solvers.newton"):
-        newton_apply(cell, x, cfg, h0=zeros)
-    assert "fused_h0_fallback_eager" not in caplog.text
+    par_z = newton_apply(cell, x, cfg, h0=zeros)
+    seq_z = sequential_apply(cell, x, zeros)
+    assert (par_z - seq_z).abs().amax() < 1e-4
+
+
+@torch.no_grad()
+def test_fused_lstm_nonzero_h0_matches_sequential():
+    torch.manual_seed(83)
+    device = _cuda_or_skip()
+    if device is None:
+        return
+    cell = ParaLSTM(d_in=8, d_h=12).to(device)
+    x = torch.randn(2, 24, 8, device=device)
+    h0 = 0.3 * torch.randn(2, 2, 12, device=device)
+    par = newton_apply(cell, x, NewtonConfig(max_iters=3, scan_backend="fused"), h0=h0)
+    seq = sequential_apply(cell, x, h0)
+    err = (par - seq).abs().amax()
+    assert err < 1e-4, err

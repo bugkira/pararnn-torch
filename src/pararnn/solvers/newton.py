@@ -1,10 +1,14 @@
 """Newton iterations wrapping a parallel scan (Danieli et al. 2025 Alg. 1).
 
 K=3: App. A — residual to machine precision in 3–4 steps for ParaGRU/ParaLSTM.
-Init: eq. A.1, h_l^0 = f(0, x_l), not the zero trajectory (README draft was wrong).
+Init: eq. A.1, only t=0 sees ``h0``; later t still ``f(0, x_t)``.
 
 Any cell with ``step(h, x)`` parallelizes: Autograd supplies ``J = ∂f/∂h``
 (DEER / Lim et al.). ParaGRU/ParaLSTM keep analytic J (paper §3) as the default.
+
+``scan_backend='fused'`` is a handwritten Triton kernel for those two cells, not
+a generic ``f``. ``'auto'`` picks fused (CUDA GRU/LSTM fp16/fp32), else Triton
+scan + ``cell.step``, else eager.
 
 Backward is **not** autograd through the K iterates. Paper eq. 2.6: one reverse
 scan of J^T, then a VJP of the batched cell. ParaGRU/ParaLSTM pack that VJP in
@@ -36,16 +40,29 @@ from pararnn.solvers.vjp import cell_vjp
 
 log = logging.getLogger(__name__)
 
+# App. A: K=3 reaches machine precision on these cells. Sequential agreement
+# tests use 1e-4. Stop a wasted extra iter below that and above fp32 noise.
+_DEFAULT_RESIDUAL_ATOL = 1e-5
+
+
+@dataclass
+class NewtonStats:
+    """Filled by ``newton_apply(..., stats=)`` after the forward."""
+
+    max_residual: float = float("nan")
+    iters: int = 0
+    scan_backend: str = ""
+
 
 @dataclass
 class NewtonConfig:
     max_iters: int = 3
     omega: float = 1.0  # 1 = vanilla Newton; <1 damps (cf. Gonzalez et al. ELK)
-    # eager: vectorized Blelloch (default, CPU+CUDA).
-    # triton: CUDA scan (fp16 DRAM / fp32 algebra, or fp32).
-    # fused: CUDA cell + J + scan. GEMM W_x stays in PyTorch. ParaGRU/LSTM only.
-    # fp16 is Turing TC for W_x; not bf16. Not a paper hyperparameter.
-    scan_backend: str = "eager"
+    # auto: fused on CUDA ParaGRU/LSTM fp16/fp32, else Triton scan + cell.step, else eager.
+    # eager: vectorized Blelloch (CPU+CUDA). Any f.
+    # triton: CUDA scan only (fp16 DRAM / fp32 algebra, or fp32). Cell stays PyTorch.
+    # fused: handwritten CUDA cell+J+scan for ParaGRU/ParaLSTM. Not any f.
+    scan_backend: str = "auto"
     # auto: analytic J if the cell has step_with_jacobian, else Autograd.
     # analytic: require step_with_jacobian (paper §3 cells).
     # autograd: torch.func JVP/jacrev — any step(h, x).
@@ -53,6 +70,9 @@ class NewtonConfig:
     # None infers: (B,T,D) → diag JVP; (B,T,2,D) → block2.
     # dense: full d_h×d_h (exact mixing cells; O(d^3) scan).
     jac_structure: str | None = None
+    # None disables early-stop. Default: skip remaining Newton steps when
+    # max|F| is already below sequential-agreement scale (see App. A / 1e-4 tests).
+    residual_atol: float | None = _DEFAULT_RESIDUAL_ATOL
 
 
 def newton_apply(
@@ -61,35 +81,34 @@ def newton_apply(
     config: NewtonConfig | None = None,
     *,
     h0: Tensor | None = None,
+    stats: NewtonStats | None = None,
 ) -> Tensor:
     """Parallel forward: Newton on F(H)=0, inner solve via associative scan.
 
-    ``h0`` is the paper's ``h_0`` (default 0). If it is nonzero and
-    ``scan_backend='fused'``, fall back to eager (fused kernels prepend zeros)
-    and log it.
+    ``h0`` is the paper's ``h_0`` (default 0). Fused kernels prepend it (not zeros).
 
     If gradients are enabled, the backward uses eq. 2.6 (reverse scan) instead
     of differentiating the Newton loop.
     """
     config = config or NewtonConfig()
-    if config.scan_backend not in ("eager", "triton", "fused"):
+    if config.scan_backend not in ("auto", "eager", "triton", "fused"):
         raise ValueError(f"unknown scan backend {config.scan_backend!r}")
     if config.jacobian not in ("auto", "analytic", "autograd"):
         raise ValueError(f"unknown jacobian {config.jacobian!r}")
-    config = _maybe_unfuse_h0(config, h0)
+    config = _resolve_backend(cell, x, config)
     params = tuple(cell.parameters())
     needs_grad = torch.is_grad_enabled() and (
         x.requires_grad or any(p.requires_grad for p in params)
     )
     if not needs_grad:
-        return _newton_forward(cell, x, config, h0=h0)
+        return _newton_forward(cell, x, config, h0=h0, stats=stats)
 
     class _NewtonFixedPoint(torch.autograd.Function):
         @staticmethod
         def forward(ctx, x_in: Tensor, *param_tensors: Tensor) -> Tensor:
             del param_tensors
             with torch.no_grad():
-                states = _newton_forward(cell, x_in, config, h0=h0)
+                states = _newton_forward(cell, x_in, config, h0=h0, stats=stats)
             ctx.scan_backend = (
                 "triton" if config.scan_backend == "fused" else config.scan_backend
             )
@@ -119,20 +138,56 @@ def newton_apply(
     return _NewtonFixedPoint.apply(x, *params)
 
 
-def _h0_nonzero(h0: Tensor | None) -> bool:
-    if h0 is None:
+def _can_triton_scan(x: Tensor) -> bool:
+    return x.is_cuda and x.dtype in (torch.float16, torch.float32)
+
+
+def _can_fuse(cell: nn.Module, x: Tensor) -> bool:
+    if not _can_triton_scan(x):
         return False
-    return bool((h0.detach().abs().amax() > 0).item())
+    if not isinstance(cell, (ParaGRU, ParaLSTM)):
+        return False
+    return getattr(cell, "W_x", None) is not None
 
 
-def _maybe_unfuse_h0(config: NewtonConfig, h0: Tensor | None) -> NewtonConfig:
-    if config.scan_backend == "fused" and _h0_nonzero(h0):
-        log.warning(
-            "fused_h0_fallback_eager",
-            extra={"reason": "fused kernels prepend zeros; h0 is nonzero"},
-        )
-        return replace(config, scan_backend="eager")
+def _pick_auto(cell: nn.Module, x: Tensor) -> str:
+    if _can_fuse(cell, x):
+        return "fused"
+    if _can_triton_scan(x):
+        return "triton"
+    return "eager"
+
+
+def _resolve_backend(cell: nn.Module, x: Tensor, config: NewtonConfig) -> NewtonConfig:
+    requested = config.scan_backend
+    if requested == "auto":
+        chosen = _pick_auto(cell, x)
+        if not torch.compiler.is_compiling():
+            log.debug(
+                "scan_backend_auto",
+                extra={
+                    "chosen": chosen,
+                    "cell": type(cell).__name__,
+                    "device": str(x.device),
+                    "dtype": str(x.dtype),
+                },
+            )
+        return replace(config, scan_backend=chosen)
+    if requested == "fused" and not _can_fuse(cell, x):
+        raise TypeError(_fused_error(cell, x))
     return config
+
+
+def _fused_error(cell: nn.Module, x: Tensor) -> str:
+    if x.dtype is torch.bfloat16:
+        return (
+            "fused Newton: bfloat16 is not used on Turing (no bf16 tensor cores). "
+            "Use float16; cell+scan algebra stays fp32."
+        )
+    return (
+        "scan_backend='fused' needs CUDA ParaGRU/ParaLSTM in float16/float32 "
+        f"(got {type(cell).__name__} {x.dtype} {x.device})"
+    )
 
 
 def _newton_forward(
@@ -141,9 +196,12 @@ def _newton_forward(
     config: NewtonConfig,
     *,
     h0: Tensor | None = None,
+    stats: NewtonStats | None = None,
 ) -> Tensor:
     if config.scan_backend == "fused":
-        return _newton_fused(cell, x, config)
+        states = _newton_fused(cell, x, config, h0=h0)
+        _fill_stats(cell, x, states, h0, config, iters=config.max_iters, stats=stats)
+        return states
     h_prev0 = _init_h_prev(cell, x, h0)
     wx = _wx_if_analytic(cell, x, config)
     states, _ = step_and_jacobian(
@@ -155,6 +213,8 @@ def _newton_forward(
         jac_structure=config.jac_structure,
     )
 
+    iters_done = 0
+    last_res = float("nan")
     for it in range(config.max_iters):
         h_prev = prepend_state(states, h0)
         pred, jac = step_and_jacobian(
@@ -166,36 +226,67 @@ def _newton_forward(
             jac_structure=config.jac_structure,
         )
         residual = pred - states
+        last_res = float(residual.detach().abs().amax())
         if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
             log.debug(
                 "newton_iter",
                 extra={
                     "iter": it,
-                    "max_residual": float(residual.detach().abs().amax()),
+                    "max_residual": last_res,
                     "seq_len": x.shape[1],
                     "batch": x.shape[0],
                     "jacobian": config.jacobian,
+                    "scan_backend": config.scan_backend,
                 },
             )
+        atol = config.residual_atol
+        if atol is not None and last_res < atol:
+            log.info(
+                "newton_early_stop",
+                extra={
+                    "iters": it,
+                    "max_residual": last_res,
+                    "atol": atol,
+                    "seq_len": x.shape[1],
+                },
+            )
+            break
         delta = _scan(jac, residual, backend=config.scan_backend)
         if states.dtype == torch.float16:
             states = (states.float() + config.omega * delta.float()).to(states.dtype)
         else:
             states = states + config.omega * delta
+        iters_done = it + 1
+    _fill_stats(cell, x, states, h0, config, iters=iters_done, stats=stats)
     return states
 
 
-def _newton_fused(cell: nn.Module, x: Tensor, config: NewtonConfig) -> Tensor:
+def _fill_stats(
+    cell: nn.Module,
+    x: Tensor,
+    states: Tensor,
+    h0: Tensor | None,
+    config: NewtonConfig,
+    *,
+    iters: int,
+    stats: NewtonStats | None,
+) -> None:
+    if stats is None:
+        return
+    pred = cell.step(prepend_state(states, h0), x)
+    stats.max_residual = float((pred - states).detach().abs().amax())
+    stats.iters = iters
+    stats.scan_backend = config.scan_backend
+
+
+def _newton_fused(
+    cell: nn.Module,
+    x: Tensor,
+    config: NewtonConfig,
+    *,
+    h0: Tensor | None = None,
+) -> Tensor:
     """Alg. 1 with cell+J+scan in Triton. ``W_x(x)`` is still one PyTorch GEMM."""
-    if x.dtype is torch.bfloat16:
-        raise TypeError(
-            "fused Newton: bfloat16 is not used on Turing (no bf16 tensor cores). "
-            "Use float16; cell+scan algebra stays fp32."
-        )
-    if x.dtype not in (torch.float16, torch.float32):
-        raise TypeError(f"fused Newton supports float16/float32, got {x.dtype}")
-    if not x.is_cuda:
-        raise RuntimeError("fused Newton requires CUDA")
     wx = _input_affine(cell, x)
     if wx is None:
         raise TypeError(f"fused Newton needs cell.W_x; got {type(cell).__name__}")
@@ -208,29 +299,18 @@ def _newton_fused(cell: nn.Module, x: Tensor, config: NewtonConfig) -> Tensor:
             "d_h": cell.d_h,
             "max_iters": config.max_iters,
             "device": str(x.device),
+            "h0": h0 is not None,
         },
     )
-    if isinstance(cell, ParaGRU):
-        from pararnn.kernels.newton_gru import newton_gru_fused
+    from pararnn.kernels.fused import fused_newton
 
-        a_z, a_r, a_n = cell._clipped_a()
-        return newton_gru_fused(
-            wx, a_z, a_r, a_n, max_iters=config.max_iters, omega=config.omega
-        )
-    if isinstance(cell, ParaLSTM):
-        from pararnn.kernels.newton_lstm import newton_lstm_fused
-
-        return newton_lstm_fused(
-            wx,
-            cell._clip(cell.a_f),
-            cell._clip(cell.a_z),
-            cell._clip(cell.a_o),
-            cell._clip(cell.c_f),
-            cell._clip(cell.c_o),
-            max_iters=config.max_iters,
-            omega=config.omega,
-        )
-    raise TypeError(f"fused Newton does not support {type(cell).__name__}")
+    return fused_newton(
+        cell,
+        wx,
+        max_iters=config.max_iters,
+        omega=config.omega,
+        h0=h0,
+    )
 
 
 def _eq26_vjp(

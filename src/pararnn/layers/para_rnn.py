@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import inspect
 import logging
+from collections.abc import Sequence
 
 import torch
 from torch import Tensor, nn
 
 from pararnn.cells.protocol import check_cell
 from pararnn.layout import LSTM_HIDDEN
-from pararnn.solvers.newton import NewtonConfig, newton_apply
+from pararnn.solvers.newton import NewtonConfig, NewtonStats, newton_apply
 from pararnn.solvers.sequential import sequential_apply
 
 log = logging.getLogger(__name__)
@@ -23,32 +24,34 @@ class ParaRNN(nn.Module):
     sequential ``step`` unroll in ``eval()``. No residual or LayerNorm here —
     stacking is naive; the caller owns the backbone.
 
-    ``x`` is ``(batch, time, d_in)``. Output is the last cell's full state
-    (GRU: ``(B, T, d_h)``; LSTM: ``(B, T, 2, d_h)``). Intermediate LSTM
+    ``x`` is ``(batch, time, d_in)``. Default output is the last cell's full
+    state (GRU: ``(B, T, d_h)``; LSTM: ``(B, T, 2, d_h)``). Intermediate LSTM
     layers feed only the hidden slot into the next layer.
     """
 
     def __init__(
         self,
-        cell: nn.Module,
+        cell: nn.Module | Sequence[nn.Module],
         *,
         num_layers: int = 1,
         config: NewtonConfig | None = None,
+        return_hidden: bool = False,
+        output_hidden: bool = False,
     ) -> None:
         super().__init__()
-        check_cell(cell)
-        if num_layers < 1:
-            raise ValueError(f"num_layers must be >= 1, got {num_layers}")
         self.config = config or NewtonConfig()
-        layers: list[nn.Module] = [cell]
-        if num_layers > 1:
-            layers.extend(_extra_layers(cell, num_layers - 1))
-        self.layers = nn.ModuleList(layers)
+        self.return_hidden = return_hidden
+        self.output_hidden = output_hidden
+        self.last_stats: list[NewtonStats] = []
+        self.layers = nn.ModuleList(_build_layers(cell, num_layers))
 
-    def forward(self, x: Tensor, h0: Tensor | list | tuple | None = None) -> Tensor:
+    def forward(
+        self, x: Tensor, h0: Tensor | Sequence[Tensor] | None = None
+    ) -> Tensor | tuple[Tensor, Tensor]:
         h0s = _split_h0(h0, len(self.layers))
         h = x
         n = len(self.layers)
+        self.last_stats = []
         if log.isEnabledFor(logging.DEBUG):
             log.debug(
                 "para_rnn_forward",
@@ -62,12 +65,41 @@ class ParaRNN(nn.Module):
             )
         for i, cell in enumerate(self.layers):
             if self.training:
-                h = newton_apply(cell, h, self.config, h0=h0s[i])
+                st = NewtonStats()
+                h = newton_apply(cell, h, self.config, h0=h0s[i], stats=st)
+                self.last_stats.append(st)
             else:
                 h = sequential_apply(cell, h, h0s[i])
             if i + 1 < n:
                 h = _next_layer_input(h, cell)
-        return h
+        y = h
+        last = h[:, -1]
+        if self.output_hidden and getattr(self.layers[-1], "state_slots", 1) == 2:
+            y = h[:, :, LSTM_HIDDEN, :]
+        if self.return_hidden:
+            return y, last
+        return y
+
+
+def _build_layers(cell: nn.Module | Sequence[nn.Module], num_layers: int) -> list[nn.Module]:
+    if isinstance(cell, (list, tuple)):
+        if not cell:
+            raise ValueError("cell list must be non-empty")
+        if num_layers not in (1, len(cell)):
+            raise ValueError(
+                f"num_layers={num_layers} does not match len(cells)={len(cell)}"
+            )
+        layers = list(cell)
+        for c in layers:
+            check_cell(c)
+        return layers
+    check_cell(cell)
+    if num_layers < 1:
+        raise ValueError(f"num_layers must be >= 1, got {num_layers}")
+    layers = [cell]
+    if num_layers > 1:
+        layers.extend(_extra_layers(cell, num_layers - 1))
+    return layers
 
 
 def _extra_layers(cell: nn.Module, n_extra: int) -> list[nn.Module]:
@@ -82,7 +114,7 @@ def _extra_layers(cell: nn.Module, n_extra: int) -> list[nn.Module]:
         except TypeError as exc:
             raise TypeError(
                 f"{cls.__name__} cannot be stacked (num_layers>1): need "
-                "type(cell)(d_in=cell.d_h, d_h=cell.d_h, ...). "
+                "type(cell)(d_in=cell.d_h, d_h=cell.d_h, ...) or pass a list of cells. "
                 "Use num_layers=1 for custom cells without that constructor."
             ) from exc
         extras.append(extra.to(device=device, dtype=dtype))
@@ -114,7 +146,7 @@ def _next_layer_input(states: Tensor, cell: nn.Module) -> Tensor:
     return states
 
 
-def _split_h0(h0: Tensor | list | tuple | None, n_layers: int) -> list:
+def _split_h0(h0: Tensor | Sequence[Tensor] | None, n_layers: int) -> list[Tensor | None]:
     if h0 is None:
         return [None] * n_layers
     if n_layers == 1:

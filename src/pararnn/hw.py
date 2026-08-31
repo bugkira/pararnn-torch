@@ -1,4 +1,4 @@
-"""Pick the experiment GPU by name. Indices are not portable.
+"""Lab GPU by name. Public API is ``from pararnn import device`` (a ``torch.device``).
 
 On this box ``nvidia-smi`` lists 3060 as GPU 0 and 2080 Ti as GPU 1.
 PyTorch currently enumerates them the other way around (2080 Ti = cuda:0).
@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 DEFAULT_EXPERIMENT_GPU_NAME = "2080 Ti"
 
 
-def experiment_device(
+def select_device(
     name_substring: str = DEFAULT_EXPERIMENT_GPU_NAME,
     *,
     allow_cpu: bool = False,
@@ -48,7 +48,7 @@ def experiment_device(
     index = matches[0]
     device = torch.device(f"cuda:{index}")
     log.info(
-        "experiment_device",
+        "select_gpu",
         extra={"cuda_index": index, "gpu_name": names[index], "all_gpus": names},
     )
     return device

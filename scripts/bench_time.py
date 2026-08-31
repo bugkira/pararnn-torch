@@ -24,8 +24,8 @@ import torch
 import yaml
 from torch import Tensor, nn
 
+from pararnn import device, wait_until_free
 from pararnn.cells import ParaGRU, ParaLSTM
-from pararnn.device import experiment_device, wait_until_free
 from pararnn.logconf import setup_logging
 from pararnn.solvers import (
     NewtonConfig,
@@ -120,7 +120,10 @@ def _newton_eager(cell: nn.Module, x: Tensor, cfg: NewtonConfig) -> Tensor:
 def _newton_fused(cell: nn.Module, x: Tensor, cfg: NewtonConfig) -> Tensor:
     """Cell+J+scan Triton Newton. Opt-in; not the library default."""
     fused = NewtonConfig(
-        max_iters=cfg.max_iters, omega=cfg.omega, scan_backend="fused"
+        max_iters=cfg.max_iters,
+        omega=cfg.omega,
+        scan_backend="fused",
+        residual_atol=None,
     )
     with torch.no_grad():
         return newton_apply(cell, x, fused)
@@ -217,10 +220,15 @@ def main() -> None:
     args = parser.parse_args()
     config_path = args.config.resolve()
     spec = yaml.safe_load(config_path.read_text())
-    device = experiment_device()
+    if device.type != "cuda":
+        raise RuntimeError("App. B needs the 2080 Ti (PARARNN_DEVICE to override)")
     torch.cuda.set_device(device)
     wait_until_free(device, min_free_gib=8.0, poll_s=30.0)
-    newton_cfg = NewtonConfig(max_iters=int(spec["newton_iters"]))
+    newton_cfg = NewtonConfig(
+        max_iters=int(spec["newton_iters"]),
+        scan_backend="eager",
+        residual_atol=None,
+    )
     warmup, n_runs = int(spec["warmup"]), int(spec["n_runs"])
     batch, d_in, d_h = int(spec["batch"]), int(spec["d_in"]), int(spec["d_h"])
     seq_max_seq = int(spec["seq_lens_sequential_max"])
@@ -328,6 +336,7 @@ def main() -> None:
                                     max_iters=newton_cfg.max_iters,
                                     omega=newton_cfg.omega,
                                     scan_backend="fused",
+                                    residual_atol=None,
                                 )
                                 err_f = _agree(cell, x, fused_cfg)
                                 log.info(

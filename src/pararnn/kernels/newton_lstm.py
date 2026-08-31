@@ -118,7 +118,12 @@ def _store_state(s_ptr, val, pid_b, offs_t, offs_d, slot, mask, sb, st, ss, sd, 
 def _lstm_init_kernel(
     wx_ptr,
     s_ptr,
+    af_ptr,
+    az_ptr,
+    ao_ptr,
+    cf_ptr,
     co_ptr,
+    h0_ptr,
     d_h,
     time,
     stride_wb,
@@ -128,13 +133,16 @@ def _lstm_init_kernel(
     stride_st,
     stride_ss,
     stride_sd,
+    stride_h0b,
+    stride_h0s,
+    stride_h0d,
     SLOT_C: tl.constexpr,
     SLOT_H: tl.constexpr,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
     FP16: tl.constexpr,
 ):
-    """App. A: f(0, x). Peephole c_o still multiplies the new cell."""
+    """App. A: only t=0 sees ``h0``; later t still ``f(0, x_t)``."""
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
     pid_d = tl.program_id(2)
@@ -143,11 +151,33 @@ def _lstm_init_kernel(
     offs_t = t0 + tl.arange(0, BLOCK_T)
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
+    dmask = offs_d < d_h
     fx, zx, ox = _load_wx(
         wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd, FP16
     )
-    peephole_o = load_acc(co_ptr + offs_d, offs_d < d_h, 0.0, FP16)
-    c, h, _, _, _, _ = _lstm_pred_j(0.0, 0.0, fx, zx, ox, 0.0, 0.0, 0.0, 0.0, peephole_o)
+    a_f = load_acc(af_ptr + offs_d, dmask, 0.0, FP16)
+    a_z = load_acc(az_ptr + offs_d, dmask, 0.0, FP16)
+    a_o = load_acc(ao_ptr + offs_d, dmask, 0.0, FP16)
+    peephole_f = load_acc(cf_ptr + offs_d, dmask, 0.0, FP16)
+    peephole_o = load_acc(co_ptr + offs_d, dmask, 0.0, FP16)
+    c0 = load_acc(
+        h0_ptr + pid_b * stride_h0b + SLOT_C * stride_h0s + offs_d * stride_h0d,
+        dmask,
+        0.0,
+        FP16,
+    )
+    h0 = load_acc(
+        h0_ptr + pid_b * stride_h0b + SLOT_H * stride_h0s + offs_d * stride_h0d,
+        dmask,
+        0.0,
+        FP16,
+    )
+    is_t0 = (offs_t == 0)[:, None]
+    c_prev = tl.where(is_t0, c0[None, :], 0.0)
+    h_prev = tl.where(is_t0, h0[None, :], 0.0)
+    c, h, _, _, _, _ = _lstm_pred_j(
+        c_prev, h_prev, fx, zx, ox, a_f, a_z, a_o, peephole_f, peephole_o
+    )
     _store_state(s_ptr, c, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd, FP16)
     _store_state(s_ptr, h, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd, FP16)
 
@@ -161,6 +191,7 @@ def _lstm_cell_local_scan_kernel(
     ao_ptr,
     cf_ptr,
     co_ptr,
+    h0_ptr,
     j_loc_ptr,
     r_loc_ptr,
     agg_j_ptr,
@@ -171,6 +202,9 @@ def _lstm_cell_local_scan_kernel(
     stride_st,
     stride_ss,
     stride_sd,
+    stride_h0b,
+    stride_h0s,
+    stride_h0d,
     stride_wb,
     stride_wt,
     stride_wd,
@@ -216,6 +250,21 @@ def _lstm_cell_local_scan_kernel(
     h_prev = _load_state(
         s_ptr, pid_b, offs_tm1, offs_d, SLOT_H, mask_prev, stride_sb, stride_st, stride_ss, stride_sd, FP16
     )
+    c0 = load_acc(
+        h0_ptr + pid_b * stride_h0b + SLOT_C * stride_h0s + offs_d * stride_h0d,
+        dmask,
+        0.0,
+        FP16,
+    )
+    h0 = load_acc(
+        h0_ptr + pid_b * stride_h0b + SLOT_H * stride_h0s + offs_d * stride_h0d,
+        dmask,
+        0.0,
+        FP16,
+    )
+    is_t0 = (offs_t == 0)[:, None]
+    c_prev = tl.where(is_t0, c0[None, :], c_prev)
+    h_prev = tl.where(is_t0, h0[None, :], h_prev)
     fx, zx, ox = _load_wx(
         wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd, FP16
     )
@@ -391,9 +440,12 @@ def newton_lstm_fused(
     *,
     max_iters: int,
     omega: float,
+    h0: Tensor | None = None,
 ) -> Tensor:
-    """Alg. 1 for CIFG ParaLSTM. ``wx`` is ``W_x(x)`` with shape ``(B, T, 3 d_h)``."""
-    fp16 = check_cuda_real(wx, a_f, a_z, a_o, c_f, c_o, name="newton_lstm_fused")
+    """Alg. 1 for CIFG ParaLSTM. ``wx`` is ``W_x(x)`` with shape ``(B, T, 3 d_h)``.
+
+    ``h0`` is paper ``h_0`` (default zeros), shape ``(B, 2, d_h)``.
+    """
     wx = wx.contiguous()
     a_f = a_f.contiguous()
     a_z = a_z.contiguous()
@@ -404,6 +456,15 @@ def newton_lstm_fused(
     d_h = a_f.numel()
     if three_d != 3 * d_h:
         raise ValueError(f"wx last dim {three_d} != 3 * d_h={3 * d_h}")
+    if h0 is None:
+        h0 = wx.new_zeros(batch, 2, d_h)
+    else:
+        h0 = h0.contiguous()
+        if h0.shape != (batch, 2, d_h):
+            raise ValueError(f"h0 shape {tuple(h0.shape)} != {(batch, 2, d_h)}")
+        if h0.dtype != wx.dtype:
+            h0 = h0.to(dtype=wx.dtype)
+    fp16 = check_cuda_real(wx, a_f, a_z, a_o, c_f, c_o, h0, name="newton_lstm_fused")
     n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
     if n_chunks > _CHUNK_PAD:
         raise ValueError(
@@ -416,11 +477,17 @@ def newton_lstm_fused(
     _lstm_init_kernel[grid_td](
         wx,
         states,
+        a_f,
+        a_z,
+        a_o,
+        c_f,
         c_o,
+        h0,
         d_h,
         time,
         *wx.stride(),
         *states.stride(),
+        *h0.stride(),
         SLOT_C=LSTM_CELL,
         SLOT_H=LSTM_HIDDEN,
         BLOCK_T=_BLOCK_T,
@@ -445,6 +512,7 @@ def newton_lstm_fused(
             a_o,
             c_f,
             c_o,
+            h0,
             j_loc,
             r_loc,
             agg_j,
@@ -452,6 +520,7 @@ def newton_lstm_fused(
             time,
             d_h,
             *states.stride(),
+            *h0.stride(),
             *wx.stride(),
             *j_loc.stride(),
             *r_loc.stride(),
@@ -461,7 +530,7 @@ def newton_lstm_fused(
             SLOT_H=LSTM_HIDDEN,
             BLOCK_T=_BLOCK_T,
             BLOCK_D=_BLOCK_D,
-        FP16=fp16,
+            FP16=fp16,
         )
         if n_chunks == 1:
             states.copy_((states.float() + float(omega) * r_loc.float()).to(states.dtype))
@@ -477,7 +546,7 @@ def newton_lstm_fused(
                 *incl_r.stride(),
                 CHUNK_PAD=_CHUNK_PAD,
                 BLOCK_D=_BLOCK_D,
-        FP16=fp16,
+            FP16=fp16,
             )
             _lstm_apply_update_kernel[grid_td](
                 states,
@@ -495,7 +564,7 @@ def newton_lstm_fused(
                 SLOT_H=LSTM_HIDDEN,
                 BLOCK_T=_BLOCK_T,
                 BLOCK_D=_BLOCK_D,
-        FP16=fp16,
+            FP16=fp16,
             )
         if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
             log.debug(

@@ -1,4 +1,12 @@
-# Torchification
+# Torchification (archive, v0.2)
+
+Shipped in `6ac89c3`. This file is **not** the live backlog — see
+[`bottlenecks.md`](bottlenecks.md) Next and the README roadmap.
+
+It was the plan to turn the solver prototype into `ParaRNN` (`nn.Module`,
+train = Newton, eval = sequential, toy copy). Do not treat the drafts below as
+current API (fused `h0` is in the kernel; `scan_backend` default is `auto`).
+
 
 Turn the current **solver prototype** into a drop-in **PyTorch module**: something you put in `nn.Sequential`, call as `model(x)`, train with AdamW, and install with `uv add`.
 

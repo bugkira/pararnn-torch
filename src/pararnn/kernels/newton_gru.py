@@ -67,6 +67,10 @@ def _load_wx(wx_ptr, pid_b, offs_t, offs_d, d_h, mask, sb, st, sd, FP16: tl.cons
 def _gru_init_kernel(
     wx_ptr,
     h_ptr,
+    az_ptr,
+    ar_ptr,
+    an_ptr,
+    h0_ptr,
     d_h,
     time,
     stride_wb,
@@ -75,11 +79,13 @@ def _gru_init_kernel(
     stride_hb,
     stride_ht,
     stride_hd,
+    stride_h0b,
+    stride_h0d,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
     FP16: tl.constexpr,
 ):
-    """App. A: h_t = f(0, x_t). Fully parallel, no scan."""
+    """App. A: ``h_t = f(h_{t-1}, x_t)`` in parallel; only t=0 sees ``h0``."""
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
     pid_d = tl.program_id(2)
@@ -88,10 +94,16 @@ def _gru_init_kernel(
     offs_t = t0 + tl.arange(0, BLOCK_T)
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
+    dmask = offs_d < d_h
     zx, rx, nx = _load_wx(
         wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd, FP16
     )
-    h_new, _ = _gru_pred_j(0.0, zx, rx, nx, 0.0, 0.0, 0.0)
+    az = load_acc(az_ptr + offs_d, dmask, 0.0, FP16)
+    ar = load_acc(ar_ptr + offs_d, dmask, 0.0, FP16)
+    an = load_acc(an_ptr + offs_d, dmask, 0.0, FP16)
+    h0 = load_acc(h0_ptr + pid_b * stride_h0b + offs_d * stride_h0d, dmask, 0.0, FP16)
+    h_prev = tl.where((offs_t == 0)[:, None], h0[None, :], 0.0)
+    h_new, _ = _gru_pred_j(h_prev, zx, rx, nx, az, ar, an)
     store_acc(
         h_ptr + pid_b * stride_hb + offs_t[:, None] * stride_ht + offs_d[None, :] * stride_hd,
         h_new,
@@ -107,6 +119,7 @@ def _gru_cell_local_scan_kernel(
     az_ptr,
     ar_ptr,
     an_ptr,
+    h0_ptr,
     j_loc_ptr,
     r_loc_ptr,
     agg_j_ptr,
@@ -116,6 +129,8 @@ def _gru_cell_local_scan_kernel(
     stride_hb,
     stride_ht,
     stride_hd,
+    stride_h0b,
+    stride_h0d,
     stride_wb,
     stride_wt,
     stride_wd,
@@ -163,6 +178,8 @@ def _gru_cell_local_scan_kernel(
         0.0,
         FP16,
     )
+    h0 = load_acc(h0_ptr + pid_b * stride_h0b + offs_d * stride_h0d, dmask, 0.0, FP16)
+    h_prev = tl.where((offs_t == 0)[:, None], h0[None, :], h_prev)
     zx, rx, nx = _load_wx(
         wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd, FP16
     )
@@ -347,9 +364,12 @@ def newton_gru_fused(
     *,
     max_iters: int,
     omega: float,
+    h0: Tensor | None = None,
 ) -> Tensor:
-    """Alg. 1 for diagonal ParaGRU. ``wx`` is ``W_x(x)`` with shape ``(B, T, 3 d_h)``."""
-    fp16 = check_cuda_real(wx, a_z, a_r, a_n, name="newton_gru_fused")
+    """Alg. 1 for diagonal ParaGRU. ``wx`` is ``W_x(x)`` with shape ``(B, T, 3 d_h)``.
+
+    ``h0`` is paper ``h_0`` (default zeros), shape ``(B, d_h)``.
+    """
     wx = wx.contiguous()
     a_z = a_z.contiguous()
     a_r = a_r.contiguous()
@@ -358,6 +378,15 @@ def newton_gru_fused(
     d_h = a_z.numel()
     if three_d != 3 * d_h:
         raise ValueError(f"wx last dim {three_d} != 3 * d_h={3 * d_h}")
+    if h0 is None:
+        h0 = wx.new_zeros(batch, d_h)
+    else:
+        h0 = h0.contiguous()
+        if h0.shape != (batch, d_h):
+            raise ValueError(f"h0 shape {tuple(h0.shape)} != {(batch, d_h)}")
+        if h0.dtype != wx.dtype:
+            h0 = h0.to(dtype=wx.dtype)
+    fp16 = check_cuda_real(wx, a_z, a_r, a_n, h0, name="newton_gru_fused")
     n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
     if n_chunks > _CHUNK_PAD:
         raise ValueError(
@@ -370,10 +399,16 @@ def newton_gru_fused(
     _gru_init_kernel[grid_td](
         wx,
         h,
+        a_z,
+        a_r,
+        a_n,
+        h0,
         d_h,
         time,
         *wx.stride(),
         *h.stride(),
+        h0.stride(0),
+        h0.stride(1),
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
         FP16=fp16,
@@ -394,6 +429,7 @@ def newton_gru_fused(
             a_z,
             a_r,
             a_n,
+            h0,
             j_loc,
             r_loc,
             agg_j,
@@ -401,6 +437,8 @@ def newton_gru_fused(
             time,
             d_h,
             *h.stride(),
+            h0.stride(0),
+            h0.stride(1),
             *wx.stride(),
             *j_loc.stride(),
             *r_loc.stride(),
@@ -408,7 +446,7 @@ def newton_gru_fused(
             *agg_r.stride(),
             BLOCK_T=_BLOCK_T,
             BLOCK_D=_BLOCK_D,
-        FP16=fp16,
+            FP16=fp16,
         )
         if n_chunks == 1:
             h.copy_((h.float() + float(omega) * r_loc.float()).to(h.dtype))
@@ -424,7 +462,7 @@ def newton_gru_fused(
                 *incl_r.stride(),
                 CHUNK_PAD=_CHUNK_PAD,
                 BLOCK_D=_BLOCK_D,
-        FP16=fp16,
+            FP16=fp16,
             )
             _gru_apply_update_kernel[grid_td](
                 h,
@@ -440,7 +478,7 @@ def newton_gru_fused(
                 *incl_r.stride(),
                 BLOCK_T=_BLOCK_T,
                 BLOCK_D=_BLOCK_D,
-        FP16=fp16,
+            FP16=fp16,
             )
         if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
             log.debug(

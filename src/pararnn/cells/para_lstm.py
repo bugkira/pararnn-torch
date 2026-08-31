@@ -59,6 +59,16 @@ class ParaLSTM(nn.Module):
             return t
         return t.clamp(-self.max_recurrent_norm, self.max_recurrent_norm)
 
+    def clipped_recurrent(self) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        """App. C.1 clip of ``a_f, a_z, a_o, c_f, c_o``."""
+        return (
+            self._clip(self.a_f),
+            self._clip(self.a_z),
+            self._clip(self.a_o),
+            self._clip(self.c_f),
+            self._clip(self.c_o),
+        )
+
     def step(
         self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
     ) -> Tensor:
@@ -104,8 +114,7 @@ class ParaLSTM(nn.Module):
     ) -> _LSTMActs:
         c_prev = state_prev[..., LSTM_CELL, :]
         h_prev = state_prev[..., LSTM_HIDDEN, :]
-        a_f, a_z, a_o = self._clip(self.a_f), self._clip(self.a_z), self._clip(self.a_o)
-        peephole_f, peephole_o = self._clip(self.c_f), self._clip(self.c_o)
+        a_f, a_z, a_o, peephole_f, peephole_o = self.clipped_recurrent()
         if wx is None:
             wx = self.W_x(x)
         fx, zx, ox = wx.chunk(3, dim=-1)

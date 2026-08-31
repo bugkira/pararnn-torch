@@ -19,8 +19,8 @@ import torch
 import yaml
 from torch.profiler import ProfilerActivity, profile, record_function
 
+from pararnn import device, wait_until_free
 from pararnn.cells import ParaGRU, ParaLSTM
-from pararnn.device import experiment_device, wait_until_free
 from pararnn.logconf import setup_logging
 from pararnn.solvers import NewtonConfig, newton_apply, sequential_apply
 
@@ -89,10 +89,15 @@ def _top_cuda_rows(prof: profile, n: int = 15) -> list[dict[str, str | float | i
 def main() -> None:
     setup_logging()
     spec = yaml.safe_load(CONFIG_PATH.read_text())
-    device = experiment_device()
+    if device.type != "cuda":
+        raise RuntimeError("profile needs the 2080 Ti (PARARNN_DEVICE to override)")
     torch.cuda.set_device(device)
     wait_until_free(device, min_free_gib=4.0, poll_s=30.0)
-    newton_cfg = NewtonConfig(max_iters=int(spec["newton_iters"]))
+    newton_cfg = NewtonConfig(
+        max_iters=int(spec["newton_iters"]),
+        scan_backend="eager",
+        residual_atol=None,
+    )
     out_dir = ROOT / "outputs" / "profile"
     out_dir.mkdir(parents=True, exist_ok=True)
 

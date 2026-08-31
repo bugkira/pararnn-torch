@@ -87,7 +87,7 @@ def _align_grads(
 def _gru_vjp(
     cell: ParaGRU, h_prev: Tensor, x: Tensor, mu: Tensor
 ) -> tuple[Tensor, tuple[Tensor | None, ...]]:
-    a_z, a_r, a_n = cell._clipped_a()
+    a_z, a_r, a_n = cell.clipped_a()
     wx = cell.W_x(x)
     if mu.is_cuda:
         from pararnn.kernels.vjp_gru import gru_recurrence_vjp
@@ -139,11 +139,7 @@ def _gru_elementwise(
 def _lstm_vjp(
     cell: ParaLSTM, state_prev: Tensor, x: Tensor, mu: Tensor
 ) -> tuple[Tensor, tuple[Tensor | None, ...]]:
-    a_f = cell._clip(cell.a_f)
-    a_z = cell._clip(cell.a_z)
-    a_o = cell._clip(cell.a_o)
-    c_f = cell._clip(cell.c_f)
-    c_o = cell._clip(cell.c_o)
+    a_f, a_z, a_o, c_f, c_o = cell.clipped_recurrent()
     wx = cell.W_x(x)
     if mu.is_cuda:
         from pararnn.kernels.vjp_lstm import lstm_recurrence_vjp

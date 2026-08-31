@@ -6,20 +6,13 @@ import pytest
 import torch
 from torch import Tensor, nn
 
+from pararnn import NewtonConfig, ParaRNN, device, newton_apply, sequential_apply
 from pararnn.cells import ParaGRU, ParaLSTM
-from pararnn.device import experiment_device
-from pararnn.layers import ParaRNN
-from pararnn.solvers import NewtonConfig, newton_apply, sequential_apply
-
-
-def _device() -> torch.device:
-    return experiment_device(allow_cpu=True)
 
 
 @torch.no_grad()
 def test_train_matches_newton_apply():
     torch.manual_seed(70)
-    device = _device()
     cell = ParaGRU(d_in=6, d_h=8).to(device)
     cfg = NewtonConfig(max_iters=3)
     layer = ParaRNN(cell, config=cfg)
@@ -31,7 +24,6 @@ def test_train_matches_newton_apply():
 @torch.no_grad()
 def test_eval_matches_sequential_apply():
     torch.manual_seed(71)
-    device = _device()
     cell = ParaGRU(d_in=6, d_h=8).to(device)
     layer = ParaRNN(cell)
     layer.eval()
@@ -42,7 +34,6 @@ def test_eval_matches_sequential_apply():
 @torch.no_grad()
 def test_train_eval_switch_solvers():
     torch.manual_seed(72)
-    device = _device()
     cell = ParaGRU(d_in=5, d_h=7).to(device)
     cfg = NewtonConfig(max_iters=3)
     layer = ParaRNN(cell, config=cfg)
@@ -59,7 +50,6 @@ def test_train_eval_switch_solvers():
 
 def test_grads_match_sequential_bptt():
     torch.manual_seed(73)
-    device = _device()
     d_in, d_h, t = 5, 7, 16
     x = torch.randn(2, t, d_in, device=device)
     w = torch.randn(2, t, d_h, device=device)
@@ -81,7 +71,6 @@ def test_grads_match_sequential_bptt():
 @torch.no_grad()
 def test_two_layer_gru_din_neq_dh():
     torch.manual_seed(74)
-    device = _device()
     cell = ParaGRU(d_in=6, d_h=10).to(device)
     cfg = NewtonConfig(max_iters=3)
     layer = ParaRNN(cell, num_layers=2, config=cfg)
@@ -107,7 +96,6 @@ def test_two_layer_gru_din_neq_dh():
 @torch.no_grad()
 def test_two_layer_lstm_feeds_hidden_slot():
     torch.manual_seed(75)
-    device = _device()
     cell = ParaLSTM(d_in=5, d_h=8).to(device)
     cfg = NewtonConfig(max_iters=3)
     layer = ParaRNN(cell, num_layers=2, config=cfg)
@@ -123,7 +111,6 @@ def test_two_layer_lstm_feeds_hidden_slot():
 @torch.no_grad()
 def test_h0_eval_and_train():
     torch.manual_seed(76)
-    device = _device()
     cell = ParaGRU(d_in=4, d_h=6).to(device)
     cfg = NewtonConfig(max_iters=3)
     layer = ParaRNN(cell, config=cfg)
@@ -149,3 +136,32 @@ def test_custom_cell_num_layers_gt1_raises():
 
     with pytest.raises(TypeError, match="num_layers"):
         ParaRNN(Tiny(), num_layers=2)
+
+
+@torch.no_grad()
+def test_list_of_cells_ctor():
+    torch.manual_seed(77)
+    a = ParaGRU(d_in=5, d_h=8).to(device)
+    b = ParaGRU(d_in=8, d_h=8).to(device)
+    cfg = NewtonConfig(max_iters=3, scan_backend="eager")
+    layer = ParaRNN([a, b], config=cfg)
+    layer.eval()
+    x = torch.randn(2, 6, 5, device=device)
+    y = layer(x)
+    h = sequential_apply(a, x)
+    h = sequential_apply(b, h)
+    torch.testing.assert_close(y, h, atol=0, rtol=0)
+
+
+@torch.no_grad()
+def test_return_hidden_and_output_hidden_lstm():
+    torch.manual_seed(78)
+    cell = ParaLSTM(d_in=4, d_h=6).to(device)
+    layer = ParaRNN(cell, return_hidden=True, output_hidden=True)
+    layer.eval()
+    x = torch.randn(2, 7, 4, device=device)
+    y, h_last = layer(x)
+    full = sequential_apply(cell, x)
+    assert y.shape == (2, 7, 6)
+    torch.testing.assert_close(y, full[:, :, 1, :], atol=0, rtol=0)
+    torch.testing.assert_close(h_last, full[:, -1], atol=0, rtol=0)

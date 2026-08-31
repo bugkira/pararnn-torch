@@ -2,8 +2,7 @@
 
     uv run python -m pararnn.train.toy --config configs/train/toy.yaml
 
-Device is chosen here via ``experiment_device()`` (2080 Ti by name), not inside
-``ParaRNN.forward``.
+``pararnn.device`` is the 2080 Ti (by name), not something ``ParaRNN.forward`` picks.
 """
 
 from __future__ import annotations
@@ -19,12 +18,8 @@ import yaml
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from pararnn.cells import ParaGRU
-from pararnn.device import experiment_device, wait_until_free
-from pararnn.layers import ParaRNN
-from pararnn.layout import prepend_state
+from pararnn import NewtonConfig, ParaGRU, ParaRNN, device, wait_until_free
 from pararnn.logconf import setup_logging
-from pararnn.solvers import NewtonConfig
 
 log = logging.getLogger("toy")
 ROOT = Path(__file__).resolve().parents[3]
@@ -38,10 +33,8 @@ class _CopyLM(nn.Module):
         self.rnn = ParaRNN(ParaGRU(d_in=d_h, d_h=d_h), config=newton_cfg)
         self.head = nn.Linear(d_h, vocab)
 
-    def forward(self, tokens: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        emb = self.embed(tokens)
-        states = self.rnn(emb)
-        return self.head(states), emb, states
+    def forward(self, tokens: Tensor) -> Tensor:
+        return self.head(self.rnn(self.embed(tokens)))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -52,7 +45,6 @@ def main(argv: list[str] | None = None) -> None:
     spec = yaml.safe_load(args.config.read_text())
     _validate_spec(spec)
 
-    device = experiment_device()
     if device.type == "cuda":
         torch.cuda.set_device(device)
         wait_until_free(device, min_free_gib=1.0, poll_s=30.0)
@@ -118,7 +110,7 @@ def main(argv: list[str] | None = None) -> None:
                     spec, device, lr=lr, scan_backend=used_backend
                 )
             except torch.cuda.OutOfMemoryError:
-                if used_backend != "fused":
+                if used_backend not in ("fused", "auto"):
                     raise
                 log.warning(
                     "fused_oom_fallback_eager gpu=%s (staying on this card)",
@@ -193,8 +185,12 @@ def _train(
         tokens = torch.randint(0, vocab, (batch, seq_len), generator=gen, device="cpu").to(
             device
         )
-        logits, emb, states = model(tokens)
-        residual = _max_residual(model.rnn.layers[0], emb, states)
+        logits = model(tokens)
+        residual = float("nan")
+        resolved = scan_backend
+        if model.rnn.last_stats:
+            residual = model.rnn.last_stats[0].max_residual
+            resolved = model.rnn.last_stats[0].scan_backend or scan_backend
         loss = F.cross_entropy(logits.reshape(-1, vocab), tokens.reshape(-1))
         loss_f = float(loss.detach())
         losses.append(loss_f)
@@ -205,7 +201,7 @@ def _train(
             loss_f,
             residual,
             lr,
-            scan_backend,
+            resolved,
             seq_len,
             batch,
             d_h,
@@ -220,13 +216,10 @@ def _train(
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
-    return losses, residuals, scan_backend
-
-
-def _max_residual(cell: nn.Module, x: Tensor, states: Tensor) -> float:
-    """Cheap: one extra ``step`` vs storing Newton history."""
-    pred = cell.step(prepend_state(states, None), x)
-    return float((pred - states).detach().abs().amax())
+    used = scan_backend
+    if model.rnn.last_stats:
+        used = model.rnn.last_stats[0].scan_backend or scan_backend
+    return losses, residuals, used
 
 
 def _validate_spec(spec: dict) -> None:

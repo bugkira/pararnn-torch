@@ -34,9 +34,9 @@ weight_decay: 0.0
 # configs/bench/newton_fp16.yaml. Turing: not bf16.
 dtype: float32
 
-# CUDA 2080 Ti: fused cell+J+scan (Triton). If fused OOM, eager on the same
-# GPU — never the 3060. CPU would be eager; this script requires the Ti.
-scan_backend: fused
+# CUDA 2080 Ti: scan_backend=auto → fused for ParaGRU (tensor device, not
+# a lab GPU helper in forward). If fused OOM, eager on the same GPU — never the 3060.
+scan_backend: auto
 
 seed: 0
 cell: para_gru  # paper §3 diagonal GRU
@@ -48,4 +48,4 @@ why: |
   Prove ParaRNN.train() (Newton) + a linear head can be optimized with AdamW.
   Task is token copy (input = target), not SlimPajama / paper Table 3.
   K=3 from App. A. lr=3e-3 with Shallue-style 3-point fallback {1e-3, 1e-2}.
-  wd=0 because there is nothing to regularize. float32. fused on 2080 Ti.
+  wd=0 because there is nothing to regularize. float32. scan_backend=auto (fused on the Ti).

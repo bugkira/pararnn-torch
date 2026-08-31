@@ -56,7 +56,7 @@ class ParaGRU(nn.Module):
         kaiming_uniform_linear_(self.W_x.weight)
         nn.init.zeros_(self.W_x.bias)
 
-    def _clipped_a(self) -> tuple[Tensor, Tensor, Tensor]:
+    def clipped_a(self) -> tuple[Tensor, Tensor, Tensor]:
         if self.max_recurrent_norm is None:
             return self.a_z, self.a_r, self.a_n
         cap = self.max_recurrent_norm
@@ -96,7 +96,7 @@ class ParaGRU(nn.Module):
     def _recurrence(
         self, h_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
     ) -> _GRUActs:
-        a_z, a_r, a_n = self._clipped_a()
+        a_z, a_r, a_n = self.clipped_a()
         if wx is None:
             wx = self.W_x(x)
         zx, rx, nx = wx.chunk(3, dim=-1)

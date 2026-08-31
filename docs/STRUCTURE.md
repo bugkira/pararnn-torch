@@ -9,7 +9,7 @@ ParaRNN/
 │   ├── literature.md           # annotated bibliography
 │   ├── apple-ml-pararnn.md     # notes on the official repo
 │   ├── bottlenecks.md          # eager Newton+scan: measured bottlenecks, ranked fixes
-│   ├── torchification.md       # plan: solver prototype → drop-in nn.Module
+│   ├── torchification.md       # archive: v0.2 solver → nn.Module (not the live backlog)
 │   ├── STRUCTURE.md            # this file
 │   └── papers/                 # PDFs via scripts/fetch_papers.sh (gitignored)
 ├── third_party/
@@ -35,18 +35,11 @@ ParaRNN/
 └── README.md
 ```
 
-## v0.2 (implemented)
+## v0.3 (implemented)
 
-`cells/` + `layers/` + `solvers/` + `tests/numerics/` + toy train:
+v0.2 plus: `NewtonConfig(scan_backend="auto")` (fused if CUDA ParaGRU/LSTM fp16/32, else Triton scan, else eager); fused kernels prepend `h0`; `NewtonStats` + residual early-stop; `ParaRNN` list-of-cells, `return_hidden`, LSTM `output_hidden`.
 
-1. Sequential unroll of diagonal ParaGRU and CIFG ParaLSTM (paper §3).
-2. Newton + parallel reduction in vectorized PyTorch (paper Alg. 1, App. A init \(h_l^0=f(0,x_l)\), \(K=3\)). Nonzero `h0` is supported; fused + nonzero `h0` falls back to eager.
-3. `ParaRNN` sequence module: `.train()` Newton, `.eval()` sequential. Custom cells: `d_h` + `step` (`cells/protocol.py`).
-4. Test: max residual and max |H_par − H_seq| vs sequential, float32 then **fp16** (Turing; not bf16). Wrapper vs raw solvers; grads vs BPTT.
-5. Generic cell: Autograd Jacobian (`jacobian.py`); packed eq. 2.6 VJP for ParaGRU/LSTM.
-6. Toy copy smoke: `python -m pararnn.train.toy` (MLflow `toy-copy`).
-
-Not in v0.2: Mamba predictor, IFT adjoint, HF LM, pretrained weights. Optional Triton **diag / 2×2 scan**, **fused Newton**, and **packed VJP** are in `kernels/` (eager remains default).
+Not in v0.3: Mamba predictor, IFT adjoint, HF LM, Para-sLSTM, pretrained weights.
 
 ## Naming
 
