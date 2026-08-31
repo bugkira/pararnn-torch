@@ -1,0 +1,28 @@
+# Kernel profile of the Newton+scan hot path (bottlenecks.md #1).
+# Shapes match cell_forward.yaml (batch=8, d_h=256, K=3, float32, 2080 Ti)
+# so the trace can be compared to the App. B timing table. Not a replacement
+# for that table: warmup/n_runs here are for CUPTI capture, not HPC min-ms.
+#
+# Cases: GRU T=64 (launch-bound plateau), GRU T=2048 (scan-bound), LSTM T=512
+# (2×2 scan, still fits 11 GiB; T=2048 LSTM was 7.5 GiB and crowds nsys).
+# Sequential is included to measure bottlenecks.md #2 (step without J).
+
+newton_iters: 3
+batch: 8
+d_in: 256
+d_h: 256
+dtype: float32
+# 5 warmup + 8 active: enough for stable kernel averages, short enough for nsys.
+profiler_wait: 1
+profiler_warmup: 2
+profiler_active: 8
+# CUDA-event check that sequential dropped vs the pre-#2 CSV. Not App. B (20/100).
+timing_warmup: 10
+timing_runs: 20
+cases:
+  - cell: ParaGRU
+    T: 64
+  - cell: ParaGRU
+    T: 2048
+  - cell: ParaLSTM
+    T: 512

@@ -1,0 +1,30 @@
+---
+description: Reproducibility, sources, and honest scope for this ML research repo
+alwaysApply: true
+---
+
+# Research engineering
+
+## Reproducibility
+
+- Seed Python, NumPy, and PyTorch. Record `torch.cuda.get_device_name` and dtype.
+- Configs are files (YAML/TOML), not buried argparse defaults. A run is `uv run python -m pararnn.train --config ...`.
+- Tests first for numerics: parallel Newton+PCR must match sequential unroll within a documented tolerance (float32 vs bfloat16 separately).
+
+## Sources of truth
+
+- Algorithm: Danieli et al., *ParaRNN*, arXiv:2510.21450. Read `docs/literature.md` and `docs/apple-ml-pararnn.md` before implementing a cell or solver.
+- Official code is a **read-only reference** in `third_party/ml-pararnn` (Apple license, not MIT). Never copy it into `src/`. Reimplement from the paper.
+- This repo's extras (HF wrappers, Mamba predictor + 1-step Newton, IFT adjoint) are **ours** — do not attribute them to Apple.
+- Apple does **not** initialize Newton from zeros. Default guess is \(h_l^0 = f(0, x_l)\) (paper App. A). The README draft was wrong on this.
+
+## Scope discipline
+
+- Prototype in vectorized PyTorch. No CUDA/Triton until sequential↔parallel tests pass.
+- Do not stub a Hugging Face `PreTrainedModel` that cannot run. Public API grows with working code.
+- README claims must match the repo. If a feature is on the roadmap, it is unchecked and not imported.
+
+## Honesty
+
+- Trade-offs (Jacobian structure, fixed-state RNNs vs needle-in-haystack) stay in docs; do not oversell vs Transformers.
+- If Apple's library already does X, say so and justify why we reimplement or wrap.

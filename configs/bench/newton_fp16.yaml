@@ -1,0 +1,30 @@
+# fp16 DRAM / fp32 Newton accumulators on Turing. Not bf16 (no bf16 TC).
+# Same shapes as cell_forward.yaml / newton_fused.yaml. Smoke 10/50, not App. B.
+# modes: fused only — compare fp32 vs fp16 fused in one process.
+# W_x GEMM uses fp16 tensor cores; scan is DRAM-bound (half traffic).
+# K=3: App. A. batch=8, d_h=256: Table 3 per-head.
+# seq_lens: one-tile (T≤128 GRU / ≤64 LSTM) and two-level (LM length 2048).
+
+newton_iters: 3
+batch: 8
+d_in: 256
+d_h: 256
+dtype: float16
+dtypes: [float32, float16]
+warmup: 10
+n_runs: 50
+seq_lens: [64, 256, 512, 2048, 4096]
+seq_lens_sequential_max: 4096
+modes: [newton_fused]
+newton_max_t:
+  ParaGRU: 4096
+  ParaLSTM: 4096
+mlflow_experiment: newton-fp16-bench
+mlflow_run_name: fused-fp16-vs-fp32
+csv: outputs/bench_newton_fp16.csv
+why: >
+  Fused Newton fp16 vs fp32 on 2080 Ti. fp16 is Turing tensor cores for W_x
+  and half scan DRAM; cell+scan algebra stays fp32 inside Triton. Not AMP
+  like A100, not bf16. Protocol is 10/50 smoke, not App. B. K=3 App. A.
+  Shapes match cell_forward.yaml. Agreement is vs sequential in the same
+  dtype (fp16 atol 2e-3), not vs fp32 sequential.

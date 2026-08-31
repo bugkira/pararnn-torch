@@ -1,0 +1,7 @@
+# Cell defaults. Values from Danieli et al. 2025 App. C.1 unless noted.
+# max_recurrent_norm: 0.5 for LM-length sequences; 0.90 on synthetic tasks except parity.
+
+d_in: 32
+d_h: 64
+max_recurrent_norm: 0.5
+newton_iters: 3

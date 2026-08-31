@@ -1,0 +1,40 @@
+# Cell-level forward timing. Justifications (do not "use defaults").
+#
+# protocol: Danieli et al. 2025 App. B — CUDA Events, 20 dry runs, 100 timed
+#   runs, report the *minimum* (HPC practice; mean is polluted by throttling).
+#   Paper used A100 + torch.compile; we are on 2080 Ti, eager PyTorch scan
+#   (no fused CUDA). Do not compare these ms to fig. 2/5.
+# newton_iters: 3 — App. A, residual to sequential/machine precision.
+# dtype: float32 — 2080 Ti is Turing, no bf16 tensor cores. Paper cell plots
+#   in App. B are float32. If this GPU is replaced by Ampere+, re-run fp32 vs bf16.
+# batch: 8 — App. A residual curves. Fig. 2 does not state B; if occupancy
+#   looks launch-bound, sweep B in {1,8,32} before changing d_h.
+# d_in = d_h = 256 — 400M ParaGRU/LSTM in Table 3: d_model=1024, n_heads=4,
+#   so per-head state is 256 (C.1 multi-head split). Fallback: C.2 mixer d_h=64
+#   if 256 OOMs; do not invent 512 without a table-3 scale.
+# seq_lens: powers of two from 2^4, paper fig. 2. Cap sequential at 2^12 on
+#   this card because a Python unroll is kernel-launch bound; parallel can go
+#   higher. 2048 is the LM training length (Table 4).
+# newton_max_t: 2080 Ti is 11 GiB. Do not switch to the 3060. After
+#   elementwise 2×2 + Blelloch, ParaLSTM T=4096 Newton peaked 1.4 GiB
+#   (was OOM). Keep the cap at 4096 with the seq_lens list.
+# sequential_compile_mode: reduce-overhead — bottlenecks.md #12. cell.step
+#   shapes are static across t, so CUDA graphs are the honest sequential
+#   baseline (PyTorch 2 compile tutorial). Not the paper's A100 compile of
+#   fused Newton. Fallback: default if graphs fail on this driver.
+# Compile of Newton is a separate config: configs/bench/newton_compile.yaml
+#   (not a library API; torch.compile at the bench call site).
+
+newton_iters: 3
+batch: 8
+d_in: 256
+d_h: 256
+dtype: float32
+warmup: 20
+n_runs: 100
+seq_lens: [16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+seq_lens_sequential_max: 4096
+sequential_compile_mode: reduce-overhead
+newton_max_t:
+  ParaGRU: 4096
+  ParaLSTM: 4096

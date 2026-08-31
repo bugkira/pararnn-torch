@@ -1,0 +1,41 @@
+# Compile-Newton mode. Same App. B protocol and shapes as cell_forward.yaml.
+# torch.compile is at the *call site* (scripts/bench_time.py), not in src/.
+# Eager remains the library default; this run answers “does Dynamo+CUDA graphs
+# cut the Blelloch launch tax?”
+#
+# newton_compile_mode: reduce-overhead — PyTorch 2 compile tutorial: CUDA-graph
+#   the whole Newton forward at static (B, T, d_h). Same justification as
+#   sequential_compile_mode. Fallback: default if graphs fail on this driver
+#   (graph breaks from the Blelloch Python while). Not max-autotune: that
+#   searches GEMM kernels; the scan is elementwise.
+# Dynamo recompile_limit: raised in the script (8 → 64) because 9 seq_lens
+#   specialize _scan once per T; the default silently falls back to eager.
+# compile_s / break_even_forwards: first Dynamo+graph capture is timed
+#   separately. App. B min_ms is *after* warmup and does not include it.
+# modes: newton + newton_compiled only. Sequential timing is cell_forward.yaml;
+#   this run still checks compiled Newton vs sequential unroll (1e-4).
+# csv / mlflow: separate files so this does not overwrite the App. B table.
+
+newton_iters: 3
+batch: 8
+d_in: 256
+d_h: 256
+dtype: float32
+warmup: 20
+n_runs: 100
+seq_lens: [16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+seq_lens_sequential_max: 4096
+sequential_compile_mode: reduce-overhead
+newton_compile_mode: reduce-overhead
+modes: [newton, newton_compiled]
+newton_max_t:
+  ParaGRU: 4096
+  ParaLSTM: 4096
+mlflow_experiment: newton-compile-bench
+mlflow_run_name: newton-eager-vs-compiled
+csv: outputs/bench_newton_compile.csv
+why: >
+  Eager Newton+Blelloch vs torch.compile(newton_apply, mode=reduce-overhead)
+  on 2080 Ti. Compile is not in src/. Protocol: Danieli et al. 2025 App. B
+  (CUDA Events, 20 warmup, 100 runs, min). K=3 App. A. Shapes match
+  cell_forward.yaml. Speedup is vs eager Newton, not vs sequential.
