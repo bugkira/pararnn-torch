@@ -2,7 +2,8 @@
 
 A cell is any ``nn.Module`` with ``d_h`` and ``step(h_prev, x)``. No base class.
 Ones-JVP (default Autograd Jacobian) is exact Newton iff ``f`` is channelwise
-in ``h``; mixing channels needs ``NewtonConfig(jac_structure='dense')``.
+in ``h``. Four-slot channelwise cells (sLSTM diag mix) set
+``cell.jac_structure='block4'``. Mixing channels needs ``'dense'``.
 Fused Newton remains a handwritten Triton kernel for ParaGRU / ParaLSTM only,
 not a generic ``f``. ``scan_backend='auto'`` picks fused on CUDA ParaGRU/LSTM
 fp16/fp32, else Triton scan + ``step``, else eager.
@@ -19,8 +20,8 @@ from torch import Tensor, nn
 class RNNCell(Protocol):
     """Minimal surface the solvers call.
 
-    ``state_slots``: ``1`` → state ``(..., d_h)``; ``2`` → ``(..., 2, d_h)``
-    (index 0 = cell ``c``, 1 = hidden ``h``). Default 1 if omitted.
+    ``state_slots``: ``1`` → ``(..., d_h)``; ``2`` → ``(..., 2, d_h)`` (c, h);
+    ``4`` → ``(..., 4, d_h)`` (sLSTM: c, n, m, h). Default 1 if omitted.
     ``step_with_jacobian`` and ``wx=`` on ``step`` are optional fast paths.
     """
 
@@ -41,7 +42,7 @@ def check_cell(cell: nn.Module) -> None:
     if not callable(getattr(cell, "step", None)):
         raise TypeError(f"{type(cell).__name__} needs a step(h_prev, x) method")
     slots = getattr(cell, "state_slots", 1)
-    if slots not in (1, 2):
+    if slots not in (1, 2, 4):
         raise TypeError(
-            f"{type(cell).__name__}.state_slots must be 1 or 2, got {slots!r}"
+            f"{type(cell).__name__}.state_slots must be 1, 2, or 4, got {slots!r}"
         )

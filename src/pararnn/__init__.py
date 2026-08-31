@@ -1,7 +1,7 @@
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
-from pararnn.cells import ParaGRU, ParaLSTM
+from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
 from pararnn.hw import wait_until_free
 from pararnn.layers import ParaRNN
 from pararnn.solvers import NewtonConfig, NewtonStats, newton_apply, sequential_apply
@@ -17,6 +17,7 @@ __all__ = [
     "ParaGRU",
     "ParaLSTM",
     "ParaRNN",
+    "ParaSLSTM",
     "device",
     "newton_apply",
     "sequential_apply",

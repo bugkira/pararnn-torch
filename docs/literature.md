@@ -18,7 +18,7 @@ PDFs: `bash scripts/fetch_papers.sh` → `docs/papers/`. This is the working set
 | Gu & Dao, **Mamba** | [2312.00752](https://arxiv.org/abs/2312.00752) | Selective linear SSM + hardware scan. Candidate **predictor** for hybrid PC (our idea, not Apple's). Inits (S4D-Real, \(\Delta\in[10^{-3},10^{-1}]\)) are the cited defaults if we add a Mamba warm-start. |
 | Dao & Gu, **Mamba-2** | [2405.21060](https://arxiv.org/abs/2405.21060) | SSD / faster scan. ParaRNN paper's LM baseline. Prefer Mamba-2 as the linear baseline and as a possible predictor. |
 | Feng et al., **minGRU / minLSTM** | [2410.01201](https://arxiv.org/abs/2410.01201) | Parallel **linear** recurrences (no \(h_{t-1}\) nonlinearity in the state). Contrast class: not ParaRNN. |
-| Beck et al., **xLSTM** | [2405.04517](https://arxiv.org/abs/2405.04517) | sLSTM linear+scan; mLSTM nonlinear and sequential. Apple's `a_init_fn="xlstm"` comes from this family. |
+| Beck et al., **xLSTM** | [2405.04517](https://arxiv.org/abs/2405.04517) | **mLSTM** is the matrix memory that scans like linear attention. **sLSTM** is the nonlinear cell (exp gates, stabilizer, mixing) and stays sequential in FlashRNN. Apple's `a_init_fn="xlstm"` is init, not this cell. See [`para-slstm.md`](para-slstm.md). |
 | Merrill et al., **Illusion of State** | [2404.08819](https://arxiv.org/abs/2404.08819) | Linear SSMs stay in \(\mathsf{TC}^0\); they do not get RNN-style state tracking (parity, permutation composition). Justification for **keeping** nonlinear recurrence, not replacing it with Mamba. |
 | Sarrof et al., SSM formal languages | [2405.17394](https://arxiv.org/abs/2405.17394) | Finer map of which regular languages SSMs can/cannot do (parity vs flip-flop). Eval ideas for later syntactic benchmarks. |
 

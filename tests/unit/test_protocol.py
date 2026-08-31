@@ -6,17 +6,20 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from pararnn.cells import ParaGRU, ParaLSTM
+from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
 from pararnn.cells.protocol import RNNCell, check_cell
 
 
 def test_paragru_and_paralstm_satisfy_protocol():
     gru = ParaGRU(d_in=4, d_h=5)
     lstm = ParaLSTM(d_in=4, d_h=5)
+    slstm = ParaSLSTM(d_in=4, d_h=5)
     check_cell(gru)
     check_cell(lstm)
+    check_cell(slstm)
     assert isinstance(gru, RNNCell)
     assert isinstance(lstm, RNNCell)
+    assert isinstance(slstm, RNNCell)
 
 
 def test_check_cell_rejects_missing_d_h():

@@ -10,7 +10,6 @@ import torch
 from torch import Tensor, nn
 
 from pararnn.cells.protocol import check_cell
-from pararnn.layout import LSTM_HIDDEN
 from pararnn.solvers.newton import NewtonConfig, NewtonStats, newton_apply
 from pararnn.solvers.sequential import sequential_apply
 
@@ -25,8 +24,9 @@ class ParaRNN(nn.Module):
     stacking is naive; the caller owns the backbone.
 
     ``x`` is ``(batch, time, d_in)``. Default output is the last cell's full
-    state (GRU: ``(B, T, d_h)``; LSTM: ``(B, T, 2, d_h)``). Intermediate LSTM
-    layers feed only the hidden slot into the next layer.
+    state (GRU: ``(B, T, d_h)``; LSTM: ``(B, T, 2, d_h)``; sLSTM:
+    ``(B, T, 4, d_h)``). Intermediate multi-slot layers feed only the hidden
+    slot into the next layer.
     """
 
     def __init__(
@@ -74,8 +74,9 @@ class ParaRNN(nn.Module):
                 h = _next_layer_input(h, cell)
         y = h
         last = h[:, -1]
-        if self.output_hidden and getattr(self.layers[-1], "state_slots", 1) == 2:
-            y = h[:, :, LSTM_HIDDEN, :]
+        slot = _hidden_slot(self.layers[-1])
+        if self.output_hidden and slot is not None:
+            y = h[:, :, slot, :]
         if self.return_hidden:
             return y, last
         return y
@@ -124,8 +125,9 @@ def _extra_layers(cell: nn.Module, n_extra: int) -> list[nn.Module]:
 def _stack_kwargs(cell: nn.Module) -> dict:
     sig = inspect.signature(type(cell).__init__)
     kw: dict = {}
-    if "max_recurrent_norm" in sig.parameters and hasattr(cell, "max_recurrent_norm"):
-        kw["max_recurrent_norm"] = cell.max_recurrent_norm
+    for name in ("max_recurrent_norm", "mix", "eps"):
+        if name in sig.parameters and hasattr(cell, name):
+            kw[name] = getattr(cell, name)
     return kw
 
 
@@ -140,10 +142,17 @@ def _param_device_dtype(module: nn.Module) -> tuple[torch.device, torch.dtype]:
 
 
 def _next_layer_input(states: Tensor, cell: nn.Module) -> Tensor:
+    slot = _hidden_slot(cell)
+    if slot is None:
+        return states
+    return states[:, :, slot, :]
+
+
+def _hidden_slot(cell: nn.Module) -> int | None:
     slots = getattr(cell, "state_slots", 1)
-    if slots == 2:
-        return states[:, :, LSTM_HIDDEN, :]
-    return states
+    if slots == 1:
+        return None
+    return getattr(cell, "hidden_slot", 1)
 
 
 def _split_h0(h0: Tensor | Sequence[Tensor] | None, n_layers: int) -> list[Tensor | None]:

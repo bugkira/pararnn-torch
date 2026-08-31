@@ -6,6 +6,7 @@ fast path for ParaGRU/ParaLSTM (paper §3), not a requirement.
 ``diag``: one JVP with a ones tangent. Exact Newton iff ``f`` is channelwise
 in ``h``; otherwise this is the diagonal quasi-Newton (Gonzalez et al. 2024).
 ``block2``: two JVPs for a 2-slot channelwise state (CIFG-like).
+``block4``: four JVPs for a 4-slot channelwise state (sLSTM, diag mix).
 ``dense``: ``jacrev`` per ``(batch, time)`` — exact for any ``f``, ``O(d_h^3)``
 scan. Not a paper hyperparameter; use it when the cell mixes channels.
 """
@@ -22,9 +23,11 @@ def infer_jac_structure(state: Tensor) -> str:
         return "diag"
     if state.dim() == 4 and state.shape[-2] == 2:
         return "block2"
+    if state.dim() == 4 and state.shape[-2] == 4:
+        return "block4"
     raise TypeError(
         f"cannot infer Jacobian structure from state {tuple(state.shape)}; "
-        "set NewtonConfig.jac_structure to 'diag', 'block2', or 'dense'"
+        "set NewtonConfig.jac_structure to 'diag', 'block2', 'block4', or 'dense'"
     )
 
 
@@ -54,7 +57,11 @@ def step_and_jacobian(
         return cell.step_with_jacobian(h_prev, x, wx=wx)
     if mode != "autograd":
         raise ValueError(f"unknown jacobian {mode!r}")
-    structure = jac_structure or infer_jac_structure(h_prev)
+    structure = (
+        jac_structure
+        or getattr(cell, "jac_structure", None)
+        or infer_jac_structure(h_prev)
+    )
     return jacobian_autograd(cell, h_prev, x, structure=structure)
 
 
@@ -78,33 +85,47 @@ def jacobian_autograd(
         pred, tan = jvp(f, (h0,), (torch.ones_like(h0),))
         return pred, tan
     if structure == "block2":
-        return _jac_block2(f, h0)
+        return _jac_blockn(f, h0, slots=2)
+    if structure == "block4":
+        return _jac_blockn(f, h0, slots=4)
     if structure == "dense":
         return _jac_dense(cell, h0, x0)
     raise ValueError(f"unknown jac_structure {structure!r}")
 
 
-def _jac_block2(f, h0: Tensor) -> tuple[Tensor, Tensor]:
-    if h0.dim() != 4 or h0.shape[-2] != 2:
-        raise ValueError("jac_structure='block2' needs state (batch, time, 2, d_h)")
-    v_c = torch.zeros_like(h0)
-    v_h = torch.zeros_like(h0)
-    v_c[..., 0, :] = 1
-    v_h[..., 1, :] = 1
-    pred, col_c = jvp(f, (h0,), (v_c,))
-    _, col_h = jvp(f, (h0,), (v_h,))
-    # col_*[..., out, d] = J_{out, in} for in in {c, h}. Layout (..., out, in, d).
-    row_c = torch.stack((col_c[..., 0, :], col_h[..., 0, :]), dim=-2)
-    row_h = torch.stack((col_c[..., 1, :], col_h[..., 1, :]), dim=-2)
-    jac = torch.stack((row_c, row_h), dim=-3)
+def _jac_blockn(f, h0: Tensor, *, slots: int) -> tuple[Tensor, Tensor]:
+    if h0.dim() != 4 or h0.shape[-2] != slots:
+        raise ValueError(
+            f"jac_structure='block{slots}' needs state (batch, time, {slots}, d_h)"
+        )
+    cols = []
+    pred = None
+    for s in range(slots):
+        v = torch.zeros_like(h0)
+        v[..., s, :] = 1
+        pred, col = jvp(f, (h0,), (v,))
+        cols.append(col)
+    # (..., out, in, d)
+    jac = torch.stack(cols, dim=-2)
     return pred, jac
 
 
 def _jac_dense(cell: nn.Module, h0: Tensor, x0: Tensor) -> tuple[Tensor, Tensor]:
+    if h0.dim() == 4:
+        slots, d_h = h0.shape[-2], h0.shape[-1]
+        h_flat = h0.reshape(*h0.shape[:2], slots * d_h)
+
+        def f_one(h: Tensor, xt: Tensor) -> Tensor:
+            y = cell.step(h.reshape(slots, d_h), xt)
+            return y.reshape(slots * d_h)
+
+        jac = vmap(vmap(jacrev(f_one)))(h_flat, x0)
+        pred = cell.step(h0, x0)
+        return pred, jac
     if h0.dim() != 3:
         raise ValueError(
-            "jac_structure='dense' needs state (batch, time, d_h); "
-            "flatten a multi-slot state yourself or use block2"
+            "jac_structure='dense' needs state (batch, time, d_h) or "
+            "(batch, time, slots, d_h); flatten anything else yourself"
         )
 
     def f_one(h: Tensor, xt: Tensor) -> Tensor:

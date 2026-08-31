@@ -10,13 +10,14 @@ ParaRNN/
 │   ├── apple-ml-pararnn.md     # notes on the official repo
 │   ├── bottlenecks.md          # eager Newton+scan: measured bottlenecks, ranked fixes
 │   ├── torchification.md       # archive: v0.2 solver → nn.Module (not the live backlog)
+│   ├── para-slstm.md           # sLSTM Newton prototype (research branch)
 │   ├── STRUCTURE.md            # this file
 │   └── papers/                 # PDFs via scripts/fetch_papers.sh (gitignored)
 ├── third_party/
 │   ├── README.md               # how to clone Apple's repo
 │   └── ml-pararnn/             # local clone, gitignored
 ├── src/pararnn/                # our package (import: pararnn)
-│   ├── cells/                  # ParaGRU (diag), ParaLSTM (CIFG, 2x2 block-diag)
+│   ├── cells/                  # ParaGRU (diag), ParaLSTM (CIFG), ParaSLSTM (stage 1)
 │   ├── layers/                 # ParaRNN nn.Module (train Newton / eval sequential)
 │   ├── solvers/                # sequential; Newton; Blelloch; Autograd J; eq. 2.6 bwd
 │   ├── kernels/                # Triton diag + 2×2 scan; fused Newton; packed VJP

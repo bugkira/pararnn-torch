@@ -19,6 +19,7 @@ Code (0-based, batch-first)
     GRU state h: (batch, time, d_h)
     LSTM state: (batch, time, 2, d_h) with index 0 = cell c, 1 = hidden h
         (paper concatenates [c, h]; PyTorch nn.LSTM's hidden tuple is (h, c) — inverted)
+    sLSTM state: (batch, time, 4, d_h) = (c, n, m, h) — Beck et al. 2024, not ParaRNN.
 
 Scan
     Work-efficient Blelloch on 0-based time (pad to ``2^k`` with identity).
@@ -31,6 +32,13 @@ import torch
 
 LSTM_CELL = 0
 LSTM_HIDDEN = 1
+
+# sLSTM (Beck et al. 2024): four-slot state, not Apple's CIFG pair.
+SLSTM_CELL = 0
+SLSTM_NORMALIZER = 1
+SLSTM_STABILIZER = 2
+SLSTM_HIDDEN = 3
+SLSTM_SLOTS = 4
 
 
 def prepend_zero_state(states: torch.Tensor) -> torch.Tensor:

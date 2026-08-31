@@ -30,9 +30,11 @@ from pararnn.layout import prepend_state
 from pararnn.solvers.jacobian import step_and_jacobian
 from pararnn.solvers.scan import (
     reverse_scan_block2,
+    reverse_scan_block4,
     reverse_scan_dense,
     reverse_scan_diag,
     scan_block2,
+    scan_block4,
     scan_dense,
     scan_diag,
 )
@@ -67,7 +69,8 @@ class NewtonConfig:
     # analytic: require step_with_jacobian (paper §3 cells).
     # autograd: torch.func JVP/jacrev — any step(h, x).
     jacobian: str = "auto"
-    # None infers: (B,T,D) → diag JVP; (B,T,2,D) → block2.
+    # None infers from state, or cell.jac_structure (sLSTM: block4 / dense).
+    # diag: (B,T,D); block2: (B,T,2,D); block4: (B,T,4,D) channelwise 4×4.
     # dense: full d_h×d_h (exact mixing cells; O(d^3) scan).
     jac_structure: str | None = None
     # None disables early-stop. Default: skip remaining Newton steps when
@@ -368,19 +371,46 @@ def _input_affine(cell: nn.Module, x: Tensor) -> Tensor | None:
 
 
 def _scan(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tensor:
+    packed = _dense_slot_pack(jac, residual)
+    if packed is not None:
+        jac_f, res_f, shape = packed
+        delta = scan_dense(jac_f, res_f, backend=backend)
+        return delta.reshape(shape)
     if jac.dim() == residual.dim():
         return scan_diag(jac, residual, backend=backend)
     if jac.dim() == 4:
         return scan_dense(jac, residual, backend=backend)
+    if jac.dim() == 5 and jac.shape[-3] == 4:
+        return scan_block4(jac, residual, backend=backend)
     return scan_block2(jac, residual, backend=backend)
 
 
 def _reverse_scan(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Tensor:
+    packed = _dense_slot_pack(jac, partial)
+    if packed is not None:
+        jac_f, part_f, shape = packed
+        mu = reverse_scan_dense(jac_f, part_f, backend=backend)
+        return mu.reshape(shape)
     if jac.dim() == partial.dim():
         return reverse_scan_diag(jac, partial, backend=backend)
     if jac.dim() == 4:
         return reverse_scan_dense(jac, partial, backend=backend)
+    if jac.dim() == 5 and jac.shape[-3] == 4:
+        return reverse_scan_block4(jac, partial, backend=backend)
     return reverse_scan_block2(jac, partial, backend=backend)
+
+
+def _dense_slot_pack(
+    jac: Tensor, vec: Tensor
+) -> tuple[Tensor, Tensor, tuple[int, ...]] | None:
+    """4-slot state with a flattened dense J: ``jac`` is (B, T, S d, S d)."""
+    if jac.dim() != 4 or vec.dim() != 4:
+        return None
+    slots, d_h = vec.shape[-2], vec.shape[-1]
+    sd = slots * d_h
+    if jac.shape[-1] != sd or jac.shape[-2] != sd:
+        return None
+    return jac, vec.reshape(*vec.shape[:2], sd), vec.shape
 
 
 def _zero_state_like_input(cell: nn.Module, x: Tensor) -> Tensor:

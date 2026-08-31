@@ -5,7 +5,7 @@ Work-efficient Blelloch scan on the monoid
 Pad time to the next power of two with the identity ``(I, 0)``.
 Do not use the HTML ``l - 2^i + 1`` index; see ``pararnn.layout``.
 
-2×2 blocks are four elementwise muls (not ``einsum`` → tiny ``bmm``).
+2×2 / 4×4 blocks are elementwise muls (not ``einsum`` → tiny ``bmm``).
 Reverse scan is paper eq. 2.6 (Jacobian transpose, unroll backwards).
 
 ``torch.associative_scan`` is a CUDA/compile prototype without autograd and
@@ -54,6 +54,18 @@ def scan_block2(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Ten
     return _scan_acc(jac, residual, _compose_block2, _fill_ident_block2)
 
 
+def scan_block4(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tensor:
+    """Same recurrence with 4×4 blocks per feature (sLSTM channelwise).
+
+    ``jac``: (batch, time, 4, 4, d) with ``[..., out, in, d]``.
+    ``residual`` / result: (batch, time, 4, d).
+    No Triton kernel yet; ``backend='triton'`` still runs this eager path.
+    """
+    if backend not in ("eager", "triton"):
+        raise ValueError(f"unknown scan backend {backend!r}")
+    return _scan_acc(jac, residual, _compose_block4, _fill_ident_block4)
+
+
 def scan_dense(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tensor:
     """Exact Newton scan for a full ``d_h × d_h`` Jacobian (DEER).
 
@@ -87,6 +99,16 @@ def reverse_scan_block2(
     j_rev = j_t.new_zeros(j_t.shape)
     j_rev[:, 1:] = j_t.flip(1)[:, :-1]
     return scan_block2(j_rev, partial.flip(1), backend=backend).flip(1)
+
+
+def reverse_scan_block4(
+    jac: Tensor, partial: Tensor, *, backend: str = "eager"
+) -> Tensor:
+    """Eq. 2.6 with 4×4 blocks: uses ``J^T`` (swap ``out``/``in``)."""
+    j_t = jac.transpose(-3, -2)
+    j_rev = j_t.new_zeros(j_t.shape)
+    j_rev[:, 1:] = j_t.flip(1)[:, :-1]
+    return scan_block4(j_rev, partial.flip(1), backend=backend).flip(1)
 
 
 def reverse_scan_dense(
@@ -136,6 +158,8 @@ def _blelloch_inclusive(
         return jac * prefix + residual
     if _is_dense(jac, residual):
         return (jac @ prefix.unsqueeze(-1)).squeeze(-1) + residual
+    if jac.shape[-3] == 4:
+        return _mv4(jac, prefix) + residual
     return _mv2(jac, prefix) + residual
 
 
@@ -180,6 +204,12 @@ def _compose_block2(
     return _mm2(j_r, j_l), _mv2(j_r, r_l) + r_r
 
 
+def _compose_block4(
+    j_r: Tensor, r_r: Tensor, j_l: Tensor, r_l: Tensor
+) -> tuple[Tensor, Tensor]:
+    return _mm4(j_r, j_l), _mv4(j_r, r_l) + r_r
+
+
 def _compose_dense(
     j_r: Tensor, r_r: Tensor, j_l: Tensor, r_l: Tensor
 ) -> tuple[Tensor, Tensor]:
@@ -187,8 +217,12 @@ def _compose_dense(
 
 
 def _is_dense(jac: Tensor, residual: Tensor) -> bool:
+    """Full-matrix J is ``(B, T, d, d)``. Do not treat ``(B, T, S, S, d)`` as dense
+    when ``d == S`` (sLSTM tests use ``d_h=4`` with 4×4 blocks).
+    """
     return (
-        jac.dim() == residual.dim() + 1
+        jac.dim() == 4
+        and residual.dim() == 3
         and jac.shape[-1] == residual.shape[-1]
         and jac.shape[-2] == residual.shape[-1]
     )
@@ -229,6 +263,24 @@ def _fill_ident_block2(slot: Tensor) -> None:
     slot.zero_()
     slot[..., 0, 0, :] = 1
     slot[..., 1, 1, :] = 1
+
+
+def _mv4(jac: Tensor, vec: Tensor) -> Tensor:
+    """``J @ v`` per feature: 4×4 elementwise, layout ``[..., out, in, d]``."""
+    return (jac * vec.unsqueeze(-3)).sum(dim=-2)
+
+
+def _mm4(j_right: Tensor, j_left: Tensor) -> Tensor:
+    """``J_right @ J_left`` per feature. Reduce over the inner 4, not ``bmm``."""
+    return (j_right.unsqueeze(-2) * j_left.unsqueeze(-4)).sum(dim=-3)
+
+
+def _fill_ident_block4(slot: Tensor) -> None:
+    slot.zero_()
+    slot[..., 0, 0, :] = 1
+    slot[..., 1, 1, :] = 1
+    slot[..., 2, 2, :] = 1
+    slot[..., 3, 3, :] = 1
 
 
 def _fill_ident_dense(slot: Tensor) -> None:
