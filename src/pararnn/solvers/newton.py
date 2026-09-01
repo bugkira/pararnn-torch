@@ -1,14 +1,15 @@
 """Newton iterations wrapping a parallel scan (Danieli et al. 2025 Alg. 1).
 
 K=3: App. A — residual to machine precision in 3–4 steps for ParaGRU/ParaLSTM.
-Init: eq. A.1, only t=0 sees ``h0``; later t still ``f(0, x_t)``.
+Init: eq. A.1, only t=0 sees ``h0``; later t still ``f(0, x_t)``. ParaSLSTM
+instead starts from the zero-hidden unroll (running ``m``/``n``, no ``R h``).
 
 Any cell with ``step(h, x)`` parallelizes: Autograd supplies ``J = ∂f/∂h``
 (DEER / Lim et al.). ParaGRU/ParaLSTM keep analytic J (paper §3) as the default.
 
-``scan_backend='fused'`` is a handwritten Triton kernel for those two cells, not
-a generic ``f``. ``'auto'`` picks fused (CUDA GRU/LSTM fp16/fp32), else Triton
-scan + ``cell.step``, else eager.
+``scan_backend='fused'`` is a handwritten Triton kernel for ParaGRU, ParaLSTM,
+and ParaSLSTM ``mix='diag'``, not a generic ``f``. ``'auto'`` picks fused
+(CUDA, those cells, fp16/fp32), else Triton scan + ``cell.step``, else eager.
 
 Backward is **not** autograd through the K iterates. Paper eq. 2.6: one reverse
 scan of J^T, then a VJP of the batched cell. ParaGRU/ParaLSTM pack that VJP in
@@ -26,6 +27,7 @@ from torch import Tensor, nn
 
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
+from pararnn.cells.para_slstm import ParaSLSTM
 from pararnn.layout import prepend_state, slstm_pack_heads, slstm_unpack_heads
 from pararnn.solvers.jacobian import step_and_jacobian
 from pararnn.solvers.scan import (
@@ -60,10 +62,10 @@ class NewtonStats:
 class NewtonConfig:
     max_iters: int = 3
     omega: float = 1.0  # 1 = vanilla Newton; <1 damps (cf. Gonzalez et al. ELK)
-    # auto: fused on CUDA ParaGRU/LSTM fp16/fp32, else Triton scan + cell.step, else eager.
+    # auto: fused on CUDA GRU/LSTM/sLSTM-diag fp16/fp32, else Triton scan + step, else eager.
     # eager: vectorized Blelloch (CPU+CUDA). Any f.
     # triton: CUDA scan only (fp16 DRAM / fp32 algebra, or fp32). Cell stays PyTorch.
-    # fused: handwritten CUDA cell+J+scan for ParaGRU/ParaLSTM. Not any f.
+    # fused: handwritten CUDA cell+J+scan for GRU/LSTM/sLSTM-diag. Not any f.
     scan_backend: str = "auto"
     # auto: analytic J if the cell has step_with_jacobian, else Autograd.
     # analytic: require step_with_jacobian (paper §3 cells).
@@ -148,6 +150,8 @@ def _can_triton_scan(x: Tensor) -> bool:
 def _can_fuse(cell: nn.Module, x: Tensor) -> bool:
     if not _can_triton_scan(x):
         return False
+    if isinstance(cell, ParaSLSTM):
+        return cell.mix == "diag" and getattr(cell, "W_x", None) is not None
     if not isinstance(cell, (ParaGRU, ParaLSTM)):
         return False
     return getattr(cell, "W_x", None) is not None
@@ -187,9 +191,14 @@ def _fused_error(cell: nn.Module, x: Tensor) -> str:
             "fused Newton: bfloat16 is not used on Turing (no bf16 tensor cores). "
             "Use float16; cell+scan algebra stays fp32."
         )
+    if isinstance(cell, ParaSLSTM) and cell.mix != "diag":
+        return (
+            "scan_backend='fused' is mix='diag' only (4x4 SRAM); "
+            f"got mix={cell.mix!r}"
+        )
     return (
-        "scan_backend='fused' needs CUDA ParaGRU/ParaLSTM in float16/float32 "
-        f"(got {type(cell).__name__} {x.dtype} {x.device})"
+        "scan_backend='fused' needs CUDA ParaGRU/ParaLSTM/ParaSLSTM(mix='diag') "
+        f"in float16/float32 (got {type(cell).__name__} {x.dtype} {x.device})"
     )
 
 
@@ -205,16 +214,21 @@ def _newton_forward(
         states = _newton_fused(cell, x, config, h0=h0)
         _fill_stats(cell, x, states, h0, config, iters=config.max_iters, stats=stats)
         return states
-    h_prev0 = _init_h_prev(cell, x, h0)
     wx = _wx_if_analytic(cell, x, config)
-    states, _ = step_and_jacobian(
-        cell,
-        h_prev0,
-        x,
-        wx=wx,
-        jacobian=config.jacobian,
-        jac_structure=config.jac_structure,
-    )
+    if isinstance(cell, ParaSLSTM):
+        # Running (c,n,m) with R h = 0. App. A f(0,x_t) leaves n O(1) while
+        # sequential n accumulates; this guess is close enough for K=3 at T=48.
+        states = cell.zero_hidden_init(x, wx=wx, h0=h0)
+    else:
+        h_prev0 = _init_h_prev(cell, x, h0)
+        states, _ = step_and_jacobian(
+            cell,
+            h_prev0,
+            x,
+            wx=wx,
+            jacobian=config.jacobian,
+            jac_structure=config.jac_structure,
+        )
 
     iters_done = 0
     last_res = float("nan")

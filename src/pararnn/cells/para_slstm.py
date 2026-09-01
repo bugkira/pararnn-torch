@@ -6,9 +6,11 @@ Equations: ADD_TASK / xLSTM §2. Stabilizer ``max``, exp input/forget, normalize
 diagonal across heads. ``mix='dense'`` mixes the full ``d_h``; scan is
 ``O(T (4d)^3)`` — tests stay tiny.
 
-Not fused. Not FlashRNN. ``K=3`` is a ParaGRU fact, not a promise here.
-Measured prototype (diag, seed 101): K=4, omega=1, clip=0.5. ``omega=0.5``
-kills the K=4 snap — do not copy ELK as the sLSTM default.
+``mix='diag'`` has a fused Triton Newton (cell + 4x4 J + scan). Head/dense
+do not. Not FlashRNN. Newton init is not App. A ``f(0, x_t)``: ``n`` is a
+running normalizer, so we start from the ``R h = 0`` unroll (max-plus ``m``,
+linear ``n``/``c``). ``K=3`` then matches GRU on the T=48 prototype.
+``omega=0.5`` still damps the snap — do not copy ELK as the sLSTM default.
 """
 
 from __future__ import annotations
@@ -155,6 +157,14 @@ class ParaSLSTM(nn.Module):
             rec = torch.einsum("...nd,gnde->...gne", h_v, self.clipped_r_head())
             return rec.reshape(*h.shape[:-1], 4 * self.d_h)
         return self.R_dense(h)
+
+    def zero_hidden_init(
+        self, x: Tensor, *, wx: Tensor | None = None, h0: Tensor | None = None
+    ) -> Tensor:
+        """Newton guess: running ``(c, n, m)`` with ``R h = 0``. See module fn."""
+        if wx is None:
+            wx = self.W_x(x)
+        return slstm_zero_hidden_init(wx, eps=self.eps, h0=h0)
 
     def _step_from_pre(self, state_prev: Tensor, pre: Tensor) -> Tensor:
         return self._acts_from_pre(state_prev, pre).state_new
@@ -338,6 +348,50 @@ class ParaSLSTM(nn.Module):
         put_diag(3, 2, j_hm)
         put_h(3, j_hh)
         return jac
+
+
+def slstm_zero_hidden_init(
+    wx: Tensor,
+    *,
+    eps: float,
+    h0: Tensor | None = None,
+) -> Tensor:
+    """Newton guess: sLSTM with ``R h = 0`` (keep running ``m`` / ``n``).
+
+    App. A ``f(0, x_t)`` zeros ``n`` independently at each t. Here ``m`` is the
+    max-plus prefix ``m_t = P_t + max_k(z_i_k - P_k)`` with ``P = cumsum(z_f)``,
+    then ``n`` and ``c`` are the diagonal scans ``q_t = f_t q_{t-1} + ...``.
+    Mixing ``R h`` is left to Newton. Algebra in fp32; DRAM dtype preserved.
+    """
+    from pararnn.solvers.scan import scan_diag
+
+    batch, _, four_d = wx.shape
+    d_h = four_d // 4
+    orig = wx.dtype
+    wx32 = wx.float()
+    z_i, z_f, z_z, z_o = wx32.chunk(4, dim=-1)
+    if h0 is None:
+        c0 = n0 = m0 = wx32.new_zeros(batch, d_h)
+    else:
+        h0f = h0.float()
+        c0 = h0f[:, SLSTM_CELL]
+        n0 = h0f[:, SLSTM_NORMALIZER]
+        m0 = h0f[:, SLSTM_STABILIZER]
+    p = z_f.cumsum(dim=1)
+    m = p + torch.maximum((z_i - p).cummax(dim=1).values, m0.unsqueeze(1))
+    m_prev = torch.cat((m0.unsqueeze(1), m[:, :-1]), dim=1)
+    i_t = torch.exp(z_i - m)
+    f_t = torch.exp(z_f + m_prev - m)
+    z = torch.tanh(z_z)
+    res_n = i_t.clone()
+    res_n[:, 0] = f_t[:, 0] * n0 + i_t[:, 0]
+    res_c = i_t * z
+    res_c[:, 0] = f_t[:, 0] * c0 + i_t[:, 0] * z[:, 0]
+    n = scan_diag(f_t, res_n)
+    c = scan_diag(f_t, res_c)
+    o = torch.sigmoid(z_o)
+    h = o * (c / (n + eps))
+    return torch.stack((c, n, m, h), dim=-2).to(dtype=orig)
 
 
 def _maximum_subgrad_left(left: Tensor, right: Tensor) -> Tensor:

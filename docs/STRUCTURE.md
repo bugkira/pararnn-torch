@@ -20,7 +20,7 @@ ParaRNN/
 │   ├── cells/                  # ParaGRU (diag), ParaLSTM (CIFG), ParaSLSTM (stage 1)
 │   ├── layers/                 # ParaRNN nn.Module (train Newton / eval sequential)
 │   ├── solvers/                # sequential; Newton; Blelloch; Autograd J; eq. 2.6 bwd
-│   ├── kernels/                # Triton diag + 2×2 scan; fused Newton; packed VJP
+│   ├── kernels/                # Triton diag + 2×2 + 4×4 scan; fused Newton; packed VJP
 │   ├── hybrid/                 # later: linear SSM predictor + 1-step Newton
 │   ├── models/                 # later: HF PreTrainedModel
 │   └── train/                  # MLflow entrypoints (toy copy smoke)

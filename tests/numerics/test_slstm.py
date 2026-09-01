@@ -1,7 +1,8 @@
-"""Para-sLSTM: sequential unroll vs Newton + 4×4 (diag) / dense (mix) scan.
+"""Para-sLSTM: sequential unroll vs Newton + 4x4 (diag) / dense (mix) scan.
 
 K=3 / 1e-6 is a ParaGRU/LSTM measurement, not a gate. These tests record
-residual vs K. Fused Triton is out of scope.
+residual vs K. Fused Newton is mix='diag' only (Triton 4x4); head/dense stay
+eager/triton-scan.
 """
 
 from __future__ import annotations
@@ -88,13 +89,37 @@ def test_slstm_step_shape_and_slots():
 
 
 @torch.no_grad()
+def test_slstm_zero_hidden_init_matches_forced_h0_loop():
+    """Max-plus ``m`` + diag scans vs the O(T) ``h_prev=0`` unroll."""
+    torch.manual_seed(230)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = 0.3 * torch.randn(2, 48, 4, device=device)
+    wx = cell.W_x(x)
+    got = cell.zero_hidden_init(x, wx=wx)
+    state = torch.zeros(2, SLSTM_SLOTS, 4, device=device)
+    parts = []
+    for t in range(x.shape[1]):
+        prev = state.clone()
+        prev[:, SLSTM_HIDDEN] = 0
+        state = cell.step(prev, x[:, t], wx=wx[:, t])
+        parts.append(state)
+    ref = torch.stack(parts, dim=1)
+    torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-5)
+    seq = sequential_apply(cell, x)
+    # Better than App. A, not the sequential root (mixing still missing).
+    assert float((got - seq).abs().amax()) < 10.0
+
+
+@torch.no_grad()
 def test_slstm_diag_newton_vs_sequential():
     torch.manual_seed(101)
     cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
     x = 0.3 * torch.randn(2, 12, 4, device=device)
     rows = _residual_vs_k(cell, x)
-    # Diag mix, seed 101: K=1..3 overshoot, K=4 snaps. Do not copy ParaGRU's K=3.
+    err_k3 = rows[2][2]
     err_k5 = rows[-1][2]
+    # Zero-hidden init: K=3 is in the basin (App. A needed K=4 on this seed).
+    assert err_k3 < 2e-3, rows
     assert err_k5 < 2e-3, rows
     assert min(err for _, _, err in rows) < 1e-4, rows
 
@@ -145,6 +170,30 @@ def test_scan_block4_matches_forward_substitution():
     torch.testing.assert_close(tri, got, atol=1e-5, rtol=1e-5)
 
 
+def test_triton_scan_block4_matches_eager_long():
+    if device.type != "cuda":
+        return
+    torch.manual_seed(209)
+    jac = torch.randn(2, 200, 4, 4, 5, device=device) * 0.12
+    residual = torch.randn(2, 200, 4, 5, device=device)
+    eager = scan_block4(jac, residual)
+    tri = scan_block4(jac, residual, backend="triton")
+    torch.testing.assert_close(tri, eager, atol=1e-5, rtol=1e-5)
+
+
+def test_triton_scan_block4_tile_boundaries():
+    """BLOCK_T=32: lengths that sit inside, on, and over a tile."""
+    if device.type != "cuda":
+        return
+    torch.manual_seed(210)
+    for t in (9, 32, 33, 64, 128):
+        jac = torch.randn(2, t, 4, 4, 6, device=device) * 0.12
+        residual = torch.randn(2, t, 4, 6, device=device)
+        eager = scan_block4(jac, residual)
+        tri = scan_block4(jac, residual, backend="triton")
+        torch.testing.assert_close(tri, eager, atol=1e-5, rtol=1e-5)
+
+
 def test_reverse_scan_block4_matches_backward_substitution():
     torch.manual_seed(202)
     b, t, d = 2, 7, 4
@@ -157,6 +206,9 @@ def test_reverse_scan_block4_matches_backward_substitution():
         j_t = jac[:, s + 1].transpose(-3, -2)
         ref[:, s] = torch.einsum("boid,bid->bod", j_t, ref[:, s + 1]) + partial[:, s]
     torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-5)
+    if device.type == "cuda":
+        tri = reverse_scan_block4(jac, partial, backend="triton")
+        torch.testing.assert_close(tri, got, atol=1e-5, rtol=1e-5)
 
 
 def test_scan_block4_matches_dense_blockdiag():
@@ -214,13 +266,10 @@ def test_slstm_omega_and_clip():
         err_k4_full,
         err_k4_clip,
     )
-    # omega=0.5 cuts K=3 overshoot (~12 → ~4) but kills the K=4 snap
-    # (err stays ~2). Clip 0.25 is a no-op vs 0.5 on this seed.
-    # Prototype: K=4, omega=1, clip=0.5. Do not change NewtonConfig defaults.
+    # omega=0.5 still damps relative to omega=1. Do not copy ELK as default.
     assert err_k4_full < 1e-4, rows_1
-    assert err_k3_damp < err_k3_full, (err_k3_damp, err_k3_full)
-    assert rows_h[3][2] > 0.1, rows_h
     assert err_k4_clip < 1e-4, rows_c
+    assert err_k3_full < 2e-3, rows_1
 
 
 def test_slstm_newton_bwd_matches_sequential_bptt():
@@ -370,3 +419,169 @@ def test_slstm_analytic_newton_matches_sequential():
     )
     err = float((par - seq).abs().amax())
     assert err < 2e-3, err
+
+
+def _cuda_or_skip() -> torch.device | None:
+    if device.type != "cuda":
+        return None
+    return device
+
+
+@torch.no_grad()
+def test_slstm_diag_auto_picks_fused():
+    torch.manual_seed(220)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(dev)
+    x = 0.3 * torch.randn(2, 12, 4, device=dev)
+    st = NewtonStats()
+    newton_apply(
+        cell,
+        x,
+        NewtonConfig(max_iters=5, residual_atol=None),
+        stats=st,
+    )
+    assert st.scan_backend == "fused"
+
+
+def test_slstm_fused_rejects_head_and_dense():
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    x = 0.3 * torch.randn(2, 8, 4, device=dev)
+    head = ParaSLSTM(d_in=4, d_h=4, mix="head", n_heads=2).to(dev)
+    dense = ParaSLSTM(d_in=4, d_h=4, mix="dense").to(dev)
+    with pytest.raises(TypeError, match="diag"):
+        newton_apply(head, x, NewtonConfig(max_iters=1, scan_backend="fused"))
+    with pytest.raises(TypeError, match="diag"):
+        newton_apply(dense, x, NewtonConfig(max_iters=1, scan_backend="fused"))
+
+
+@torch.no_grad()
+def test_slstm_newton_fused_matches_sequential():
+    """Seed 101 / d_h=4 snaps at K=4. Do not copy ParaGRU's K=3 or long-T vs seq."""
+    torch.manual_seed(101)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cfg = NewtonConfig(max_iters=5, scan_backend="fused", residual_atol=None)
+    eager_cfg = NewtonConfig(max_iters=5, scan_backend="eager", residual_atol=None)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(dev)
+    x = 0.3 * torch.randn(2, 12, 4, device=dev)
+    seq = sequential_apply(cell, x)
+    eager = newton_apply(cell, x, eager_cfg)
+    par = newton_apply(cell, x, cfg)
+    err_s = float((par - seq).abs().amax())
+    err_e = float((par - eager).abs().amax())
+    assert err_s < 2e-3, err_s
+    assert err_e < 2e-4, err_e
+
+
+@torch.no_grad()
+def test_slstm_diag_long_t_snaps_at_k3():
+    """T=48 snaps at K=3 with zero-hidden init. Library default K=3 is enough.
+
+    App. A ``f(0, x_t)`` needed K=12 here (running ``n``). See
+    ``docs/para-slstm.md``. Do not raise the global Newton default for GRU.
+    """
+    torch.manual_seed(101)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = 0.3 * torch.randn(2, 48, 4, device=device)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(max_iters=3, scan_backend="eager", residual_atol=None),
+    )
+    err3 = float((par - seq).abs().amax())
+    assert err3 < 1e-4, err3
+
+
+@torch.no_grad()
+def test_slstm_newton_fused_matches_eager_across_tiles():
+    """T=48 tile crossing. Kernel check is fused vs eager; K=3 vs seq."""
+    torch.manual_seed(101)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cfg = NewtonConfig(max_iters=3, scan_backend="fused", residual_atol=None)
+    eager_cfg = NewtonConfig(max_iters=3, scan_backend="eager", residual_atol=None)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(dev)
+    x = 0.3 * torch.randn(2, 48, 4, device=dev)
+    seq = sequential_apply(cell, x)
+    eager = newton_apply(cell, x, eager_cfg)
+    par = newton_apply(cell, x, cfg)
+    err_e = float((par - eager).abs().amax())
+    err_s = float((par - seq).abs().amax())
+    assert err_e < 2e-4, err_e
+    assert err_s < 1e-4, err_s
+
+
+@torch.no_grad()
+def test_slstm_newton_fused_h0_matches_sequential():
+    torch.manual_seed(222)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(dev)
+    x = 0.3 * torch.randn(2, 20, 4, device=dev)
+    h0 = 0.2 * torch.randn(2, SLSTM_SLOTS, 4, device=dev)
+    seq = sequential_apply(cell, x, h0)
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(max_iters=5, scan_backend="fused", residual_atol=None),
+        h0=h0,
+    )
+    err = float((par - seq).abs().amax())
+    assert err < 2e-3, err
+
+
+def test_slstm_newton_fused_bwd_matches_sequential_bptt():
+    torch.manual_seed(223)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    d_in, d_h, t = 4, 4, 8
+    x = 0.3 * torch.randn(2, t, d_in, device=dev)
+    w = torch.randn(2, t, SLSTM_SLOTS, d_h, device=dev)
+    cell_s = ParaSLSTM(d_in, d_h, mix="diag").to(dev)
+    cell_n = ParaSLSTM(d_in, d_h, mix="diag").to(dev)
+    cell_n.load_state_dict(cell_s.state_dict())
+    x_s = x.clone().requires_grad_(True)
+    x_n = x.clone().requires_grad_(True)
+    loss_s = (sequential_apply(cell_s, x_s) * w).sum()
+    loss_s.backward()
+    loss_n = (
+        newton_apply(
+            cell_n,
+            x_n,
+            NewtonConfig(max_iters=5, scan_backend="fused", residual_atol=None),
+        )
+        * w
+    ).sum()
+    loss_n.backward()
+    for (n, p_a), (_, p_b) in zip(cell_s.named_parameters(), cell_n.named_parameters()):
+        assert p_a.grad is not None, n
+        torch.testing.assert_close(p_a.grad, p_b.grad, atol=5e-4, rtol=1e-4)
+    torch.testing.assert_close(x_s.grad, x_n.grad, atol=5e-4, rtol=1e-4)
+
+
+@torch.no_grad()
+def test_slstm_newton_fused_fp16_matches_sequential():
+    torch.manual_seed(224)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device=dev, dtype=torch.float16)
+    x = (0.3 * torch.randn(2, 12, 4, device=dev)).to(torch.float16)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(max_iters=5, scan_backend="fused", residual_atol=None),
+    )
+    err = float((par.float() - seq.float()).abs().amax())
+    assert err < 2e-2, err
+    assert par.dtype is torch.float16

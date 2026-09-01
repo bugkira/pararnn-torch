@@ -55,13 +55,17 @@ def scan_block2(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Ten
 
 
 def scan_block4(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tensor:
-    """Same recurrence with 4×4 blocks per feature (sLSTM channelwise).
+    """Same recurrence with 4x4 blocks per feature (sLSTM channelwise).
 
     ``jac``: (batch, time, 4, 4, d) with ``[..., out, in, d]``.
     ``residual`` / result: (batch, time, 4, d).
-    No Triton kernel yet; ``backend='triton'`` still runs this eager path.
+    ``backend``: ``eager`` or ``triton`` (CUDA float16/float32).
     """
-    if backend not in ("eager", "triton"):
+    if backend == "triton":
+        from pararnn.kernels.scan_block4 import scan_block4_triton
+
+        return scan_block4_triton(jac, residual)
+    if backend != "eager":
         raise ValueError(f"unknown scan backend {backend!r}")
     return _scan_acc(jac, residual, _compose_block4, _fill_ident_block4)
 
