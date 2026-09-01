@@ -9,7 +9,9 @@ GPU: 2080 Ti by name. Config: --config (default configs/bench/cell_forward.yaml)
   uv run python scripts/bench_time.py --config configs/bench/newton_slstm.yaml
   uv run python scripts/bench_time.py --config configs/bench/newton_slstm_picard.yaml
   uv run python scripts/bench_time.py --config configs/bench/newton_slstm_flashrnn.yaml
+  uv run python scripts/bench_time.py --config configs/bench/newton_slstm_flashrnn_long.yaml
   uv run python scripts/bench_time.py --config configs/bench/newton_fp16.yaml
+  uv run python scripts/bench_slstm_hacks.py
 """
 
 from __future__ import annotations
@@ -29,8 +31,8 @@ import torch
 import yaml
 from torch import Tensor, nn
 
-from pararnn import device, wait_until_free
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
+from pararnn.hw import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
 from pararnn.logconf import setup_logging
 from pararnn.solvers import (
     NewtonConfig,
@@ -159,14 +161,28 @@ def _newton_config_from_spec(spec: dict, *, scan_backend: str) -> NewtonConfig:
     else:
         raw = spec["picard_iters"]
         picard = None if raw is None else int(raw)
+    if "residual_atol" not in spec:
+        residual_atol = None
+    else:
+        raw_atol = spec["residual_atol"]
+        residual_atol = None if raw_atol is None else float(raw_atol)
+    if "residual_fail" in spec:
+        raw_fail = spec["residual_fail"]
+        residual_fail = None if raw_fail is None else float(raw_fail)
+    elif not spec.get("require_agreement", True):
+        residual_fail = None
+    else:
+        residual_fail = 1.0
     return NewtonConfig(
         max_iters=int(spec["newton_iters"]),
         omega=float(spec.get("omega", 1.0)),
         scan_backend=scan_backend,
-        residual_atol=None,
+        residual_atol=residual_atol,
+        residual_fail=residual_fail,
         coords=str(spec.get("coords", "native")),
         chunk_len=int(chunk) if chunk is not None else None,
         picard_iters=picard,
+        scan_tile=str(spec.get("scan_tile", "assoc")),
     )
 
 
@@ -208,7 +224,7 @@ def _flashrnn_backend() -> str | None:
         log.warning("flashrnn skip: %s", exc)
         _flashrnn_backend_memo = None
         return None
-    major, minor = torch.cuda.get_device_capability(device)
+    major, minor = torch.cuda.get_device_capability()
     if major >= 8:
         _flashrnn_backend_memo = "cuda_fused"
     else:
@@ -345,6 +361,7 @@ def main() -> None:
     args = parser.parse_args()
     config_path = args.config.resolve()
     spec = yaml.safe_load(config_path.read_text())
+    device = select_device(DEFAULT_EXPERIMENT_GPU_NAME)
     if device.type != "cuda":
         raise RuntimeError("App. B needs the 2080 Ti (PARARNN_DEVICE to override)")
     torch.cuda.set_device(device)

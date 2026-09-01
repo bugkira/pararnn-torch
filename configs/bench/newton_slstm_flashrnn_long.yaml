@@ -1,0 +1,39 @@
+# Crossover smoke: fused Newton (auto P) vs FlashRNN at T=2048…16384.
+# Work is still O(T) on a finite GPU; span O(log T) does not imply a
+# wall-clock plateau. P=3 at T=4096 diverges on some draws if K=3 is
+# forced (residual_atol null). This YAML uses library residual_atol
+# (1e-5) and auto P=5 for T>2048. Measure, do not assume overtake.
+#
+# Fused T cap 16384: CHUNK_PAD=512 × BLOCK_T=32 (40 KiB chunk SRAM).
+# Protocol: 10 warmup / 50 runs. GPU: 2080 Ti by name.
+
+newton_iters: 3
+# App. A / library: stop extra Newton steps below sequential-agreement scale.
+# Forced K=3 (null atol) overshoots some T=4096 draws after Picard.
+residual_atol: 1.0e-5
+batch: 8
+d_in: 256
+d_h: 256
+dtype: float32
+x_scale: 1.0
+warmup: 10
+n_runs: 50
+seq_lens: [2048, 4096, 8192, 16384]
+seq_lens_sequential_max: 4096
+sequential_compile_mode: reduce-overhead
+modes: [newton_fused, flashrnn]
+newton_max_t:
+  ParaSLSTM: 16384
+cells:
+  - name: ParaSLSTM
+    mix: diag
+require_agreement: true
+agree_tol: 2.0e-3
+mlflow_experiment: newton-slstm-bench
+mlflow_run_name: slstm-fused-vs-flashrnn-long
+csv: outputs/bench_newton_slstm_flashrnn_long.csv
+why: >
+  Crossover hunt T=2048…16384. FlashRNN is O(T) sequential. Fused Newton
+  span is O(log T) but DRAM is O(K T). Auto P=5 past T=2048; residual_atol
+  1e-5 (library) because forced K=3 overshoots. Agreement to T=4096
+  (atol 2e-3).   Turing triton_fused 8×32, not diag, not cuda_fused.

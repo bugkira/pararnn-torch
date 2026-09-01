@@ -1,0 +1,37 @@
+# Dyck-1 next-token smoke. Not TinyStories / xLSTM-7B — gate that Newton
+# grads on ParaSLSTM (mix=diag) are finite and CE can drop.
+
+task: dyck1
+
+# Two tokens: 0='(', 1=')'. Even length so a complete Dyck word exists.
+# T=16 → library Picard P=1 (slstm_auto_picard). Not LM context.
+seq_len: 16
+batch: 32
+# Same width as copy smoke (configs/train/toy.yaml). Not paper 125M.
+d_h: 32
+num_layers: 1
+# torchification.md 50–200; 50 is enough to see CE move on this alphabet.
+steps: 50
+
+# Library contract: K=3 (App. A). Do not raise K; P comes from T.
+newton_iters: 3
+
+# Same Shallue-style 3-point grid as copy smoke.
+lr: 3.0e-3
+lr_fallback:
+  - 1.0e-3
+  - 1.0e-2
+weight_decay: 0.0
+dtype: float32
+scan_backend: auto
+seed: 0
+cell: para_slstm
+mix: diag
+
+mlflow_experiment: toy-dyck
+mlflow_run_name: dyck1-paraslstm
+
+why: |
+  Prove ParaSLSTM train() (Newton K=3, auto P=1 at T=16) + linear head can
+  be optimized on Dyck-1 next-token, and that eq. 2.6 grads are finite.
+  Not state-tracking SOTA. Not xLSTM head mix.

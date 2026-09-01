@@ -1,16 +1,15 @@
-"""Toy copy smoke: ParaRNN + linear head + CE + AdamW, MLflow-logged.
+"""Dyck-1 next-token smoke: ParaSLSTM + Newton grads.
 
-    uv run python -m pararnn.train.toy --config configs/train/toy.yaml
+    uv run python -m pararnn.train.dyck --config configs/train/dyck.yaml
 
-``pararnn.device`` is first CUDA or CPU. Lab benches pin a GPU by name.
+Library contract: K=3, Picard P from T (here P=1). Fail-loud if Newton
+diverges. ``pararnn.device`` is first CUDA or CPU, not a lab GPU name.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import logging
-import subprocess
 from pathlib import Path
 
 import torch
@@ -18,20 +17,53 @@ import yaml
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from pararnn import NewtonConfig, ParaGRU, ParaRNN, device, wait_until_free
+from pararnn import NewtonConfig, ParaRNN, ParaSLSTM, device, wait_until_free
 from pararnn.logconf import setup_logging
+from pararnn.train.toy import _git_commit, _lock_hash, _uv_export_hash
 
-log = logging.getLogger("toy")
+log = logging.getLogger("dyck")
 ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_CONFIG = ROOT / "configs" / "train" / "toy.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "train" / "dyck.yaml"
+OPEN, CLOSE = 0, 1
+VOCAB = 2
 
 
-class _CopyLM(nn.Module):
-    def __init__(self, vocab: int, d_h: int, newton_cfg: NewtonConfig) -> None:
+def sample_dyck1(
+    batch: int, length: int, *, generator: torch.Generator | None = None
+) -> Tensor:
+    """Even-length Dyck-1 words. Token 0='(', 1=')'."""
+    if length < 2 or length % 2:
+        raise ValueError(f"Dyck-1 length must be even and >=2, got {length}")
+    out = torch.empty(batch, length, dtype=torch.long)
+    for b in range(batch):
+        depth = 0
+        for t in range(length):
+            remain = length - t
+            if depth == 0:
+                tok = OPEN
+            elif remain == depth:
+                tok = CLOSE
+            else:
+                tok = int(torch.randint(0, 2, (1,), generator=generator).item())
+                if tok == CLOSE and depth == 0:
+                    tok = OPEN
+            depth += 1 if tok == OPEN else -1
+            out[b, t] = tok
+        if depth != 0:
+            raise RuntimeError(f"Dyck sampler ended at depth={depth}")
+    return out
+
+
+class _DyckLM(nn.Module):
+    def __init__(self, d_h: int, newton_cfg: NewtonConfig) -> None:
         super().__init__()
-        self.embed = nn.Embedding(vocab, d_h)
-        self.rnn = ParaRNN(ParaGRU(d_in=d_h, d_h=d_h), config=newton_cfg)
-        self.head = nn.Linear(d_h, vocab)
+        self.embed = nn.Embedding(VOCAB, d_h)
+        self.rnn = ParaRNN(
+            ParaSLSTM(d_in=d_h, d_h=d_h, mix="diag"),
+            config=newton_cfg,
+            output_hidden=True,
+        )
+        self.head = nn.Linear(d_h, VOCAB)
 
     def forward(self, tokens: Tensor) -> Tensor:
         return self.head(self.rnn(self.embed(tokens)))
@@ -58,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
 
     lrs = [float(spec["lr"]), *[float(x) for x in spec.get("lr_fallback", [])]]
     log.info(
-        "toy_start gpu=%s torch=%s lrs=%s scan_backend=%s",
+        "dyck_start gpu=%s torch=%s lrs=%s scan_backend=%s",
         gpu_name,
         torch.__version__,
         lrs,
@@ -68,10 +100,11 @@ def main(argv: list[str] | None = None) -> None:
     import mlflow
 
     mlflow.set_experiment(str(spec["mlflow_experiment"]))
-    with mlflow.start_run(run_name=str(spec.get("mlflow_run_name", "copy"))):
+    with mlflow.start_run(run_name=str(spec.get("mlflow_run_name", "dyck1"))):
         mlflow.set_tags(
             {
-                "cell": "para_gru",
+                "cell": "para_slstm",
+                "mix": "diag",
                 "gpu": gpu_name,
                 "dtype": str(spec["dtype"]),
                 "task": str(spec["task"]),
@@ -79,11 +112,9 @@ def main(argv: list[str] | None = None) -> None:
         )
         mlflow.log_params(
             {
-                "vocab": spec["vocab"],
                 "seq_len": spec["seq_len"],
                 "batch": spec["batch"],
                 "d_h": spec["d_h"],
-                "num_layers": spec["num_layers"],
                 "steps": spec["steps"],
                 "newton_iters": spec["newton_iters"],
                 "lr": spec["lr"],
@@ -141,12 +172,12 @@ def main(argv: list[str] | None = None) -> None:
         mlflow.log_param("scan_backend_used", used_backend)
         if last_losses[-1] >= last_losses[0]:
             raise RuntimeError(
-                f"copy smoke failed: loss at step {len(last_losses) - 1} "
+                f"dyck smoke failed: loss at step {len(last_losses) - 1} "
                 f"({last_losses[-1]:.4f}) >= loss at step 0 ({last_losses[0]:.4f}) "
                 f"after lrs {lrs}"
             )
         log.info(
-            "toy_ok lr=%s loss0=%.4f loss_final=%.4f scan_backend=%s",
+            "dyck_ok lr=%s loss0=%.4f loss_final=%.4f scan_backend=%s",
             used_lr,
             last_losses[0],
             last_losses[-1],
@@ -165,14 +196,17 @@ def _train(
     torch.manual_seed(seed)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(seed)
-    vocab = int(spec["vocab"])
     seq_len = int(spec["seq_len"])
     batch = int(spec["batch"])
     d_h = int(spec["d_h"])
     steps = int(spec["steps"])
-    newton_cfg = NewtonConfig(max_iters=int(spec["newton_iters"]), scan_backend=scan_backend)
-    model = _CopyLM(vocab, d_h, newton_cfg).to(device)
+    newton_cfg = NewtonConfig(
+        max_iters=int(spec["newton_iters"]),
+        scan_backend=scan_backend,
+    )
+    model = _DyckLM(d_h, newton_cfg).to(device)
     model.train()
+    _check_grads_finite(model, device, seq_len=min(seq_len, 8))
     opt = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
@@ -182,35 +216,28 @@ def _train(
     losses: list[float] = []
     residuals: list[float] = []
     for step in range(steps + 1):
-        tokens = torch.randint(0, vocab, (batch, seq_len), generator=gen, device="cpu").to(
-            device
-        )
-        logits = model(tokens)
+        tokens = sample_dyck1(batch, seq_len, generator=gen).to(device)
+        logits = model(tokens[:, :-1])
         residual = float("nan")
         resolved = scan_backend
         if model.rnn.last_stats:
             residual = model.rnn.last_stats[0].max_residual
             resolved = model.rnn.last_stats[0].scan_backend or scan_backend
-        loss = F.cross_entropy(logits.reshape(-1, vocab), tokens.reshape(-1))
+        loss = F.cross_entropy(
+            logits.reshape(-1, VOCAB), tokens[:, 1:].reshape(-1)
+        )
         loss_f = float(loss.detach())
         losses.append(loss_f)
         residuals.append(residual)
         log.info(
-            "train_step step=%d loss=%.4f residual=%.3e lr=%s backend=%s seq_len=%d batch=%d d_h=%d",
+            "train_step step=%d loss=%.4f residual=%.3e lr=%s backend=%s seq_len=%d",
             step,
             loss_f,
             residual,
             lr,
             resolved,
             seq_len,
-            batch,
-            d_h,
         )
-        if log.isEnabledFor(logging.DEBUG):
-            log.debug(
-                "newton_residual",
-                extra={"step": step, "max_residual": residual, "seq_len": seq_len},
-            )
         if step == steps:
             break
         opt.zero_grad(set_to_none=True)
@@ -222,45 +249,39 @@ def _train(
     return losses, residuals, used
 
 
+def _check_grads_finite(model: _DyckLM, device: torch.device, *, seq_len: int) -> None:
+    """One backward: all grads finite. Eq. 2.6, not autograd through K."""
+    tokens = sample_dyck1(4, seq_len, generator=torch.Generator().manual_seed(0)).to(
+        device
+    )
+    model.zero_grad(set_to_none=True)
+    logits = model(tokens[:, :-1])
+    loss = F.cross_entropy(logits.reshape(-1, VOCAB), tokens[:, 1:].reshape(-1))
+    loss.backward()
+    bad = [
+        name
+        for name, p in model.named_parameters()
+        if p.grad is None or not torch.isfinite(p.grad).all()
+    ]
+    if bad:
+        raise RuntimeError(f"non-finite or missing grads: {bad}")
+    log.info(
+        "dyck_grads_finite n_params=%d loss=%.4f",
+        len(list(model.parameters())),
+        float(loss.detach()),
+    )
+    model.zero_grad(set_to_none=True)
+
+
 def _validate_spec(spec: dict) -> None:
     if spec.get("dtype") != "float32":
-        raise ValueError("toy smoke is float32 (see configs/train/toy.yaml)")
-    if spec.get("cell") != "para_gru":
-        raise ValueError("toy smoke uses ParaGRU")
-    if int(spec.get("num_layers", 1)) != 1:
-        raise ValueError("toy smoke is num_layers=1")
-
-
-def _git_commit() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "none"
-
-
-def _lock_hash() -> str:
-    lock = ROOT / "uv.lock"
-    if not lock.exists():
-        return "none"
-    return hashlib.sha256(lock.read_bytes()).hexdigest()[:16]
-
-
-def _uv_export_hash() -> str:
-    try:
-        out = subprocess.check_output(
-            ["uv", "export", "--frozen"],
-            cwd=ROOT,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "none"
-    return hashlib.sha256(out.encode()).hexdigest()[:16]
+        raise ValueError("dyck smoke is float32")
+    if spec.get("cell") != "para_slstm":
+        raise ValueError("dyck smoke uses ParaSLSTM")
+    if int(spec.get("seq_len", 0)) % 2:
+        raise ValueError("Dyck-1 seq_len must be even")
+    if int(spec.get("newton_iters", 0)) != 3:
+        raise ValueError("library contract is newton_iters=3")
 
 
 if __name__ == "__main__":

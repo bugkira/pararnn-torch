@@ -11,8 +11,8 @@ import logging
 import torch
 from torch import Tensor, nn
 
-from pararnn import device
 from pararnn.cells import ParaGRU, ParaLSTM
+from pararnn.hw import DEFAULT_EXPERIMENT_GPU_NAME, select_device
 from pararnn.layout import prepend_zero_state
 from pararnn.logconf import setup_logging
 from pararnn.solvers import NewtonConfig, newton_apply
@@ -60,7 +60,14 @@ def compare_one(
             par, _ = cell.step_with_jacobian(h_prev0, x)
         else:
             par = newton_apply(
-                cell, x, NewtonConfig(max_iters=k, scan_backend="eager", residual_atol=None)
+                cell,
+                x,
+                NewtonConfig(
+                    max_iters=k,
+                    scan_backend="eager",
+                    residual_atol=None,
+                    residual_fail=None,
+                ),
             )
         err = (par - naive).abs()
         res = max_residual(cell, x, par)
@@ -76,6 +83,7 @@ def compare_one(
 
 def main() -> None:
     setup_logging()
+    device = select_device(DEFAULT_EXPERIMENT_GPU_NAME)
     if device.type != "cuda":
         raise RuntimeError("compare_naive needs the 2080 Ti (PARARNN_DEVICE to override)")
     log.info("device=%s (%s)", device, torch.cuda.get_device_name(device))

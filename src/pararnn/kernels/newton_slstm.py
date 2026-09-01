@@ -3,6 +3,11 @@
 ``W_x(x)`` stays a cuBLAS GEMM. Not Apple's fused CUDA. Not FlashRNN.
 ``mix='head'`` / ``'dense'`` are not this kernel (not 4x4 SRAM).
 CUDA float16/float32; cell+scan algebra in fp32. Not bf16 (Turing).
+
+The 4x4 is the Newton linearization of ``R h`` feedback into the next
+gates. Picard (frozen ``R h``) is the 1D max-plus + two ``ax+b`` scans
+in ``picard_slstm.py``. Do not drop this 4x4 and expect sequential
+agreement. ``h`` is not a pure epilogue while mixing is live.
 """
 
 from __future__ import annotations
@@ -29,8 +34,10 @@ log = logging.getLogger(__name__)
 # Same tiles as scan_block4 (20 scan lanes). 20 x 32 x 16 x 4 B = 40 KiB.
 _BLOCK_T = 32
 _BLOCK_D = 16
-_CHUNK_D = 8
-_CHUNK_PAD = 64  # 64 * 32 = 2048.
+# Chunk scan: 20 × CHUNK_PAD × CHUNK_D × 4 B ≤ 64 KiB. 512 × 1 → 40 KiB.
+# T cap = 32 × 512 = 16384 (crossover smoke vs FlashRNN). Not Apple PCR.
+_CHUNK_D = 1
+_CHUNK_PAD = 512
 
 
 @triton.jit
@@ -69,6 +76,178 @@ def _compose_block4(
         o00, o01, o02, o03, o10, o11, o12, o13, o20, o21, o22, o23, o30, o31, o32, o33,
         w0, w1, w2, w3,
     )
+
+
+@triton.jit
+def _seq_scan_block4(
+    j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
+    r0, r1, r2, r3,
+    BLOCK_T: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    """Inclusive serial prefix along time. Not a warp shuffle; ablation only."""
+    a00 = tl.full((BLOCK_D,), 1.0, tl.float32)
+    a01 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a02 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a03 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a10 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a11 = tl.full((BLOCK_D,), 1.0, tl.float32)
+    a12 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a13 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a20 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a21 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a22 = tl.full((BLOCK_D,), 1.0, tl.float32)
+    a23 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a30 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a31 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a32 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    a33 = tl.full((BLOCK_D,), 1.0, tl.float32)
+    w0 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    w1 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    w2 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    w3 = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    o00 = tl.zeros_like(j00)
+    o01 = tl.zeros_like(j00)
+    o02 = tl.zeros_like(j00)
+    o03 = tl.zeros_like(j00)
+    o10 = tl.zeros_like(j00)
+    o11 = tl.zeros_like(j00)
+    o12 = tl.zeros_like(j00)
+    o13 = tl.zeros_like(j00)
+    o20 = tl.zeros_like(j00)
+    o21 = tl.zeros_like(j00)
+    o22 = tl.zeros_like(j00)
+    o23 = tl.zeros_like(j00)
+    o30 = tl.zeros_like(j00)
+    o31 = tl.zeros_like(j00)
+    o32 = tl.zeros_like(j00)
+    o33 = tl.zeros_like(j00)
+    u0 = tl.zeros_like(r0)
+    u1 = tl.zeros_like(r0)
+    u2 = tl.zeros_like(r0)
+    u3 = tl.zeros_like(r0)
+    offs_t = tl.arange(0, BLOCK_T)
+    for t in tl.range(BLOCK_T):
+        sel = (offs_t == t)[:, None]
+        e00 = tl.sum(tl.where(sel, j00, 0.0), 0)
+        e01 = tl.sum(tl.where(sel, j01, 0.0), 0)
+        e02 = tl.sum(tl.where(sel, j02, 0.0), 0)
+        e03 = tl.sum(tl.where(sel, j03, 0.0), 0)
+        e10 = tl.sum(tl.where(sel, j10, 0.0), 0)
+        e11 = tl.sum(tl.where(sel, j11, 0.0), 0)
+        e12 = tl.sum(tl.where(sel, j12, 0.0), 0)
+        e13 = tl.sum(tl.where(sel, j13, 0.0), 0)
+        e20 = tl.sum(tl.where(sel, j20, 0.0), 0)
+        e21 = tl.sum(tl.where(sel, j21, 0.0), 0)
+        e22 = tl.sum(tl.where(sel, j22, 0.0), 0)
+        e23 = tl.sum(tl.where(sel, j23, 0.0), 0)
+        e30 = tl.sum(tl.where(sel, j30, 0.0), 0)
+        e31 = tl.sum(tl.where(sel, j31, 0.0), 0)
+        e32 = tl.sum(tl.where(sel, j32, 0.0), 0)
+        e33 = tl.sum(tl.where(sel, j33, 0.0), 0)
+        er0 = tl.sum(tl.where(sel, r0, 0.0), 0)
+        er1 = tl.sum(tl.where(sel, r1, 0.0), 0)
+        er2 = tl.sum(tl.where(sel, r2, 0.0), 0)
+        er3 = tl.sum(tl.where(sel, r3, 0.0), 0)
+        (
+            a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33,
+            w0, w1, w2, w3,
+        ) = _compose_block4(
+            a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33,
+            w0, w1, w2, w3,
+            e00, e01, e02, e03, e10, e11, e12, e13, e20, e21, e22, e23, e30, e31, e32, e33,
+            er0, er1, er2, er3,
+        )
+        o00 = tl.where(sel, a00[None, :], o00)
+        o01 = tl.where(sel, a01[None, :], o01)
+        o02 = tl.where(sel, a02[None, :], o02)
+        o03 = tl.where(sel, a03[None, :], o03)
+        o10 = tl.where(sel, a10[None, :], o10)
+        o11 = tl.where(sel, a11[None, :], o11)
+        o12 = tl.where(sel, a12[None, :], o12)
+        o13 = tl.where(sel, a13[None, :], o13)
+        o20 = tl.where(sel, a20[None, :], o20)
+        o21 = tl.where(sel, a21[None, :], o21)
+        o22 = tl.where(sel, a22[None, :], o22)
+        o23 = tl.where(sel, a23[None, :], o23)
+        o30 = tl.where(sel, a30[None, :], o30)
+        o31 = tl.where(sel, a31[None, :], o31)
+        o32 = tl.where(sel, a32[None, :], o32)
+        o33 = tl.where(sel, a33[None, :], o33)
+        u0 = tl.where(sel, w0[None, :], u0)
+        u1 = tl.where(sel, w1[None, :], u1)
+        u2 = tl.where(sel, w2[None, :], u2)
+        u3 = tl.where(sel, w3[None, :], u3)
+    return (
+        o00, o01, o02, o03, o10, o11, o12, o13, o20, o21, o22, o23, o30, o31, o32, o33,
+        u0, u1, u2, u3,
+    )
+
+
+@triton.jit
+def _slstm_pred(
+    c_prev,
+    n_prev,
+    m_prev,
+    h_prev,
+    zi_x,
+    zf_x,
+    zz_x,
+    zo_x,
+    r_i,
+    r_f,
+    r_z,
+    r_o,
+    eps,
+):
+    """sLSTM step without J. Shamanskii residual."""
+    z_i = r_i * h_prev + zi_x
+    z_f = r_f * h_prev + zf_x
+    z_z = r_z * h_prev + zz_x
+    z_o = r_o * h_prev + zo_x
+    left = z_f + m_prev
+    m_new = tl.where(left > z_i, left, z_i)
+    i_t = tl.exp(z_i - m_new)
+    f_t = tl.exp(z_f + m_prev - m_new)
+    z = _tanh(z_z)
+    n_new = f_t * n_prev + i_t
+    c_new = f_t * c_prev + i_t * z
+    o = tl.sigmoid(z_o)
+    h_new = o * (c_new / (n_new + eps))
+    return c_new, n_new, m_new, h_new
+
+
+@triton.jit
+def _slstm_log_pred(
+    u_prev,
+    ln_prev,
+    m_prev,
+    h_prev,
+    zi_x,
+    zf_x,
+    zz_x,
+    zo_x,
+    r_i,
+    r_f,
+    r_z,
+    r_o,
+):
+    z_i = r_i * h_prev + zi_x
+    z_f = r_f * h_prev + zf_x
+    z_z = r_z * h_prev + zz_x
+    z_o = r_o * h_prev + zo_x
+    left = z_f + m_prev
+    m_new = tl.where(left > z_i, left, z_i)
+    a = z_f + m_prev - m_new + ln_prev
+    b = z_i - m_new
+    mx = tl.maximum(a, b)
+    ln_new = mx + tl.log(tl.exp(a - mx) + tl.exp(b - mx))
+    gamma = tl.exp(b - ln_new)
+    z = _tanh(z_z)
+    u_new = (1.0 - gamma) * u_prev + gamma * z
+    o = tl.sigmoid(z_o)
+    h_new = o * u_new
+    return u_new, ln_new, m_new, h_new
 
 
 @triton.jit
@@ -371,6 +550,7 @@ def _slstm_cell_local_scan_kernel(
     BLOCK_D: tl.constexpr,
     FP16: tl.constexpr,
     LOG: tl.constexpr,
+    SEQ: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -441,17 +621,28 @@ def _slstm_cell_local_scan_kernel(
     j31 = tl.where(mask, j31, 0.0)
     j32 = tl.where(mask, j32, 0.0)
     j33 = tl.where(mask, j33, 1.0)
-    (
-        s00, s01, s02, s03, s10, s11, s12, s13, s20, s21, s22, s23, s30, s31, s32, s33,
-        u0, u1, u2, u3,
-    ) = tl.associative_scan(
+    if SEQ:
         (
+            s00, s01, s02, s03, s10, s11, s12, s13, s20, s21, s22, s23, s30, s31, s32, s33,
+            u0, u1, u2, u3,
+        ) = _seq_scan_block4(
             j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
             r0, r1, r2, r3,
-        ),
-        0,
-        _compose_block4,
-    )
+            BLOCK_T,
+            BLOCK_D,
+        )
+    else:
+        (
+            s00, s01, s02, s03, s10, s11, s12, s13, s20, s21, s22, s23, s30, s31, s32, s33,
+            u0, u1, u2, u3,
+        ) = tl.associative_scan(
+            (
+                j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
+                r0, r1, r2, r3,
+            ),
+            0,
+            _compose_block4,
+        )
     _store_j_lane(j_loc_ptr, s00, pid_b, offs_t, offs_d, 0, mask, stride_jb, stride_jt, stride_jk, stride_jd, FP16)
     _store_j_lane(j_loc_ptr, s01, pid_b, offs_t, offs_d, 1, mask, stride_jb, stride_jt, stride_jk, stride_jd, FP16)
     _store_j_lane(j_loc_ptr, s02, pid_b, offs_t, offs_d, 2, mask, stride_jb, stride_jt, stride_jk, stride_jd, FP16)
@@ -634,6 +825,7 @@ def newton_slstm_fused(
     h0: Tensor | None = None,
     states: Tensor | None = None,
     log_coords: bool = False,
+    scan_tile: str = "assoc",
 ) -> Tensor:
     """Alg. 1 for diag-mix ParaSLSTM. ``wx`` is ``W_x(x)`` with shape ``(B, T, 4 d_h)``.
 
@@ -641,6 +833,7 @@ def newton_slstm_fused(
     shape ``(B, 4, d_h)``. ``states`` is the Newton guess (zero-hidden init);
     if omitted, App. A ``f(0, x_t)`` is used. ``log_coords`` runs Newton in
     ``(u, log n, m, h)`` and returns native ``(c, n, m, h)``.
+    ``scan_tile='seq'`` is a serial ``tl.range`` prefix (ablation).
     """
     from pararnn.cells.para_slstm import (
         slstm_clamp_log_coords,
@@ -670,8 +863,8 @@ def newton_slstm_fused(
     n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
     if n_chunks > _CHUNK_PAD:
         raise ValueError(
-            f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD}. "
-            "Increase BLOCK_T rather than copying a longer Apple kernel."
+            f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD} "
+            f"(T≤{_BLOCK_T * _CHUNK_PAD}). Shrink CHUNK_D before copying a longer Apple kernel."
         )
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
     n_dtiles_chunk = (d_h + _CHUNK_D - 1) // _CHUNK_D
@@ -719,6 +912,9 @@ def newton_slstm_fused(
     agg_j = j_loc.new_empty(batch, n_chunks, 16, d_h)
     agg_r = r_loc.new_empty(batch, n_chunks, SLSTM_SLOTS, d_h)
     incl_r = r_loc.new_empty(batch, n_chunks, SLSTM_SLOTS, d_h) if n_chunks > 1 else None
+    if scan_tile not in ("assoc", "seq"):
+        raise ValueError(f"unknown scan_tile {scan_tile!r}")
+    seq = scan_tile == "seq"
 
     for it in range(max_iters):
         _slstm_cell_local_scan_kernel[grid_td](
@@ -749,6 +945,7 @@ def newton_slstm_fused(
             BLOCK_D=_BLOCK_D,
             FP16=fp16,
             LOG=log_coords,
+            SEQ=seq,
         )
         if n_chunks == 1:
             states.copy_((states.float() + float(omega) * r_loc.float()).to(states.dtype))
@@ -808,6 +1005,7 @@ def newton_slstm_fused(
             "max_iters": max_iters,
             "n_chunks": n_chunks,
             "log_coords": log_coords,
+            "scan_tile": scan_tile,
         },
     )
     if log_coords:

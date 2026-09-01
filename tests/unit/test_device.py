@@ -1,23 +1,21 @@
-import pytest
 import torch
+
+from pararnn.hw import select_device
 
 
 def test_package_device_is_torch_device():
-    try:
-        from pararnn import device
-    except RuntimeError as exc:
-        pytest.skip(str(exc))
+    from pararnn import device
+
     assert isinstance(device, torch.device)
 
 
-def test_device_is_2080_ti_when_cuda():
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
-    try:
-        from pararnn import device
-    except RuntimeError as exc:
-        pytest.skip(str(exc))
-    if device.type != "cuda":
-        pytest.skip("no matching GPU")
-    name = torch.cuda.get_device_name(device)
-    assert "2080 Ti" in name, f"expected 2080 Ti, got cuda:{device.index} ({name})"
+def test_select_device_cpu_when_allowed(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    device = select_device(allow_cpu=True)
+    assert device.type == "cpu"
+
+
+def test_select_device_env_override(monkeypatch):
+    monkeypatch.setenv("PARARNN_DEVICE", "cpu")
+    device = select_device("2080 Ti", allow_cpu=True)
+    assert device.type == "cpu"

@@ -25,6 +25,8 @@ from pararnn.cells.para_slstm import (
     SLSTMLogCoords,
     slstm_decode_log,
     slstm_encode_log,
+    slstm_frozen_gate_scan,
+    slstm_frozen_gate_scan_eager,
     slstm_picard_init,
 )
 from pararnn.layout import (
@@ -62,6 +64,7 @@ def _residual_vs_k(
                 omega=omega,
                 scan_backend="eager",
                 residual_atol=None,
+                residual_fail=None,
                 jacobian="autograd",
                 jac_structure=jac_structure,
             ),
@@ -805,6 +808,31 @@ def test_slstm_chunked_newton_vs_sequential():
 
 
 @torch.no_grad()
+def test_slstm_frozen_gate_triton_matches_eager():
+    torch.manual_seed(311)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cell = ParaSLSTM(d_in=8, d_h=8, mix="diag").to(dev)
+    from pararnn.layout import prepend_state
+
+    for T in (12, 48, 200):
+        x = 0.3 * torch.randn(2, T, 8, device=dev)
+        wx = cell.W_x(x)
+        h0 = 0.1 * torch.randn(2, 4, 8, device=dev)
+        eager = slstm_frozen_gate_scan_eager(wx, eps=cell.eps, h0=h0)
+        fused = slstm_frozen_gate_scan(wx, eps=cell.eps, h0=h0)
+        torch.testing.assert_close(fused, eager, atol=2e-4, rtol=2e-4)
+        p3 = slstm_picard_init(cell, wx, h0=h0, n_picard=3)
+        states = slstm_frozen_gate_scan_eager(wx, eps=cell.eps, h0=h0)
+        for _ in range(3):
+            h_prev = prepend_state(states, h0)[..., SLSTM_HIDDEN, :]
+            pre = wx + cell._recurrent(h_prev)
+            states = slstm_frozen_gate_scan_eager(pre, eps=cell.eps, h0=h0)
+        torch.testing.assert_close(p3, states, atol=5e-4, rtol=5e-4)
+
+
+@torch.no_grad()
 def test_slstm_picard_p0_matches_zero_hidden():
     torch.manual_seed(310)
     cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
@@ -864,12 +892,37 @@ def test_slstm_picard_fused_matches_eager():
     assert err < 2e-3, err
 
 
+@torch.no_grad()
+def test_slstm_scan_seq_fused_matches_assoc():
+    torch.manual_seed(101)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(dev)
+    x = 0.3 * torch.randn(2, 48, 4, device=dev)
+    cfg = {
+        "max_iters": 3,
+        "residual_atol": None,
+        "picard_iters": 1,
+    }
+    assoc = newton_apply(cell, x, NewtonConfig(**cfg, scan_backend="fused"))
+    seqt = newton_apply(
+        cell,
+        x,
+        NewtonConfig(**cfg, scan_backend="fused", scan_tile="seq"),
+    )
+    torch.testing.assert_close(seqt, assoc, atol=2e-4, rtol=2e-4)
+
+
 def test_slstm_auto_picard_schedule():
     assert slstm_auto_picard(12) == 1
     assert slstm_auto_picard(64) == 1
     assert slstm_auto_picard(65) == 3
     assert slstm_auto_picard(256) == 3
     assert slstm_auto_picard(2048) == 3
+    assert slstm_auto_picard(2049) == 5
+    assert slstm_auto_picard(4096) == 5
+    assert slstm_auto_picard(16384) == 5
 
 
 @torch.no_grad()

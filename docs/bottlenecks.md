@@ -18,7 +18,7 @@ Remaining items are **other science**, not package polish.
 |---|---|---|---|---|
 | 1 | Hybrid Mamba-2 predictor + **one** Newton (ours, not Apple) | DEER: Newton wants a good guess. After residual early-stop. | **Up to ~3×** if the guess is close. | **Low** until ablation |
 | 2 | IFT adjoint (Bai / DEQ) | Eq. 2.6 is in. IFT is extra. | \(O(1)\) in solver depth. | **Low** until 2.6 is the bottleneck |
-| 3 | Para-sLSTM **head fused / LM** | Diag cell + Picard + 4×4 fused is on `para-slstm`. FlashRNN `cuda_fused` needs CC 8.0 (2080 Ti is 7.5). Head mix still out. | Matching K=3 at width 256 via auto P. | **Medium** on FlashRNN until Ampere; **high** on head mix |
+| 3 | Para-sLSTM **head fused / LM** | Diag cell + Picard + 4×4 fused is in this package. FlashRNN `cuda_fused` needs CC 8.0 (2080 Ti is 7.5). Head mix still out. | Matching K=3 at width 256 via auto P. | **Medium** on FlashRNN until Ampere; **high** on head mix |
 | 4 | HF / SlimPajama / 125M | Empty `PreTrainedModel` is worse than none. | Paper-scale claim. | **Low** until a real train loop |
 
 Do **not** bake `torch.compile` into `src/` (Dynamo 4–113 s per new \(T\)).
@@ -33,7 +33,7 @@ Do **not** treat `fused` as “any \(f\)”.
 | 1 | Any ``step(h, x)`` via Autograd Jacobian (DEER / Lim et al.). ``jacobian="auto"``: analytic if the cell has ``step_with_jacobian``, else ``torch.func``. | Two hardcoded cells is not a library. | Custom channelwise cell and dense mix (``jac_structure="dense"``) match sequential. Ones-JVP is exact iff ``f`` is channelwise; otherwise set ``dense``. Fused Newton stays ParaGRU/LSTM (not any ``f``). |
 | 2 | Eq. 2.6 cell VJP packed on CUDA for ParaGRU/ParaLSTM (Triton elementwise + ``W_x`` GEMM). Reverse scan already Triton when ``scan_backend`` is ``triton``/``fused``. | Backward was ``autograd.grad(cell.step)``. | Packed VJP matches Autograd VJP. Existing BPTT tests still pass. Custom cells keep Autograd on ``step`` (their ops are already CUDA). |
 | 3 | fp16 DRAM / fp32 Newton accumulators on Turing. Agreement tests **separately** (atol \(2\times10^{-3}\)). **Not bf16**. | Halves scan DRAM. TC help `W_x` only. | Smoke 10/50, same process as fp32 fused: at \(T=2048\) GRU **1.80 vs 2.61 ms** (**1.45×**), **66 vs 123 MiB** (**1.86×**); LSTM **5.45 vs 6.41 ms** (**1.18×**), **107 vs 205 MiB** (**1.91×**). Short \(T\) is slower. Residual \(\sim10^{-3}\). See [fp16](#fp16). |
-| 4 | Triton **fused Newton** (cell + J + scan per Alg. 1 iter). Opt-in `scan_backend="fused"`. GEMM `W_x` stays in PyTorch. Not Apple's kernel. Backward still eq. 2.6. | Newton still launched the eager cell \(K+1\) times after the scans landed. Paper 665× is fused CUDA, not this. | Smoke 10/50, \(T=2048\): GRU fused **2.4 ms** vs naive ParaRNN 27 ms (**11×**) vs naive RNN 959 ms (**400×**); LSTM **6.5 ms** vs 62 ms (**9.6×**) vs 1338 ms (**207×**). Peak mem vs naive ParaRNN **~3–4×** lower. ParaSLSTM diag fused **P=0 30 ms** is a **diverged** Newton; sequential-matched P=3 is **77 ms** vs compiled seq 814 ms (**11×**) vs naive RNN 1484 ms (**19×**). See [Fused Newton](#fused-newton) and [Fused sLSTM](#fused-slstm). |
+| 4 | Triton **fused Newton** (cell + J + scan per Alg. 1 iter). Opt-in `scan_backend="fused"`. GEMM `W_x` stays in PyTorch. Not Apple's kernel. Backward still eq. 2.6. | Newton still launched the eager cell \(K+1\) times after the scans landed. Paper 665× is fused CUDA, not this. | Smoke 10/50, \(T=2048\): GRU fused **2.4 ms** vs naive ParaRNN 27 ms (**11×**) vs naive RNN 959 ms (**400×**); LSTM **6.5 ms** vs 62 ms (**9.6×**) vs 1338 ms (**207×**). Peak mem vs naive ParaRNN **~3–4×** lower. ParaSLSTM diag fused **P=0 30 ms** is a **diverged** Newton; sequential-matched auto-P after Triton Picard is **23.6 ms** vs compiled seq 814 ms (**34×**) vs FlashRNN 5.8 ms (**0.25×**). See [Fused Newton](#fused-newton) and [Fused sLSTM](#fused-slstm). |
 | 5 | LSTM 2×2 as four muls, not `einsum`→`bmm`; Blelloch scan (not Hillis–Steele). No `torch.associative_scan` (CUDA/compile prototype, no CPU, no autograd). | **86% of LSTM CUDA** was tiny GEMVs. HS was \(O(T\log T)\) traffic. | Smoke: LSTM \(T=512\) 113→**46 ms**; \(T=2048\) 537→**82 ms**, 7.5 GiB→**719 MiB**; \(T=4096\) **fits, 1.4 GiB** (was OOM). GRU \(T=2048\) 29→**36 ms** (gather tax). |
 | 6 | Call-site `torch.compile(newton_apply)` (`reduce-overhead`). **Not** in `src/`. App. B `min_ms` is after warmup and **hides** Dynamo. | Launch tax on small \(T\). | Steady-state GRU \(T\le 256\) **~20–40×**; LSTM \(T=64\) **~16×**. Compile itself is **4–113 s** per new \(T\). LSTM at LM length needs **~2k forwards** to break even. See [Compile Newton](#compile-newton). |
 | 7 | Triton **diag** + **2×2** scan (`tl.associative_scan`, two-level tiles). Opt-in `scan_backend="triton"`. Not Apple's kernel. | Eager Blelloch gather tax. | Scan-only smoke (B=8, \(d_h=256\), 10/50, not App. B): diag **~16–34×**; 2×2 \(T=64\ldots4096\) eager 13→33 ms vs Triton 0.18→3.5 ms (**~10–74×**). Newton still pays the eager cell. |
@@ -179,20 +179,24 @@ init, not App. A. Same smoke protocol as the GRU table, 2080 Ti, B=8,
 \(10^{14}\)). Do not quote GRU's 11×/400× from that table.
 
 **P=3** ([`newton_slstm_picard.yaml`](../configs/bench/newton_slstm_picard.yaml)),
-sequential-matched (fused |par − seq| ≤ **2.8e-4**):
+sequential-matched. Sequential / eager columns are the first P=3 smoke;
+fused \(T\ge 256\) is after Triton Picard (same 10/50, 2080 Ti, B=8,
+\(d_h=256\)). Max |fused − seq| ≤ **3.6e-4**.
 
 | T | Naive RNN | Compiled seq | Naive ParaRNN | Fused | vs RNN | vs compiled | vs eager N |
 |---|---|---|---|---|---|---|---|
-| 64 | 43.0 | 23.9 | 55.1 | 37.7 | 1.1× | 0.63× | 1.5× |
-| 256 | 179 | 100 | 73.9 | **47.4** | 3.8× | 2.1× | 1.6× |
-| 512 | 355 | 201 | 92.1 | **74.0** | 4.8× | 2.7× | 1.2× |
-| 1024 | 726 | 395 | 121 | **65.1** | 11× | 6.1× | 1.9× |
-| 2048 | 1484 | 814 | 207 | **77.1** | 19× | **11×** | 2.7× |
+| 64 | 43.0 | 23.9 | 55.1 | 37.7† | 1.1× | 0.63× | 1.5× |
+| 256 | 179 | 100 | 73.9 | **5.10** | 35× | 20× | 14× |
+| 512 | 355 | 201 | 92.1 | **7.77** | 46× | 26× | 12× |
+| 1024 | 726 | 395 | 121 | **12.1** | 60× | 33× | 10× |
+| 2048 | 1484 | 814 | 207 | **23.6** | 63× | **34×** | 8.8× |
 
-Matching sequential costs wall time vs P=0 fused (**77 vs 30 ms** at
-\(T=2048\)): three frozen-gate scans + a Newton in basin. Still **11×** vs
-compiled sequential, **not** GRU fused 2.4 ms. Peak MiB fused 27 → 550 vs
-eager Newton 71 → 1946. At \(T=64\) fused+Picard loses to compiled seq.
+† Eager-Blelloch Picard at pinned P=3. Auto-P at T=64 is P=1:
+**2.12 ms** fused.
+
+Triton Picard (1D max-plus + two `ax+b` scans) dropped matched fused
+\(T=2048\) **77 → 23.6 ms**. Peak MiB fused 27 → 550 vs eager Newton
+71 → 1946.
 
 FlashRNN (NX-AI, ICLR 2025) is the sequential competitor. `cuda_fused`
 needs `nvcc` and CC **8.0+**; this 2080 Ti is **7.5**, so the harness
@@ -212,16 +216,91 @@ atol \(10^{-3}\). Fused vs FlashRNN (`>1` = fused faster):
 
 | T | fused (auto P) | flashrnn `triton_fused` | fused / FR |
 |---|---|---|---|
-| 64 | 18.0 (P=1) | **0.78** | 0.04× |
-| 256 | 47.0 (P=3) | **1.30** | 0.03× |
-| 512 | 55.7 | **1.99** | 0.04× |
-| 1024 | 62.5 | **3.03** | 0.05× |
-| 2048 | 77.3 | **5.76** | 0.07× |
+| 64 | 2.12 (P=1) | **0.81** | 0.38× |
+| 256 | 5.10 (P=3) | **1.18** | 0.23× |
+| 512 | 7.77 | **1.88** | 0.24× |
+| 1024 | 12.1 | **3.11** | 0.26× |
+| 2048 | 23.6 | **5.82** | 0.25× |
 
-T=2048 fused matches sequential to \(3\times10^{-4}\). FlashRNN is
-**~13×** faster than matched fused Newton. Do not quote ADD_TASK's
-20–50× vs FlashRNN; that needs Ampere `cuda_fused`. The 11× in the
-P=3 table is vs compiled PyTorch unroll, not vs FlashRNN.
+T=2048 fused matches sequential to \(3.6\times10^{-4}\). FlashRNN is
+**~4×** faster (was ~13× while Picard was eager Blelloch). Do not quote
+ADD_TASK's 20–50× vs FlashRNN; that needs Ampere `cuda_fused`. The 34×
+vs compiled PyTorch unroll is not vs FlashRNN.
+
+Gemini's four Flash-style hacks, measured:
+
+1. **1D scans instead of 4×4** — true for **Picard** (this Triton
+   kernel). False for Newton: `R h` couples the next gates, so Alg. 1
+   still scans a 4×4 `J` of `(c, n, m, h)`. Dropping that is inexact
+   Newton, not "the 4×4 was never there".
+2. **`h` as epilogue** — already true in Picard (`h = o ⊙ c / n`).
+   Live mixing still needs `h` in the Newton state.
+3. **Single-kernel P=3+K=3 in SRAM** — 64 KiB Turing smem cannot hold
+   \(T=2048\) states. Intercept fell because Picard left eager
+   Blelloch, not because P and K share one launch. Newton still dumps
+   16 `J` lanes to DRAM per iter.
+4. **Tiled scan** — already two-level (`BLOCK_T` then chunk scan),
+   span \(O(\mathrm{tile} + \log n_{\mathrm{tiles}})\). Serial
+   `chunk_len` Newton windows are the other "chunking"; do not add
+   those for speed.
+
+Forecast of 2.5–3.5 ms at T=2048 beating FlashRNN did **not** happen.
+Remaining slope is K=3 of 4×4 fused Newton vs a sequential sLSTM kernel.
+
+## Long T vs FlashRNN (no crossover)
+
+[`newton_slstm_flashrnn_long.yaml`](../configs/bench/newton_slstm_flashrnn_long.yaml):
+T=2048…16384, B=8, \(d_h=256\), 10/50 min ms, 2080 Ti. Fused T cap is
+16384 (`CHUNK_PAD=512`, `CHUNK_D=1`, 40 KiB). Auto P=5 for T>2048.
+`residual_atol=1e-5` (library): forced K=3 after Picard overshoots some
+T=4096 draws. Agreement only to T=4096 (atol \(2\times10^{-3}\));
+T=8192/16384 are timed, not sequential-checked.
+
+FlashRNN is **exactly linear** (Gemini's 11.6 / 23.2 / 46.4 ms was right).
+Fused Newton is also linear (DRAM \(O(KT)\), not a wall-clock
+\(O(\log T)\) plateau). Ratio stuck at **~0.19×**.
+
+| T | fused (auto P) | flashrnn | fused / FR | fused peak MiB |
+|---|---|---|---|---|
+| 2048 | 24.3 (P=3) | **5.77** | 0.24× | 550 |
+| 4096 | 59.5 (P=5) | **11.3** | 0.19× | 1090 |
+| 8192 | 120 | **22.5** | 0.19× | 2170 |
+| 16384 | 246 | **46.6** | 0.19× | 4330 |
+
+No overtake at 4096, 8192, or 16384. A later crossover would need the
+per-step slope (~15 µs fused vs ~2.8 µs FlashRNN), not more T.
+
+## Shamanskii, tile scan, R mix (measured)
+
+`uv run python scripts/bench_slstm_hacks.py`. Same 10/50, 2080 Ti, B=8,
+\(d_h=256\), K=3, auto P, `residual_atol=None`. Defaults stay off.
+
+| variant | T=256 ms | T=2048 ms | vs baseline T=2048 | peak T=2048 |
+|---|---|---|---|---|
+| baseline (diag, assoc, full J) | **5.42** | **24.3** | 1.0× | 944 MiB |
+| scan_tile=seq (serial `tl.range`) | 10.1 | 60.0 | 0.41× | 944 MiB |
+| FlashRNN 8×32 | **1.15** | **5.75** | — | 997 MiB |
+
+1. **True frozen scan was tried and removed.** Gemini: iter 0 is a full 20-lane
+   scan and stores \(P_t=\prod_k J_k\); later iters skip scanning \(J\) and
+   do \(\Delta_t=P_t\sum_{i\le t}P_i^{-1}r_i\) (4-vector prefix-sum). On
+   well-conditioned \(J=I+0.05\mathcal{N}\) that matches the affine scan. On
+   **real sLSTM** \(P_t\) is singular at T=12 already (`svd_min=0`, forget-gate
+   products). Then \(|P\sum P^{+}r-\mathrm{scan}|\) is \(28\) / \(2\cdot10^{2}\)
+   / \(2\cdot10^{3}\) at T=12/64/256. Short T still snapped because iter 0 is
+   full Newton (T=256 B=8 \(d_h=256\): |par−seq| \(3\cdot10^{-5}\)). T=2048
+   same shape: \(P^{+}r\) nonfinite. Wall clock T=256: **5.36 → 282 ms** —
+   batched `pinv` of every \(P_t\), not the 4-sum. Reloading raw \(J_t\) and
+   still scanning 20 lanes was 26.9 ms at T=2048 (also slower). Not in the tree.
+2. **Handwritten warp-shuffle was tried and removed.** `shfl.sync.up` on
+   one warp per \(d\) (`BLOCK_D=1`) matched assoc numerically and
+   dropped local `bar.sync`, but T=2048 went 24.3→177 ms (16× more CTAs,
+   no 16-wide \(d\) vectorization). `tl.associative_scan` on the
+   `(32,16)` tile already emits `shfl` plus smem. `scan_tile=seq` is a
+   serial `tl.range` prefix, **2.5× slower** — not a shuffle.
+3. **R mix:** fused is already `mix='diag'` (\(R\odot h\)). `mix='head'`
+   eager Newton at T=16 B=2 \(d_h=256\) 8 heads: **19.7 ms** — not a
+   fused path. FlashRNN's 8×32 is a sequential kernel, not our Newton.
 
 ## fp16
 

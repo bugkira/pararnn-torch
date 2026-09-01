@@ -6,8 +6,15 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from pararnn import NewtonConfig, NewtonStats, device, newton_apply, sequential_apply
-from pararnn.cells import ParaGRU
+from pararnn import (
+    NewtonConfig,
+    NewtonDivergenceError,
+    NewtonStats,
+    device,
+    newton_apply,
+    sequential_apply,
+)
+from pararnn.cells import ParaGRU, ParaSLSTM
 
 
 class _DiagTanh(nn.Module):
@@ -82,3 +89,44 @@ def test_fused_rejects_cpu_and_custom_cell():
             xc,
             NewtonConfig(max_iters=1, scan_backend="fused", jacobian="autograd"),
         )
+
+
+@torch.no_grad()
+def test_newton_fail_loud_on_zero_iters_slstm():
+    torch.manual_seed(94)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = torch.randn(2, 12, 4, device=device)
+    with pytest.raises(NewtonDivergenceError, match="residual_fail"):
+        newton_apply(
+            cell,
+            x,
+            NewtonConfig(
+                max_iters=0,
+                scan_backend="eager",
+                picard_iters=0,
+                residual_atol=None,
+                residual_fail=1e-3,
+            ),
+        )
+
+
+@torch.no_grad()
+def test_newton_fail_loud_can_be_disabled():
+    torch.manual_seed(95)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = torch.randn(2, 12, 4, device=device)
+    st = NewtonStats()
+    newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=0,
+            scan_backend="eager",
+            picard_iters=0,
+            residual_atol=None,
+            residual_fail=None,
+        ),
+        stats=st,
+    )
+    assert st.iters == 0
+    assert st.max_residual > 1e-3

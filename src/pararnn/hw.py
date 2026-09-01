@@ -1,9 +1,7 @@
-"""Lab GPU by name. Public API is ``from pararnn import device`` (a ``torch.device``).
+"""Device selection. Public ``from pararnn import device`` is first CUDA or CPU.
 
-On this box ``nvidia-smi`` lists 3060 as GPU 0 and 2080 Ti as GPU 1.
-PyTorch currently enumerates them the other way around (2080 Ti = cuda:0).
-Always match on the device *name*. Never use cuda:0/cuda:1 from nvidia-smi.
-Never fall back to the 3060 for benches — wait until the 2080 Ti is free.
+Lab benches pin a GPU **by name** via ``select_device("2080 Ti")`` (never a
+nvidia-smi index). Override any pick with ``PARARNN_DEVICE``.
 """
 
 from __future__ import annotations
@@ -16,15 +14,20 @@ import torch
 
 log = logging.getLogger(__name__)
 
+# This box only. Benches/scripts; not the library default.
 DEFAULT_EXPERIMENT_GPU_NAME = "2080 Ti"
 
 
 def select_device(
-    name_substring: str = DEFAULT_EXPERIMENT_GPU_NAME,
+    name_substring: str | None = None,
     *,
     allow_cpu: bool = False,
 ) -> torch.device:
-    """Return the CUDA device whose ``get_device_name`` contains ``name_substring``."""
+    """CUDA device, optionally filtered by ``get_device_name`` substring.
+
+    No substring: ``cuda:0`` in PyTorch order (not nvidia-smi). ``PARARNN_DEVICE``
+    wins. CPU only if ``allow_cpu`` and CUDA is missing.
+    """
     override = os.environ.get("PARARNN_DEVICE")
     if override:
         device = torch.device(override)
@@ -39,13 +42,18 @@ def select_device(
 
     n = torch.cuda.device_count()
     names = [torch.cuda.get_device_name(i) for i in range(n)]
-    matches = [i for i, nm in enumerate(names) if name_substring.lower() in nm.lower()]
-    if not matches:
-        raise RuntimeError(
-            f"No GPU matching {name_substring!r}. Visible devices: "
-            + ", ".join(f"cuda:{i} ({nm})" for i, nm in enumerate(names))
-        )
-    index = matches[0]
+    if name_substring:
+        matches = [
+            i for i, nm in enumerate(names) if name_substring.lower() in nm.lower()
+        ]
+        if not matches:
+            raise RuntimeError(
+                f"No GPU matching {name_substring!r}. Visible devices: "
+                + ", ".join(f"cuda:{i} ({nm})" for i, nm in enumerate(names))
+            )
+        index = matches[0]
+    else:
+        index = 0
     device = torch.device(f"cuda:{index}")
     log.info(
         "select_gpu",

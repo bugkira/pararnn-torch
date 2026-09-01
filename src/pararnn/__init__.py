@@ -4,7 +4,14 @@ from typing import TYPE_CHECKING, Any
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
 from pararnn.hw import wait_until_free
 from pararnn.layers import ParaRNN
-from pararnn.solvers import NewtonConfig, NewtonStats, newton_apply, sequential_apply
+from pararnn.solvers import (
+    LIBRARY_NEWTON_ITERS,
+    NewtonConfig,
+    NewtonDivergenceError,
+    NewtonStats,
+    newton_apply,
+    sequential_apply,
+)
 
 if TYPE_CHECKING:
     import torch
@@ -12,7 +19,9 @@ if TYPE_CHECKING:
     device: torch.device
 
 __all__ = [
+    "LIBRARY_NEWTON_ITERS",
     "NewtonConfig",
+    "NewtonDivergenceError",
     "NewtonStats",
     "ParaGRU",
     "ParaLSTM",

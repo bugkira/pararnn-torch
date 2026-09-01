@@ -1,4 +1,5 @@
-# Para-sLSTM (research branch)
+# Para-sLSTM
+
 
 Sequential sLSTM + Newton. Fused Triton is `mix='diag'` only. Not FlashRNN.
 Not TinyStories.
@@ -147,21 +148,26 @@ at this width, not GRU \(10^{-4}\)). Max |fused − seq|: 8e-6 … **2.8e-4**.
 
 | T | Naive RNN | Compiled seq | Naive ParaRNN | Fused | vs RNN | vs compiled | vs eager N |
 |---|---|---|---|---|---|---|---|
-| 64 | 43.0 | 23.9 | 55.1 | 37.7 | 1.1× | 0.63× | 1.5× |
-| 256 | 179 | 100 | 73.9 | **47.4** | 3.8× | 2.1× | 1.6× |
-| 512 | 355 | 201 | 92.1 | **74.0** | 4.8× | 2.7× | 1.2× |
-| 1024 | 726 | 395 | 121 | **65.1** | 11× | 6.1× | 1.9× |
-| 2048 | 1484 | 814 | 207 | **77.1** | 19× | **11×** | 2.7× |
+| 64 | 43.0 | 23.9 | 55.1 | 37.7† | 1.1× | 0.63× | 1.5× |
+| 256 | 179 | 100 | 73.9 | **5.10** | 35× | 20× | 14× |
+| 512 | 355 | 201 | 92.1 | **7.77** | 46× | 26× | 12× |
+| 1024 | 726 | 395 | 121 | **12.1** | 60× | 33× | 10× |
+| 2048 | 1484 | 814 | 207 | **23.6** | 63× | **34×** | 8.8× |
+
+† T=64 fused **37.7 ms** is the old eager-Blelloch Picard (P=3). Auto-P
+is P=1 at this length: Triton Picard fused **2.12 ms**. Sequential /
+eager columns are the same process as the first P=3 smoke.
 
 Peak MiB is the same class as P=0 (fused 27 → 550 vs eager Newton 71 →
-1946). The extra wall time vs P=0 fused (**77 vs 30 ms** at \(T=2048\))
-is three frozen-gate scans plus a Newton that actually stays in basin.
-At \(T=64\) fused+Picard is **slower** than compiled sequential: short
-T is launch-bound and P=3 is a real tax. Do not paste GRU's 11×/400×
-or the P=0 47× onto this table. Not FlashRNN.
+1946). Triton Picard (max-plus + two 1D `ax+b` scans) dropped matched
+fused \(T=2048\) from **77 → 23.6 ms**. P=0 fused 30 ms is still a
+diverged Newton; matched fused is now in the same ballpark because
+Picard is no longer eager Blelloch. At \(T=64\) auto P=1 fused is
+**faster** than compiled sequential. Do not paste GRU's 400× onto this
+table. Not FlashRNN.
 
-Fused vs eager Newton is **~1.2–2.7×** (Picard is still PyTorch
-cumsum/cummax/`scan_diag`; only K Newton iters are fused).
+Fused vs eager Newton is **~9–14×** after Triton Picard (was 1.2–2.7×
+when Picard was eager Blelloch).
 
 ## Agreement at width 256
 
@@ -209,12 +215,16 @@ library \(K=3\) past a few hundred tokens. Raising K at \(T=2048\),
 
 `NewtonConfig(picard_iters=P)` is extra prefix scans after zero-hidden:
 freeze \(R h\) from the previous trajectory, rescan `(c, n, m)` with
-cumsum / cummax / `scan_diag`. Not Jacobi `H := f(H_prev, x)` (that only
-moves one token per iter). Not Mamba-2 (no extra parameters). Each pass
-is still \(O(\log T)\). **Library default is `P=None` (auto from T):**
-P=1 if \(T\le 64\), else P=3. Finer cutovers (P=1 at T=256, P=2 at T=1024)
-are seed-0 B=2 only; unseeded B=8 T=256 P=1 was \(2\times10^{-2}\). Explicit
-`0` is zero-hidden only.
+max-plus `m` and two 1D `ax+b` scans for `n`/`c`. CUDA fp16/fp32 uses
+the Triton tiled scan (`kernels/picard_slstm.py`); CPU stays eager
+Blelloch. Not Jacobi `H := f(H_prev, x)` (that only moves one token per
+iter). Not Mamba-2 (no extra parameters). Each pass is still
+\(O(\log T)\). **Library default is `P=None` (auto from T):**
+P=1 if \(T\le 64\), P=3 if \(T\le 2048\), else P=5. Finer cutovers
+(P=1 at T=256, P=2 at T=1024, P=4 at T=4096) are seed-0 B=2 only;
+unseeded B=8 T=256 P=1 was \(2\times10^{-2}\), and T=4096 P=3/4 with
+forced K=3 (no residual early-stop) still diverges on some draws.
+Explicit `0` is zero-hidden only.
 
 Isolated seed 0, 2080 Ti, B=2, \(d_h=256\), `x_scale=1`, K=3, eager,
 fresh cell per T. Max |par − seq|:
@@ -282,5 +292,6 @@ auto-selects P from T (library default).
 
 Packed VJP, fused head mix, LM train. Mamba-2 predictor is not this Picard
 (no extra SSM weights). FlashRNN on this 2080 Ti is `triton_fused` 8×32
-(not diag mix): T=2048 **5.8 ms** vs fused auto-P **77 ms** (13× slower).
-`cuda_fused` needs `nvcc` + CC 8.0. See `docs/bottlenecks.md`.
+(not diag mix): T=2048 **5.8 ms** vs fused auto-P **23.6 ms** (4× slower).
+Longer T does **not** cross: both stay linear; fused/FR ≈ **0.19×** out
+to T=16384. `cuda_fused` needs `nvcc` + CC 8.0. See `docs/bottlenecks.md`.

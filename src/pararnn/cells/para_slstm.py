@@ -14,7 +14,8 @@ linear ``n``/``c``). ``K=3`` then matches GRU on the T=48 prototype.
 ``NewtonConfig(coords='log')`` iterates the convex-combination / LSE map
 ``(u, log n, m, h)`` with ``u=c/n`` (opt-in; fused diag has a matching
 Triton cell). Not the long-T snap: that is ``picard_iters`` (frozen-gate
-prefix scans, still O(log T)) plus native K=3.
+1D scans, still O(log T); CUDA uses the Triton twin) plus native K=3.
+Newton itself keeps the 4x4 ``J`` of ``R h`` feedback.
 """
 
 from __future__ import annotations
@@ -380,11 +381,36 @@ def slstm_frozen_gate_scan(
 ) -> Tensor:
     """sLSTM ``(c, n, m, h)`` with gates frozen in ``pre`` (full preactivation).
 
-    ``m`` is the max-plus prefix ``m_t = P_t + max_k(z_i_k - P_k)`` with
-    ``P = cumsum(z_f)``, then ``n`` and ``c`` are the diagonal scans
-    ``q_t = f_t q_{t-1} + ...``. Algebra in fp32; DRAM dtype preserved.
-    Span is a prefix scan, not a time loop.
+    ``m`` is the max-plus prefix ``m_t = max(z_f + m_{t-1}, z_i)``, then
+    ``n`` and ``c`` are 1D scans ``q_t = f_t q_{t-1} + ...``. ``h`` is
+    readout. Algebra in fp32; DRAM dtype preserved. Span is a prefix
+    scan, not a time loop. CUDA fp16/fp32 uses the Triton tiled scan
+    (not eager Blelloch; not serial ``chunk_len``).
     """
+    if (
+        pre.is_cuda
+        and pre.dtype in (torch.float16, torch.float32)
+        and (h0 is None or h0.is_cuda)
+    ):
+        from pararnn.kernels.picard_slstm import (
+            _BLOCK_T,
+            _CHUNK_PAD,
+            frozen_gate_scan_triton,
+        )
+
+        n_chunks = (pre.shape[1] + _BLOCK_T - 1) // _BLOCK_T
+        if n_chunks <= _CHUNK_PAD:
+            return frozen_gate_scan_triton(pre, eps=eps, h0=h0)
+    return slstm_frozen_gate_scan_eager(pre, eps=eps, h0=h0)
+
+
+def slstm_frozen_gate_scan_eager(
+    pre: Tensor,
+    *,
+    eps: float,
+    h0: Tensor | None = None,
+) -> Tensor:
+    """CPU / fallback twin of ``slstm_frozen_gate_scan`` (eager Blelloch)."""
     from pararnn.solvers.scan import scan_diag
 
     batch, _, four_d = pre.shape

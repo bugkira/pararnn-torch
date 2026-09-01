@@ -23,6 +23,7 @@ Triton on CUDA (``W_x`` GEMM still PyTorch). Custom cells use Autograd on
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, replace
 
 import torch
@@ -58,6 +59,17 @@ log = logging.getLogger(__name__)
 # App. A: K=3 reaches machine precision on these cells. Sequential agreement
 # tests use 1e-4. Stop a wasted extra iter below that and above fp32 noise.
 _DEFAULT_RESIDUAL_ATOL = 1e-5
+# Library contract (not a search): K=3 (App. A). Do not raise K when sLSTM
+# misses the basin — raise Picard P instead (para-slstm.md).
+LIBRARY_NEWTON_ITERS = 3
+# After K steps, max|F| above this is divergence, not "needs one more Newton".
+# Sequential agreement is 1e-4…2e-3; diverged sLSTM is 1e2…1e14 (para-slstm.md).
+# 1.0 sits between. None disables (K-curves, P=0 timing benches).
+_DEFAULT_RESIDUAL_FAIL = 1.0
+
+
+class NewtonDivergenceError(RuntimeError):
+    """Newton did not land in the sequential basin. Raise P for sLSTM, not K."""
 
 
 @dataclass
@@ -68,11 +80,13 @@ class NewtonStats:
     iters: int = 0
     scan_backend: str = ""
     picard_iters: int = 0
+    residual_history: tuple[float, ...] = ()
 
 
 @dataclass
 class NewtonConfig:
-    max_iters: int = 3
+    # App. A / library contract. ParaSLSTM at long T needs Picard, not more K.
+    max_iters: int = LIBRARY_NEWTON_ITERS
     omega: float = 1.0  # 1 = vanilla Newton; <1 damps (cf. Gonzalez et al. ELK)
     # auto: fused on CUDA GRU/LSTM/sLSTM-diag fp16/fp32, else Triton scan + step, else eager.
     # eager: vectorized Blelloch (CPU+CUDA). Any f.
@@ -90,6 +104,9 @@ class NewtonConfig:
     # None disables early-stop. Default: skip remaining Newton steps when
     # max|F| is already below sequential-agreement scale (see App. A / 1e-4 tests).
     residual_atol: float | None = _DEFAULT_RESIDUAL_ATOL
+    # After the last Newton step, raise NewtonDivergenceError if max|F| exceeds
+    # this. Default 1.0 (see module comment). None: K-curves / diverged benches.
+    residual_fail: float | None = _DEFAULT_RESIDUAL_FAIL
     # log: ParaSLSTM only — LSE cell in (u, log n, m, h). Not a paper default.
     # Not the snap path once picard_iters is in the basin (native is as good
     # or better; para-slstm.md). Fused diag has an LSE kernel. Fallback: native.
@@ -99,11 +116,13 @@ class NewtonConfig:
     # T=64 K=3 snaps at d_h=256 seed 0 in this repo (para-slstm.md). Gemini /
     # Mamba-2 SRAM tile. Fallback: 32 if a seed fails at 64. Sequential span.
     chunk_len: int | None = None
-    # None = auto for ParaSLSTM: P=1 if T<=64 else P=3. Isolated seed 0
-    # B=2 had finer cutovers (P=1 at T=256, P=2 at T=1024); unseeded B=8
-    # T=256 P=1 failed 2e-2 so auto is conservative. Other cells: 0.
-    # Explicit 0 is zero-hidden only. Fallback: raise P, not K.
+    # None = auto for ParaSLSTM: library contract P ∈ {1, 3, 5} from T
+    # (slstm_auto_picard). Other cells: 0. Explicit 0 is zero-hidden.
+    # Fallback if residual_fail fires: raise P, not K.
     picard_iters: int | None = None
+    # assoc: tl.associative_scan.
+    # seq: serial tl.range prefix in the tile — ablation only.
+    scan_tile: str = "assoc"
 
 
 def newton_apply(
@@ -130,8 +149,16 @@ def newton_apply(
         raise ValueError(f"unknown newton coords {config.coords!r}")
     if config.chunk_len is not None and int(config.chunk_len) < 1:
         raise ValueError(f"chunk_len must be >= 1, got {config.chunk_len!r}")
+    if config.max_iters < 0:
+        raise ValueError(f"max_iters must be >= 0, got {config.max_iters!r}")
     if config.picard_iters is not None and int(config.picard_iters) < 0:
         raise ValueError(f"picard_iters must be >= 0, got {config.picard_iters!r}")
+    if config.residual_fail is not None and float(config.residual_fail) < 0:
+        raise ValueError(
+            f"residual_fail must be >= 0 or None, got {config.residual_fail!r}"
+        )
+    if config.scan_tile not in ("assoc", "seq"):
+        raise ValueError(f"unknown scan_tile {config.scan_tile!r}")
     config = _resolve_backend(cell, x, config)
     params = tuple(cell.parameters())
     needs_grad = torch.is_grad_enabled() and (
@@ -198,16 +225,19 @@ def _pick_auto(cell: nn.Module, x: Tensor) -> str:
 
 
 def slstm_auto_picard(seq_len: int) -> int:
-    """Library P for ParaSLSTM. Measured at ``d_h=256``, ``x_scale=1``, K=3.
+    """Library Picard P for ParaSLSTM: 1 if T≤64, 3 if T≤2048, else 5.
 
-    Isolated seed 0, B=2: P=1 snaps T=256; T=1024 needs P=2; T=2048 needs P=3.
-    Unseeded B=8 (bench) P=1 at T=256 was 2e-2, not a snap. Auto is therefore
-    P=1 only for T<=64 (that length snaps at P=0 on the K-curve) and P=3
-    otherwise. Explicit 0 is zero-hidden. Fallback: raise P, not K.
+    Contract is this triple, not a search over K. Measured at ``d_h=256``,
+    ``x_scale=1``, K=3 (para-slstm.md). Finer seed-0 cutovers (P=2 at T=1024,
+    P=4 at T=4096) failed unseeded B=8. Explicit 0 is zero-hidden only.
+    Fallback if ``residual_fail`` fires: raise P, not K.
     """
-    if int(seq_len) <= 64:
+    t = int(seq_len)
+    if t <= 64:
         return 1
-    return 3
+    if t <= 2048:
+        return 3
+    return 5
 
 
 def _resolve_picard(cell: nn.Module, x: Tensor, config: NewtonConfig) -> NewtonConfig:
@@ -325,6 +355,7 @@ def _newton_forward(
 
     iters_done = 0
     last_res = float("nan")
+    history: list[float] = []
     for it in range(config.max_iters):
         h_prev = prepend_state(states, h0_loop)
         pred, jac = step_and_jacobian(
@@ -337,6 +368,8 @@ def _newton_forward(
         )
         residual = pred - states
         last_res = float(residual.detach().abs().amax())
+        history.append(last_res)
+        delta = _scan(jac, residual, backend=config.scan_backend)
         if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
             log.debug(
                 "newton_iter",
@@ -363,7 +396,6 @@ def _newton_forward(
                 },
             )
             break
-        delta = _scan(jac, residual, backend=config.scan_backend)
         if states.dtype == torch.float16:
             states = (states.float() + config.omega * delta.float()).to(states.dtype)
         else:
@@ -374,7 +406,16 @@ def _newton_forward(
     if config.coords == "log":
         states = slstm_decode_log(states, eps=native.eps)
         cell = native
-    _fill_stats(cell, x, states, h0, config, iters=iters_done, stats=stats)
+    _fill_stats(
+        cell,
+        x,
+        states,
+        h0,
+        config,
+        iters=iters_done,
+        stats=stats,
+        residual_history=history,
+    )
     return states
 
 
@@ -419,14 +460,42 @@ def _fill_stats(
     *,
     iters: int,
     stats: NewtonStats | None,
+    residual_history: list[float] | tuple[float, ...] = (),
 ) -> None:
-    if stats is None:
+    if stats is None and config.residual_fail is None:
         return
     pred = cell.step(prepend_state(states, h0), x)
-    stats.max_residual = float((pred - states).detach().abs().amax())
-    stats.iters = iters
-    stats.scan_backend = config.scan_backend
-    stats.picard_iters = int(config.picard_iters or 0)
+    res = float((pred - states).detach().abs().amax())
+    hist = tuple(residual_history)
+    if stats is not None:
+        stats.max_residual = res
+        stats.iters = iters
+        stats.scan_backend = config.scan_backend
+        stats.picard_iters = int(config.picard_iters or 0)
+        stats.residual_history = hist
+    cap = config.residual_fail
+    if cap is None:
+        return
+    diverged = not math.isfinite(res) or res > cap
+    if not diverged:
+        return
+    extra = {
+        "max_residual": res,
+        "residual_fail": cap,
+        "iters": iters,
+        "seq_len": int(x.shape[1]),
+        "batch": int(x.shape[0]),
+        "cell": type(cell).__name__,
+        "picard_iters": int(config.picard_iters or 0),
+        "scan_backend": config.scan_backend,
+        "residual_history": hist[-8:],
+    }
+    log.error("newton_diverged", extra=extra)
+    raise NewtonDivergenceError(
+        f"Newton residual {res:.3e} after {iters} iters exceeds residual_fail="
+        f"{cap:g} (seq_len={x.shape[1]}, picard={int(config.picard_iters or 0)}, "
+        f"history={hist[-8:]!r}). For ParaSLSTM raise P, not K."
+    )
 
 
 def _newton_fused(
@@ -451,6 +520,7 @@ def _newton_fused(
             "device": str(x.device),
             "h0": h0 is not None,
             "picard_iters": int(config.picard_iters or 0),
+            "scan_tile": config.scan_tile,
         },
     )
     from pararnn.kernels.fused import fused_newton
@@ -463,6 +533,7 @@ def _newton_fused(
         h0=h0,
         log_coords=config.coords == "log",
         picard_iters=int(config.picard_iters or 0),
+        scan_tile=config.scan_tile,
     )
 
 

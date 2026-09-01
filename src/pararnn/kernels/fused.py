@@ -2,9 +2,9 @@
 
 ParaGRU / ParaLSTM, and ParaSLSTM with ``mix='diag'`` (4x4 SRAM). Head/dense
 sLSTM stay on the PyTorch cell + scan_dense path. ParaSLSTM ``log_coords``
-uses the LSE cell inside the same kernel; ``picard_iters`` is a PyTorch
-frozen-gate scan before the fused Newton (still O(log T)). Chunking stays
-a Python loop.
+uses the LSE cell inside the same kernel; ``picard_iters`` is the
+frozen-gate 1D scan (Triton on CUDA) before the fused 4x4 Newton. Still
+O(log T). Serial ``chunk_len`` stays a Python loop.
 """
 
 from __future__ import annotations
@@ -25,12 +25,15 @@ def fused_newton(
     h0: Tensor | None,
     log_coords: bool = False,
     picard_iters: int = 0,
+    scan_tile: str = "assoc",
 ) -> Tensor:
     if isinstance(cell, ParaGRU):
         if log_coords:
             raise TypeError("fused log coords is ParaSLSTM only")
         if picard_iters:
             raise TypeError("fused Picard is ParaSLSTM only")
+        if scan_tile != "assoc":
+            raise TypeError("fused scan_tile is ParaSLSTM only")
         from pararnn.kernels.newton_gru import newton_gru_fused
 
         a_z, a_r, a_n = cell.clipped_a()
@@ -42,6 +45,8 @@ def fused_newton(
             raise TypeError("fused log coords is ParaSLSTM only")
         if picard_iters:
             raise TypeError("fused Picard is ParaSLSTM only")
+        if scan_tile != "assoc":
+            raise TypeError("fused scan_tile is ParaSLSTM only")
         from pararnn.kernels.newton_lstm import newton_lstm_fused
 
         a_f, a_z, a_o, c_f, c_o = cell.clipped_recurrent()
@@ -72,6 +77,7 @@ def fused_newton(
             h0=h0,
             states=states,
             log_coords=log_coords,
+            scan_tile=scan_tile,
         )
     raise TypeError(
         f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM(diag) only, not any f; "
