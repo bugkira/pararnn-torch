@@ -25,6 +25,7 @@ from pararnn.layout import (
     slstm_pack_heads,
     slstm_unpack_heads,
 )
+from pararnn.solvers.jacobian import jacobian_autograd
 from pararnn.solvers.scan import reverse_scan_block4, scan_block4, scan_dense
 
 log = logging.getLogger(__name__)
@@ -332,3 +333,40 @@ def test_slstm_head_newton_bwd_matches_sequential_bptt():
         assert p_a.grad is not None, n
         torch.testing.assert_close(p_a.grad, p_b.grad, atol=5e-4, rtol=1e-4)
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=5e-4, rtol=1e-4)
+
+
+@torch.no_grad()
+def test_slstm_analytic_jac_matches_autograd():
+    torch.manual_seed(208)
+    specs = (
+        (ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device), "block4", 4),
+        (ParaSLSTM(d_in=4, d_h=4, mix="head", n_heads=2).to(device), "head", 4),
+        (ParaSLSTM(d_in=3, d_h=3, mix="dense").to(device), "dense", 3),
+    )
+    for cell, structure, d_h in specs:
+        state = torch.randn(2, 7, SLSTM_SLOTS, d_h, device=device)
+        x = 0.3 * torch.randn(2, 7, cell.d_in, device=device)
+        pred_a, jac_a = cell.step_with_jacobian(state, x)
+        pred_g, jac_g = jacobian_autograd(cell, state, x, structure=structure)
+        torch.testing.assert_close(pred_g, pred_a, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(jac_g, jac_a, atol=1e-5, rtol=1e-5)
+
+
+@torch.no_grad()
+def test_slstm_analytic_newton_matches_sequential():
+    torch.manual_seed(101)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = 0.3 * torch.randn(2, 12, 4, device=device)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=5,
+            scan_backend="eager",
+            residual_atol=None,
+            jacobian="analytic",
+        ),
+    )
+    err = float((par - seq).abs().amax())
+    assert err < 2e-3, err

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from pararnn.cells import ParaGRU, ParaLSTM
+from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
 
 
 def test_gru_step_matches_jacobian_state():
@@ -44,6 +44,29 @@ def test_lstm_precomputed_wx_matches():
     torch.manual_seed(15)
     cell = ParaLSTM(d_in=5, d_h=6)
     state = torch.randn(2, 2, 6)
+    x = torch.randn(2, 5)
+    wx = cell.W_x(x)
+    torch.testing.assert_close(cell.step(state, x), cell.step(state, x, wx=wx))
+    s_a, j_a = cell.step_with_jacobian(state, x)
+    s_b, j_b = cell.step_with_jacobian(state, x, wx=wx)
+    torch.testing.assert_close(s_a, s_b)
+    torch.testing.assert_close(j_a, j_b)
+
+
+def test_slstm_step_matches_jacobian_state():
+    torch.manual_seed(21)
+    cell = ParaSLSTM(d_in=5, d_h=4, mix="diag")
+    state = torch.randn(2, 4, 4)
+    x = torch.randn(2, 5)
+    s_step = cell.step(state, x)
+    s_jac, _ = cell.step_with_jacobian(state, x)
+    torch.testing.assert_close(s_step, s_jac)
+
+
+def test_slstm_precomputed_wx_matches():
+    torch.manual_seed(22)
+    cell = ParaSLSTM(d_in=5, d_h=4, mix="head", n_heads=2)
+    state = torch.randn(2, 4, 4)
     x = torch.randn(2, 5)
     wx = cell.W_x(x)
     torch.testing.assert_close(cell.step(state, x), cell.step(state, x, wx=wx))

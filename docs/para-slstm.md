@@ -67,6 +67,14 @@ Diag overshoot is the no-mixing cell, not a reason to drop heads. Prototype
 head recipe: **K=4, omega=1, clip=0.5**. Scan cost is
 `O(T n_heads (4 d_head)^3)`, not `O(T (4 d_h)^3)`.
 
+## Analytic Jacobian
+
+`step_with_jacobian` is the Newton `auto` path. ADD_TASK §2.4 is the
+channelwise skeleton; the code also chains `tanh(z_z)`, `σ(z_o)`, and
+`n+ε`. `torch.maximum` at ties splits 0.5/0.5 (PyTorch). Head/dense J is
+packed `(4 d × 4 d)` per head: columns `c,n,m` stay channelwise, columns
+`h` are dense through `R`.
+
 ## Not yet
 
-Analytic J, fused Triton, VJP packed kernel, FlashRNN bench, LM train.
+Fused Triton, VJP packed kernel, FlashRNN bench, LM train.

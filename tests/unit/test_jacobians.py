@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import torch
 
-from pararnn.cells import ParaGRU, ParaLSTM
-from pararnn.layout import LSTM_CELL, LSTM_HIDDEN
+from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
+from pararnn.layout import LSTM_CELL, LSTM_HIDDEN, SLSTM_SLOTS
 
 
 def test_gru_jacobian_matches_autograd():
@@ -36,4 +36,20 @@ def test_lstm_jacobian_matches_autograd():
                 expect = torch.zeros_like(g)
                 expect[LSTM_CELL, d] = jac[b, out, LSTM_CELL, d]
                 expect[LSTM_HIDDEN, d] = jac[b, out, LSTM_HIDDEN, d]
+                torch.testing.assert_close(g, expect, atol=1e-5, rtol=1e-5)
+
+
+def test_slstm_diag_jacobian_matches_autograd():
+    torch.manual_seed(20)
+    cell = ParaSLSTM(d_in=5, d_h=4, mix="diag")
+    state = torch.randn(2, SLSTM_SLOTS, 4, requires_grad=True)
+    x = torch.randn(2, 5)
+    new_state, jac = cell.step_with_jacobian(state, x)
+    for b in range(2):
+        for out in range(SLSTM_SLOTS):
+            for d in range(4):
+                g = torch.autograd.grad(new_state[b, out, d], state, retain_graph=True)[0][b]
+                expect = torch.zeros_like(g)
+                for inn in range(SLSTM_SLOTS):
+                    expect[inn, d] = jac[b, out, inn, d]
                 torch.testing.assert_close(g, expect, atol=1e-5, rtol=1e-5)
