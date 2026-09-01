@@ -11,6 +11,10 @@ do not. Not FlashRNN. Newton init is not App. A ``f(0, x_t)``: ``n`` is a
 running normalizer, so we start from the ``R h = 0`` unroll (max-plus ``m``,
 linear ``n``/``c``). ``K=3`` then matches GRU on the T=48 prototype.
 ``omega=0.5`` still damps the snap — do not copy ELK as the sLSTM default.
+``NewtonConfig(coords='log')`` iterates the convex-combination / LSE map
+``(u, log n, m, h)`` with ``u=c/n`` (opt-in; fused diag has a matching
+Triton cell). Not the long-T snap: that is ``picard_iters`` (frozen-gate
+prefix scans, still O(log T)) plus native K=3.
 """
 
 from __future__ import annotations
@@ -27,10 +31,15 @@ from pararnn.layout import (
     SLSTM_NORMALIZER,
     SLSTM_SLOTS,
     SLSTM_STABILIZER,
+    prepend_state,
 )
 
 _MIX = ("diag", "dense", "head")
 _JAC = {"diag": "block4", "dense": "dense", "head": "head"}
+# ã = c/(n+eps) lives in ~(-1, 1). ln clamp is fp32 exp (overflow ~88).
+_LOG_RATIO_ABSMAX = 4.0
+_LOG_N_MIN = -40.0
+_LOG_N_MAX = 80.0
 
 
 class ParaSLSTM(nn.Module):
@@ -165,6 +174,19 @@ class ParaSLSTM(nn.Module):
         if wx is None:
             wx = self.W_x(x)
         return slstm_zero_hidden_init(wx, eps=self.eps, h0=h0)
+
+    def picard_init(
+        self,
+        x: Tensor,
+        *,
+        wx: Tensor | None = None,
+        h0: Tensor | None = None,
+        n_picard: int = 1,
+    ) -> Tensor:
+        """Zero-hidden, then ``n_picard`` frozen-gate scans. See module fn."""
+        if wx is None:
+            wx = self.W_x(x)
+        return slstm_picard_init(self, wx, h0=h0, n_picard=n_picard)
 
     def _step_from_pre(self, state_prev: Tensor, pre: Tensor) -> Tensor:
         return self._acts_from_pre(state_prev, pre).state_new
@@ -350,28 +372,28 @@ class ParaSLSTM(nn.Module):
         return jac
 
 
-def slstm_zero_hidden_init(
-    wx: Tensor,
+def slstm_frozen_gate_scan(
+    pre: Tensor,
     *,
     eps: float,
     h0: Tensor | None = None,
 ) -> Tensor:
-    """Newton guess: sLSTM with ``R h = 0`` (keep running ``m`` / ``n``).
+    """sLSTM ``(c, n, m, h)`` with gates frozen in ``pre`` (full preactivation).
 
-    App. A ``f(0, x_t)`` zeros ``n`` independently at each t. Here ``m`` is the
-    max-plus prefix ``m_t = P_t + max_k(z_i_k - P_k)`` with ``P = cumsum(z_f)``,
-    then ``n`` and ``c`` are the diagonal scans ``q_t = f_t q_{t-1} + ...``.
-    Mixing ``R h`` is left to Newton. Algebra in fp32; DRAM dtype preserved.
+    ``m`` is the max-plus prefix ``m_t = P_t + max_k(z_i_k - P_k)`` with
+    ``P = cumsum(z_f)``, then ``n`` and ``c`` are the diagonal scans
+    ``q_t = f_t q_{t-1} + ...``. Algebra in fp32; DRAM dtype preserved.
+    Span is a prefix scan, not a time loop.
     """
     from pararnn.solvers.scan import scan_diag
 
-    batch, _, four_d = wx.shape
+    batch, _, four_d = pre.shape
     d_h = four_d // 4
-    orig = wx.dtype
-    wx32 = wx.float()
-    z_i, z_f, z_z, z_o = wx32.chunk(4, dim=-1)
+    orig = pre.dtype
+    pre32 = pre.float()
+    z_i, z_f, z_z, z_o = pre32.chunk(4, dim=-1)
     if h0 is None:
-        c0 = n0 = m0 = wx32.new_zeros(batch, d_h)
+        c0 = n0 = m0 = pre32.new_zeros(batch, d_h)
     else:
         h0f = h0.float()
         c0 = h0f[:, SLSTM_CELL]
@@ -394,6 +416,44 @@ def slstm_zero_hidden_init(
     return torch.stack((c, n, m, h), dim=-2).to(dtype=orig)
 
 
+def slstm_zero_hidden_init(
+    wx: Tensor,
+    *,
+    eps: float,
+    h0: Tensor | None = None,
+) -> Tensor:
+    """Newton guess: sLSTM with ``R h = 0`` (keep running ``m`` / ``n``).
+
+    App. A ``f(0, x_t)`` zeros ``n`` independently at each t. Mixing ``R h``
+    is left to Newton (or to ``slstm_picard_init``).
+    """
+    return slstm_frozen_gate_scan(wx, eps=eps, h0=h0)
+
+
+def slstm_picard_init(
+    cell: ParaSLSTM,
+    wx: Tensor,
+    *,
+    h0: Tensor | None = None,
+    n_picard: int = 1,
+) -> Tensor:
+    """Zero-hidden scan, then ``n_picard`` frozen-gate scans using ``R h``.
+
+    Each pass freezes mixing from the previous trajectory and rescans
+    ``(c, n, m)`` over all T (cumsum / cummax / ``scan_diag``). Not Jacobi
+    ``H := f(H_prev, x)`` (that only moves one token per iter). Not Mamba-2
+    (no extra parameters). Cap ``n_picard`` at a handful: P ~ T is sequential.
+    """
+    if n_picard < 0:
+        raise ValueError(f"n_picard must be >= 0, got {n_picard!r}")
+    states = slstm_frozen_gate_scan(wx, eps=cell.eps, h0=h0)
+    for _ in range(n_picard):
+        h_prev = prepend_state(states, h0)[..., SLSTM_HIDDEN, :]
+        pre = wx + cell._recurrent(h_prev)
+        states = slstm_frozen_gate_scan(pre, eps=cell.eps, h0=h0)
+    return states
+
+
 def _maximum_subgrad_left(left: Tensor, right: Tensor) -> Tensor:
     """∂maximum(left, right)/∂left. Ties split 0.5 (PyTorch ``maximum``)."""
     gt = (left > right).to(dtype=left.dtype)
@@ -414,3 +474,197 @@ class _SLSTMActs(NamedTuple):
     o: Tensor
     denom: Tensor
     alpha: Tensor
+
+
+def slstm_encode_log(state: Tensor, *, eps: float) -> Tensor:
+    """Newton coordinates: ``(u, log n, m, h)`` with ``u = c/n``.
+
+    ``c`` is signed, so ``log c`` is not a coordinate. ``n`` is clamped at
+    ``eps`` so ``h0=0`` is ``log n = log(eps)``. Algebra in fp32.
+    """
+    c = state[..., SLSTM_CELL, :].float()
+    n = state[..., SLSTM_NORMALIZER, :].float().clamp_min(eps)
+    m = state[..., SLSTM_STABILIZER, :].float()
+    h = state[..., SLSTM_HIDDEN, :].float()
+    return torch.stack((c / n, torch.log(n), m, h), dim=-2).to(dtype=state.dtype)
+
+
+def slstm_decode_log(coords: Tensor, *, eps: float) -> Tensor:
+    """Inverse of ``slstm_encode_log``. ``n = exp(log n)``; ``c = u n``."""
+    del eps
+    u = coords[..., SLSTM_CELL, :].float().clamp(-_LOG_RATIO_ABSMAX, _LOG_RATIO_ABSMAX)
+    ln = coords[..., SLSTM_NORMALIZER, :].float().clamp(_LOG_N_MIN, _LOG_N_MAX)
+    m = coords[..., SLSTM_STABILIZER, :].float()
+    h = coords[..., SLSTM_HIDDEN, :].float()
+    n = torch.exp(ln)
+    return torch.stack((u * n, n, m, h), dim=-2).to(dtype=coords.dtype)
+
+
+def slstm_clamp_log_coords(coords: Tensor) -> Tensor:
+    """Keep ``(c/n, log n)`` inside the decode clamps after a Newton step."""
+    out = coords.clone()
+    out[..., SLSTM_CELL, :] = out[..., SLSTM_CELL, :].clamp(
+        -_LOG_RATIO_ABSMAX, _LOG_RATIO_ABSMAX
+    )
+    out[..., SLSTM_NORMALIZER, :] = out[..., SLSTM_NORMALIZER, :].clamp(
+        _LOG_N_MIN, _LOG_N_MAX
+    )
+    return out
+
+
+class _LogActs(NamedTuple):
+    state_new: Tensor
+    u: Tensor
+    u_new: Tensor
+    ln_new: Tensor
+    gamma: Tensor
+    z: Tensor
+    o: Tensor
+    alpha: Tensor
+    da_dm: Tensor
+    da_dh: Tensor
+    db_dm: Tensor
+    db_dh: Tensor
+    dm_dh: Tensor
+
+
+class SLSTMLogCoords(nn.Module):
+    """Newton cell in ``(u, log n, m, h)``. Convex combination + LSE.
+
+    ``u_t = (1-γ) u_{t-1} + γ tanh(z_z)``, ``log n`` via ``logaddexp``,
+    ``h_t = σ(z_o) ⊙ u_t``. Mixing still reads stored ``h``. Sequential
+    stays on the native ``(c, n, m, h)`` cell. The fused LSE kernel is a
+    Triton twin of this map, not a call into this module.
+    """
+
+    def __init__(self, cell: ParaSLSTM) -> None:
+        super().__init__()
+        object.__setattr__(self, "cell", cell)
+        self.d_in = cell.d_in
+        self.d_h = cell.d_h
+        self.state_slots = cell.state_slots
+        self.hidden_slot = cell.hidden_slot
+        self.mix = cell.mix
+        self.jac_structure = cell.jac_structure
+        self.eps = cell.eps
+        self.n_heads = cell.n_heads
+        self.d_head = cell.d_head
+
+    @property
+    def W_x(self) -> nn.Linear:
+        return self.cell.W_x
+
+    def step(
+        self, coords_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
+    ) -> Tensor:
+        return self._acts_from_coords(coords_prev, x, wx=wx).state_new
+
+    def step_with_jacobian(
+        self, coords_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
+    ) -> tuple[Tensor, Tensor]:
+        acts = self._acts_from_coords(coords_prev, x, wx=wx)
+        if self.mix != "diag":
+            from pararnn.solvers.jacobian import jacobian_autograd
+
+            return jacobian_autograd(
+                self, coords_prev, x, structure=self.jac_structure
+            )
+        return acts.state_new, self._jac_log_diag(acts)
+
+    def _acts_from_coords(
+        self, coords_prev: Tensor, x: Tensor, *, wx: Tensor | None
+    ) -> _LogActs:
+        if wx is None:
+            wx = self.cell.W_x(x)
+        u = coords_prev[..., SLSTM_CELL, :].float()
+        ln = coords_prev[..., SLSTM_NORMALIZER, :].float()
+        m = coords_prev[..., SLSTM_STABILIZER, :].float()
+        h = coords_prev[..., SLSTM_HIDDEN, :]
+        pre = wx + self.cell._recurrent(h)
+        z_i, z_f, z_z, z_o = pre.chunk(4, dim=-1)
+        z_i, z_f, z_z, z_o = z_i.float(), z_f.float(), z_z.float(), z_o.float()
+        left = z_f + m
+        m_new = torch.maximum(left, z_i)
+        alpha = _maximum_subgrad_left(left, z_i)
+        a = z_f + m - m_new + ln
+        b = z_i - m_new
+        ln_new = torch.logaddexp(a, b)
+        gamma = torch.exp(b - ln_new)
+        z = torch.tanh(z_z)
+        u_new = (1.0 - gamma) * u + gamma * z
+        o = torch.sigmoid(z_o)
+        h_new = o * u_new
+        state_new = torch.stack((u_new, ln_new, m_new, h_new), dim=-2).to(
+            dtype=coords_prev.dtype
+        )
+        beta = 1.0 - alpha
+        if self.mix == "diag":
+            r = self.cell.clipped_r()
+            dm_dh = alpha * r[1] + beta * r[0]
+            da_dh = r[1] - dm_dh
+            db_dh = r[0] - dm_dh
+        else:
+            dm_dh = da_dh = db_dh = torch.zeros_like(u)
+        return _LogActs(
+            state_new=state_new,
+            u=u,
+            u_new=u_new,
+            ln_new=ln_new,
+            gamma=gamma,
+            z=z,
+            o=o,
+            alpha=alpha,
+            da_dm=1.0 - alpha,
+            da_dh=da_dh,
+            db_dm=-alpha,
+            db_dh=db_dh,
+            dm_dh=dm_dh,
+        )
+
+    def _jac_log_diag(self, acts: _LogActs) -> Tensor:
+        """4×4 of the convex-combination / LSE map. No ``c``, no ``c/n²``."""
+        r = self.cell.clipped_r()
+        gamma = acts.gamma
+        omg = 1.0 - gamma
+        dln_dln = omg
+        dln_dm = omg * acts.da_dm + gamma * acts.db_dm
+        dln_dh = omg * acts.da_dh + gamma * acts.db_dh
+        zeros = torch.zeros_like(gamma)
+        dgamma_dln = gamma * (0.0 - dln_dln)
+        dgamma_dm = gamma * (acts.db_dm - dln_dm)
+        dgamma_dh = gamma * (acts.db_dh - dln_dh)
+        dz_dh = (1.0 - acts.z.square()) * r[2]
+        uz = acts.z - acts.u
+        du_du = omg
+        du_dln = uz * dgamma_dln
+        du_dm = uz * dgamma_dm
+        du_dh = uz * dgamma_dh + gamma * dz_dh
+        do_dh = acts.o * (1.0 - acts.o) * r[3]
+        o = acts.o
+        rows = (
+            du_du,
+            du_dln,
+            du_dm,
+            du_dh,
+            zeros,
+            dln_dln,
+            dln_dm,
+            dln_dh,
+            zeros,
+            zeros,
+            acts.alpha,
+            acts.dm_dh,
+            o * du_du,
+            o * du_dln,
+            o * du_dm,
+            o * du_dh + acts.u_new * do_dh,
+        )
+        return torch.stack(
+            (
+                torch.stack(rows[0:4], dim=-2),
+                torch.stack(rows[4:8], dim=-2),
+                torch.stack(rows[8:12], dim=-2),
+                torch.stack(rows[12:16], dim=-2),
+            ),
+            dim=-3,
+        ).to(dtype=acts.state_new.dtype)

@@ -24,6 +24,9 @@ dependencies = [
 
 [project.optional-dependencies]
 train = ["mlflow"]
+flashrnn = [
+    "flashrnn>=1.0.6",
+]
 
 [build-system]
 requires = ["uv_build>=0.9.7,<0.10.0"]

@@ -140,6 +140,83 @@ def _slstm_pred_j(
 
 
 @triton.jit
+def _slstm_log_pred_j(
+    u_prev,
+    ln_prev,
+    m_prev,
+    h_prev,
+    zi_x,
+    zf_x,
+    zz_x,
+    zo_x,
+    r_i,
+    r_f,
+    r_z,
+    r_o,
+):
+    """Convex combo + LSE step and 4x4 J. Slots are ``(u, log n, m, h)``."""
+    z_i = r_i * h_prev + zi_x
+    z_f = r_f * h_prev + zf_x
+    z_z = r_z * h_prev + zz_x
+    z_o = r_o * h_prev + zo_x
+    left = z_f + m_prev
+    m_new = tl.where(left > z_i, left, z_i)
+    alpha = tl.where(left > z_i, 1.0, 0.0) + tl.where(left == z_i, 0.5, 0.0)
+    beta = 1.0 - alpha
+    a = z_f + m_prev - m_new + ln_prev
+    b = z_i - m_new
+    mx = tl.maximum(a, b)
+    ln_new = mx + tl.log(tl.exp(a - mx) + tl.exp(b - mx))
+    gamma = tl.exp(b - ln_new)
+    z = _tanh(z_z)
+    omg = 1.0 - gamma
+    u_new = omg * u_prev + gamma * z
+    o = tl.sigmoid(z_o)
+    h_new = o * u_new
+    dm_dh = alpha * r_f + beta * r_i
+    da_dh = r_f - dm_dh
+    db_dh = r_i - dm_dh
+    da_dm = beta
+    db_dm = -alpha
+    dln_dln = omg
+    dln_dm = omg * da_dm + gamma * db_dm
+    dln_dh = omg * da_dh + gamma * db_dh
+    dgamma_dln = gamma * (0.0 - dln_dln)
+    dgamma_dm = gamma * (db_dm - dln_dm)
+    dgamma_dh = gamma * (db_dh - dln_dh)
+    dz_dh = (1.0 - z * z) * r_z
+    uz = z - u_prev
+    du_du = omg
+    du_dln = uz * dgamma_dln
+    du_dm = uz * dgamma_dm
+    du_dh = uz * dgamma_dh + gamma * dz_dh
+    do_dh = o * (1.0 - o) * r_o
+    j_uu = du_du
+    j_uln = du_dln
+    j_um = du_dm
+    j_uh = du_dh
+    j_lnu = 0.0
+    j_lnln = dln_dln
+    j_lnm = dln_dm
+    j_lnh = dln_dh
+    j_mu = 0.0
+    j_mn = 0.0
+    j_mm = alpha
+    j_mh = dm_dh
+    j_hu = o * du_du
+    j_hln = o * du_dln
+    j_hm = o * du_dm
+    j_hh = o * du_dh + u_new * do_dh
+    return (
+        u_new, ln_new, m_new, h_new,
+        j_uu, j_uln, j_um, j_uh,
+        j_lnu, j_lnln, j_lnm, j_lnh,
+        j_mu, j_mn, j_mm, j_mh,
+        j_hu, j_hln, j_hm, j_hh,
+    )
+
+
+@triton.jit
 def _load_wx(wx_ptr, pid_b, offs_t, offs_d, d_h, mask, sb, st, sd, FP16: tl.constexpr):
     base = wx_ptr + pid_b * sb + offs_t[:, None] * st
     zi = load_acc(base + offs_d[None, :] * sd, mask, 0.0, FP16)
@@ -293,6 +370,7 @@ def _slstm_cell_local_scan_kernel(
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
     FP16: tl.constexpr,
+    LOG: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -329,12 +407,20 @@ def _slstm_cell_local_scan_kernel(
     r_f = _load_r_gate(r_ptr, 1, offs_d, dmask, stride_rg, stride_rd, FP16)
     r_z = _load_r_gate(r_ptr, 2, offs_d, dmask, stride_rg, stride_rd, FP16)
     r_o = _load_r_gate(r_ptr, 3, offs_d, dmask, stride_rg, stride_rd, FP16)
-    (
-        c_new, n_new, m_new, h_new,
-        j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
-    ) = _slstm_pred_j(
-        c_prev, n_prev, m_prev, h_prev, zi, zf, zz, zo, r_i, r_f, r_z, r_o, eps
-    )
+    if LOG:
+        (
+            c_new, n_new, m_new, h_new,
+            j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
+        ) = _slstm_log_pred_j(
+            c_prev, n_prev, m_prev, h_prev, zi, zf, zz, zo, r_i, r_f, r_z, r_o
+        )
+    else:
+        (
+            c_new, n_new, m_new, h_new,
+            j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
+        ) = _slstm_pred_j(
+            c_prev, n_prev, m_prev, h_prev, zi, zf, zz, zo, r_i, r_f, r_z, r_o, eps
+        )
     r0 = tl.where(mask, c_new - c, 0.0)
     r1 = tl.where(mask, n_new - n, 0.0)
     r2 = tl.where(mask, m_new - m, 0.0)
@@ -547,13 +633,21 @@ def newton_slstm_fused(
     eps: float,
     h0: Tensor | None = None,
     states: Tensor | None = None,
+    log_coords: bool = False,
 ) -> Tensor:
     """Alg. 1 for diag-mix ParaSLSTM. ``wx`` is ``W_x(x)`` with shape ``(B, T, 4 d_h)``.
 
     ``r`` is clipped ``R`` ``(4, d_h)``. ``h0`` is paper ``h_0`` (default zeros),
     shape ``(B, 4, d_h)``. ``states`` is the Newton guess (zero-hidden init);
-    if omitted, App. A ``f(0, x_t)`` is used.
+    if omitted, App. A ``f(0, x_t)`` is used. ``log_coords`` runs Newton in
+    ``(u, log n, m, h)`` and returns native ``(c, n, m, h)``.
     """
+    from pararnn.cells.para_slstm import (
+        slstm_clamp_log_coords,
+        slstm_decode_log,
+        slstm_encode_log,
+    )
+
     wx = wx.contiguous()
     r = r.contiguous()
     batch, time, four_d = wx.shape
@@ -612,7 +706,12 @@ def newton_slstm_fused(
         if states.dtype != wx.dtype:
             states = states.to(dtype=wx.dtype)
         states = states.contiguous().clone()
+    if log_coords:
+        states = slstm_encode_log(states, eps=float(eps))
+        h0 = slstm_encode_log(h0, eps=float(eps))
     if max_iters <= 0:
+        if log_coords:
+            return slstm_decode_log(states, eps=float(eps))
         return states
 
     j_loc = states.new_empty(batch, time, 16, d_h)
@@ -649,6 +748,7 @@ def newton_slstm_fused(
             BLOCK_T=_BLOCK_T,
             BLOCK_D=_BLOCK_D,
             FP16=fp16,
+            LOG=log_coords,
         )
         if n_chunks == 1:
             states.copy_((states.float() + float(omega) * r_loc.float()).to(states.dtype))
@@ -686,6 +786,8 @@ def newton_slstm_fused(
                 BLOCK_D=_BLOCK_D,
                 FP16=fp16,
             )
+        if log_coords:
+            states = slstm_clamp_log_coords(states)
         if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
             log.debug(
                 "newton_slstm_fused_iter",
@@ -705,6 +807,9 @@ def newton_slstm_fused(
             "d_h": d_h,
             "max_iters": max_iters,
             "n_chunks": n_chunks,
+            "log_coords": log_coords,
         },
     )
+    if log_coords:
+        states = slstm_decode_log(states, eps=float(eps))
     return states

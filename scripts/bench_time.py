@@ -7,6 +7,8 @@ GPU: 2080 Ti by name. Config: --config (default configs/bench/cell_forward.yaml)
   uv run python scripts/bench_time.py --config configs/bench/newton_compile.yaml
   uv run python scripts/bench_time.py --config configs/bench/newton_fused.yaml
   uv run python scripts/bench_time.py --config configs/bench/newton_slstm.yaml
+  uv run python scripts/bench_time.py --config configs/bench/newton_slstm_picard.yaml
+  uv run python scripts/bench_time.py --config configs/bench/newton_slstm_flashrnn.yaml
   uv run python scripts/bench_time.py --config configs/bench/newton_fp16.yaml
 """
 
@@ -16,9 +18,11 @@ import argparse
 import csv
 import hashlib
 import logging
+import os
 import subprocess
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -147,16 +151,107 @@ def _newton_eager(cell: nn.Module, x: Tensor, cfg: NewtonConfig) -> Tensor:
         return newton_apply(cell, x, cfg)
 
 
+def _newton_config_from_spec(spec: dict, *, scan_backend: str) -> NewtonConfig:
+    """YAML Newton knobs. Missing ``picard_iters`` is library auto (sLSTM from T)."""
+    chunk = spec.get("chunk_len")
+    if "picard_iters" not in spec:
+        picard: int | None = None
+    else:
+        raw = spec["picard_iters"]
+        picard = None if raw is None else int(raw)
+    return NewtonConfig(
+        max_iters=int(spec["newton_iters"]),
+        omega=float(spec.get("omega", 1.0)),
+        scan_backend=scan_backend,
+        residual_atol=None,
+        coords=str(spec.get("coords", "native")),
+        chunk_len=int(chunk) if chunk is not None else None,
+        picard_iters=picard,
+    )
+
+
 def _newton_fused(cell: nn.Module, x: Tensor, cfg: NewtonConfig) -> Tensor:
     """Cell+J+scan Triton Newton. Opt-in; not the library default."""
-    fused = NewtonConfig(
-        max_iters=cfg.max_iters,
-        omega=cfg.omega,
-        scan_backend="fused",
-        residual_atol=None,
-    )
+    fused = replace(cfg, scan_backend="fused")
     with torch.no_grad():
         return newton_apply(cell, x, fused)
+
+
+_flashrnn_backend_memo: str | None | bool = False
+
+
+def _ensure_cuda_home() -> None:
+    """FlashRNN import calls torch cpp_extension, which requires CUDA_HOME.
+
+    This box has no system toolkit. The pip ``nvidia-cuda-runtime`` wheel
+    ships ``include/cuda.h``; that is enough to *import*. Kernels still
+    need ``nvcc`` + CC 8.0 for ``cuda_fused``.
+    """
+    if os.environ.get("CUDA_HOME"):
+        return
+    nvidia = Path(torch.__file__).resolve().parent.parent / "nvidia"
+    runtime = nvidia / "cuda_runtime"
+    if (runtime / "include" / "cuda.h").is_file():
+        os.environ["CUDA_HOME"] = str(runtime)
+        log.info("flashrnn CUDA_HOME=%s (pip cuda_runtime)", runtime)
+
+
+def _flashrnn_backend() -> str | None:
+    """NX-AI FlashRNN. ``cuda_fused`` needs CC 8.0; this 2080 Ti is 7.5."""
+    global _flashrnn_backend_memo
+    if _flashrnn_backend_memo is not False:
+        return _flashrnn_backend_memo
+    _ensure_cuda_home()
+    try:
+        import flashrnn  # noqa: F401
+    except Exception as exc:
+        log.warning("flashrnn skip: %s", exc)
+        _flashrnn_backend_memo = None
+        return None
+    major, minor = torch.cuda.get_device_capability(device)
+    if major >= 8:
+        _flashrnn_backend_memo = "cuda_fused"
+    else:
+        _flashrnn_backend_memo = "triton_fused"
+        log.warning(
+            "flashrnn backend=triton_fused (CC %d.%d < 8.0; cuda_fused is Ampere+)",
+            major,
+            minor,
+        )
+    return _flashrnn_backend_memo
+
+
+def _flashrnn_heads(d_h: int) -> tuple[int, int]:
+    """``(n_heads, d_head)`` with ``n_heads * d_head == d_h``.
+
+    Triton fused on Turing (64 KiB smem): D=32 works, D=64 does not.
+    Diag mix (D=1) does not compile. This is a speed baseline, not the
+    same mixing as ``mix='diag'``.
+    """
+    if d_h % 32 == 0:
+        return d_h // 32, 32
+    if d_h % 16 == 0:
+        return d_h // 16, 16
+    raise ValueError(f"d_h={d_h} not divisible by 16 for FlashRNN heads")
+
+
+@torch.no_grad()
+def _flashrnn_slstm(cell: nn.Module, x: Tensor, backend: str) -> None:
+    """Sequential sLSTM kernel at the same B, T, d_h. Not our diag ``R``."""
+    from flashrnn import flashrnn
+
+    if not isinstance(cell, ParaSLSTM):
+        raise TypeError("flashrnn bench is ParaSLSTM only")
+    n_heads, d_head = _flashrnn_heads(cell.d_h)
+    batch, time, _ = x.shape
+    wx5 = x.new_empty(batch, time, 4, n_heads, d_head).normal_()
+    rec = x.new_empty(4, n_heads, d_head, d_head).normal_().mul_(0.1)
+    bias = x.new_zeros(4, n_heads, d_head)
+    s0 = x.new_zeros(4, batch, 1, n_heads, d_head)
+    dtype = "float32" if x.dtype == torch.float32 else "float16"
+    flashrnn(
+        wx5, rec, bias, states=s0, function="slstm", backend=backend, dtype=dtype
+    )
 
 
 def _newton_compiled(
@@ -254,11 +349,7 @@ def main() -> None:
         raise RuntimeError("App. B needs the 2080 Ti (PARARNN_DEVICE to override)")
     torch.cuda.set_device(device)
     wait_until_free(device, min_free_gib=8.0, poll_s=30.0)
-    newton_cfg = NewtonConfig(
-        max_iters=int(spec["newton_iters"]),
-        scan_backend="eager",
-        residual_atol=None,
-    )
+    newton_cfg = _newton_config_from_spec(spec, scan_backend="eager")
     warmup, n_runs = int(spec["warmup"]), int(spec["n_runs"])
     batch, d_in, d_h = int(spec["batch"]), int(spec["d_in"]), int(spec["d_h"])
     seq_max_seq = int(spec["seq_lens_sequential_max"])
@@ -282,12 +373,13 @@ def main() -> None:
     multi_dtype = len(dtype_names) > 1
 
     log.info(
-        "bench_start gpu=%s torch=%s batch=%d d_h=%d K=%d dtypes=%s modes=%s",
+        "bench_start gpu=%s torch=%s batch=%d d_h=%d K=%d picard=%s dtypes=%s modes=%s",
         torch.cuda.get_device_name(device),
         torch.__version__,
         batch,
         d_h,
         newton_cfg.max_iters,
+        newton_cfg.picard_iters,
         ",".join(dtype_names),
         ",".join(modes),
     )
@@ -322,6 +414,8 @@ def main() -> None:
                 "dtypes": ",".join(dtype_names),
                 "require_agreement": str(spec.get("require_agreement", True)),
                 "x_scale": spec.get("x_scale", 1.0),
+                "picard_iters": spec.get("picard_iters", "auto"),
+                "coords": newton_cfg.coords,
                 "cells": ",".join(
                     i if isinstance(i, str) else i.get("name", "?")
                     for i in spec.get("cells", ["ParaGRU", "ParaLSTM"])
@@ -376,12 +470,7 @@ def main() -> None:
                                 )
 
                             if "newton_fused" in modes:
-                                fused_cfg = NewtonConfig(
-                                    max_iters=newton_cfg.max_iters,
-                                    omega=newton_cfg.omega,
-                                    scan_backend="fused",
-                                    residual_atol=None,
-                                )
+                                fused_cfg = replace(newton_cfg, scan_backend="fused")
                                 err_f = _agree(cell, x, fused_cfg)
                                 log.info(
                                     "%s T=%d max|fused-naive|=%.3e", cell_name, T, err_f
@@ -517,6 +606,63 @@ def main() -> None:
                                 mlflow.log_metric(
                                     mkey(cell_name, "fused_speedup"), vs, step=int(T)
                                 )
+
+                        flash_stats = None
+                        if "flashrnn" in modes:
+                            fr_backend = _flashrnn_backend()
+                            if fr_backend is None:
+                                log.warning("%s T=%d skip flashrnn", cell_name, T)
+                            else:
+                                try:
+                                    flash_stats = _time_one(
+                                        f"{cell_name} flashrnn_{fr_backend}",
+                                        lambda c=cell, xx=x, b=fr_backend: _flashrnn_slstm(
+                                            c, xx, b
+                                        ),
+                                        x,
+                                        warmup=warmup,
+                                        n_runs=n_runs,
+                                    )
+                                except Exception:
+                                    log.exception(
+                                        "%s T=%d flashrnn backend=%s failed",
+                                        cell_name,
+                                        T,
+                                        fr_backend,
+                                    )
+                                    flash_stats = None
+                                else:
+                                    rows.append(
+                                        {
+                                            "cell": cell_name,
+                                            "mode": f"flashrnn_{fr_backend}",
+                                            "T": T,
+                                            "dtype": dtype_name,
+                                            **flash_stats,
+                                        }
+                                    )
+                                    mlflow.log_metric(
+                                        mkey(cell_name, "flashrnn_min_ms"),
+                                        flash_stats["min_ms"],
+                                        step=int(T),
+                                    )
+                                    mlflow.set_tag("flashrnn_backend", fr_backend)
+                                    if fused_stats is not None:
+                                        vs_fr = (
+                                            flash_stats["min_ms"] / fused_stats["min_ms"]
+                                        )
+                                        log.info(
+                                            "%s T=%d fused vs flashrnn (min)=%.2fx "
+                                            "(>1 fused faster)",
+                                            cell_name,
+                                            T,
+                                            vs_fr,
+                                        )
+                                        mlflow.log_metric(
+                                            mkey(cell_name, "fused_vs_flashrnn"),
+                                            vs_fr,
+                                            step=int(T),
+                                        )
 
                         compiled_stats = None
                         compile_s = None

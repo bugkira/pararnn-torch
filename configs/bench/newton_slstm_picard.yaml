@@ -1,0 +1,42 @@
+# ParaSLSTM mix='diag' fused Newton with Picard warm-start vs sequential.
+# Same shapes as newton_fused.yaml / newton_slstm.yaml (B=8, d_h=256, K=3).
+# newton_slstm.yaml timed a diverged P=0 Newton; this config is the matching one.
+#
+# picard_iters=3: isolated seed 0, d_h=256, x_scale=1, K=3, T=2048 ~5e-4
+# (docs/para-slstm.md). P=1 snaps T=256; T=1024 needs P=2. Fallback: raise P,
+# not K and not chunk_len. Cap 3 at this width.
+# agree_tol=1e-3: LM-length residual at this width, not GRU's 1e-4 / 1e-7.
+#
+# Protocol: 10 warmup / 50 runs — smoke, not App. B.
+# require_agreement: true — fail if P=3 does not match sequential.
+# GPU: 2080 Ti by name. MLflow newton-slstm-bench.
+
+newton_iters: 3
+picard_iters: 3
+coords: native
+batch: 8
+d_in: 256
+d_h: 256
+dtype: float32
+x_scale: 1.0
+warmup: 10
+n_runs: 50
+seq_lens: [64, 256, 512, 1024, 2048]
+seq_lens_sequential_max: 2048
+sequential_compile_mode: reduce-overhead
+modes: [sequential_eager, sequential_compiled, newton, newton_fused]
+newton_max_t:
+  ParaSLSTM: 2048
+cells:
+  - name: ParaSLSTM
+    mix: diag
+require_agreement: true
+agree_tol: 1.0e-3
+mlflow_experiment: newton-slstm-bench
+mlflow_run_name: slstm-picard-fused-vs-naive
+csv: outputs/bench_newton_slstm_picard.csv
+why: >
+  ParaSLSTM mix=diag on 2080 Ti. Picard P=3 frozen-gate scans then native
+  Newton K=3 (O(log T), not chunk_len). Sequential-matched at d_h=256;
+  do not quote newton_slstm.yaml 30 ms (that Newton diverged). Fused is
+  mix=diag only. Protocol 10/50 smoke. T≤2048. Not FlashRNN. Not TinyStories.

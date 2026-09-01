@@ -117,20 +117,17 @@ still kills the snap. Do not copy ELK as the default.
 
 ## Timing (2080 Ti smoke, not App. B)
 
+### P=0 (diverged Newton)
+
 `uv run python scripts/bench_time.py --config configs/bench/newton_slstm.yaml`.
-MLflow `newton-slstm-bench`. CSV: `outputs/bench_newton_slstm.csv` (gitignored).
-**10 warmup / 50 runs, min ms.** Same shapes as the GRU/LSTM fused table:
-B=8, \(d_{\mathrm{in}}=d_h=256\), float32, \(K=3\), `x_scale=1`. Fused T cap
-is 2048 (`BLOCK_D=8`, `_CHUNK_PAD=64`). Not FlashRNN. Not fig. 2/5.
+MLflow `newton-slstm-bench` / `slstm-fused-vs-naive`. CSV:
+`outputs/bench_newton_slstm.csv` (gitignored).
+**10 warmup / 50 runs, min ms.** B=8, \(d_{\mathrm{in}}=d_h=256\), float32,
+\(K=3\), `x_scale=1`, `picard_iters=0`. Fused T cap 2048. Not FlashRNN.
 
 **These times at \(T\ge 256\) are kernel throughput of a Newton that has not
 matched sequential.** Do not quote the vs-RNN column as sequential-equivalent
-work. GRU/LSTM at the same shapes stay \(\sim 10^{-7}\) at \(K=3\); sLSTM
-does not. See the agreement table below.
-
-Baselines: naive RNN = `sequential_apply`; naive ParaRNN = eager Newton +
-Blelloch; fused = `scan_backend="fused"` (diag only). Compiled sequential is
-`sequential_apply_compiled` (`reduce-overhead`).
+work. Kept so the P=3 table is not mixed with this.
 
 | T | Naive RNN | Compiled seq | Naive ParaRNN | Fused | vs RNN | vs compiled | vs eager N |
 |---|---|---|---|---|---|---|---|
@@ -140,24 +137,36 @@ Blelloch; fused = `scan_backend="fused"` (diag only). Compiled sequential is
 | 1024 | 727 | 404 | 77.4 | **21.7** | 34× | 19× | 3.6× |
 | 2048 | 1411 | 826 | 140 | **30.3** | 47× | 27× | 4.6× |
 
-Times in ms (min). Peak allocated MiB, same smoke:
+### P=3 (sequential-matched)
 
-| T | Naive RNN | Compiled seq | Naive ParaRNN | Fused | vs eager N |
-|---|---|---|---|---|---|
-| 64 | 23 | 16 | 71 | **27** | 2.6× |
-| 256 | 61 | 33 | 252 | **78** | 3.2× |
-| 512 | 112 | 37 | 494 | **145** | 3.4× |
-| 1024 | 214 | 73 | 978 | **280** | 3.5× |
-| 2048 | 418 | 145 | 1946 | **550** | 3.5× |
+`uv run python scripts/bench_time.py --config configs/bench/newton_slstm_picard.yaml`.
+MLflow `newton-slstm-bench` / `slstm-picard-fused-vs-naive`. CSV:
+`outputs/bench_newton_slstm_picard.csv`. Same protocol and shapes,
+`picard_iters=3`, `require_agreement` atol \(10^{-3}\) (LM-length residual
+at this width, not GRU \(10^{-4}\)). Max |fused − seq|: 8e-6 … **2.8e-4**.
 
-Fused vs eager Newton is **~3–5×**, same class as GRU/LSTM's memory win
-(4×4 \(J\) stays in SRAM). Wall time vs GRU fused at \(T=2048\) is **30 ms
-vs 2.4 ms** (~13× slower): 20-lane 4×4 tiles vs diag 1-lane, and four slots.
-Do not paste GRU's 11×/400× onto this cell.
+| T | Naive RNN | Compiled seq | Naive ParaRNN | Fused | vs RNN | vs compiled | vs eager N |
+|---|---|---|---|---|---|---|---|
+| 64 | 43.0 | 23.9 | 55.1 | 37.7 | 1.1× | 0.63× | 1.5× |
+| 256 | 179 | 100 | 73.9 | **47.4** | 3.8× | 2.1× | 1.6× |
+| 512 | 355 | 201 | 92.1 | **74.0** | 4.8× | 2.7× | 1.2× |
+| 1024 | 726 | 395 | 121 | **65.1** | 11× | 6.1× | 1.9× |
+| 2048 | 1484 | 814 | 207 | **77.1** | 19× | **11×** | 2.7× |
+
+Peak MiB is the same class as P=0 (fused 27 → 550 vs eager Newton 71 →
+1946). The extra wall time vs P=0 fused (**77 vs 30 ms** at \(T=2048\))
+is three frozen-gate scans plus a Newton that actually stays in basin.
+At \(T=64\) fused+Picard is **slower** than compiled sequential: short
+T is launch-bound and P=3 is a real tax. Do not paste GRU's 11×/400×
+or the P=0 47× onto this table. Not FlashRNN.
+
+Fused vs eager Newton is **~1.2–2.7×** (Picard is still PyTorch
+cumsum/cummax/`scan_diag`; only K Newton iters are fused).
 
 ## Agreement at width 256
 
-Smoke above (B=8, `x_scale=1`, unseeded weights, \(K=3\)), max |par − seq|:
+Smoke above (B=8, `x_scale=1`, unseeded weights, \(K=3\)), max |par − seq|.
+**P=0** (the diverged timing run):
 
 | T | eager | fused |
 |---|---|---|
@@ -192,8 +201,86 @@ Fused tracks eager while both are in the basin (T≤512). Zero-hidden init
 fixes toy \(T=48\), \(d_h=4\). At GRU-table width it is **not** enough for
 library \(K=3\) past a few hundred tokens. Raising K at \(T=2048\),
 `x_scale=1` does not snap; it stays ~\(10^5\). Do not raise global
-`NewtonConfig.max_iters` for GRU/LSTM to paper over this.
+`NewtonConfig.max_iters` for GRU/LSTM to paper over this. Use
+`picard_iters` (below), not `chunk_len`, if the span must stay
+\(O(\log T)\).
+
+## Picard predictor (frozen-gate scans)
+
+`NewtonConfig(picard_iters=P)` is extra prefix scans after zero-hidden:
+freeze \(R h\) from the previous trajectory, rescan `(c, n, m)` with
+cumsum / cummax / `scan_diag`. Not Jacobi `H := f(H_prev, x)` (that only
+moves one token per iter). Not Mamba-2 (no extra parameters). Each pass
+is still \(O(\log T)\). **Library default is `P=None` (auto from T):**
+P=1 if \(T\le 64\), else P=3. Finer cutovers (P=1 at T=256, P=2 at T=1024)
+are seed-0 B=2 only; unseeded B=8 T=256 P=1 was \(2\times10^{-2}\). Explicit
+`0` is zero-hidden only.
+
+Isolated seed 0, 2080 Ti, B=2, \(d_h=256\), `x_scale=1`, K=3, eager,
+fresh cell per T. Max |par − seq|:
+
+| T | P=0 | P=1 | P=2 | P=3 |
+|---|---|---|---|---|
+| 256 | 3.8e-2 | **2.7e-5** | 2.9e-5 | 3.6e-5 |
+| 1024 | 1.1e3 | 5.2e-3 | **1.1e-4** | 1.2e-4 |
+| 2048 | 1.9e7 | 15 | 4.9e-3 | **4.8e-4** |
+
+Fused P=3 tracks eager: T=256 ~3e-5, T=1024 ~1e-4, T=2048 **3.9e-4**
+(eager 4.8e-4). Fallback: raise P, not K. Cap 3 at this width.
+
+Once P=3 is in the basin, **native Newton is the corrector**. Same
+successive-`randn` probe as the log table below, K=3, P=3:
+
+| T | native | log |
+|---|---|---|
+| 256 | **3.6e-5** | 5.0e-5 |
+| 1024 | **1.2e-4** | 1.8e-4 |
+| 2048 | **1.6e-4** | 4.9e-4 |
+
+Native is ~1.5–3× tighter and has no LSE in J. Log does not snap when
+Picard does not; do not use `coords="log"` to paper over a far guess.
+
+## Log-space Newton and chunked scan
+
+`NewtonConfig(coords="log")` is the convex-combination / LSE cell
+(\(u_t=(1-\gamma)u_{t-1}+\gamma\tanh z_z\), \(\log n=\mathrm{LSE}\),
+\(h=\sigma(z_o)\odot u\)), not a pushforward through native \(c/n^2\).
+\(c\) is signed: \(\log c\) is invalid. Mixing still reads stored \(h\).
+Sequential stays the native cell. Fused diag has a matching LSE kernel.
+
+**Not the long-T snap.** That is `picard_iters` + native K=3. Log stays
+opt-in (ablation / far guess). Default `coords="native"`.
+
+`NewtonConfig(chunk_len=64)` runs Alg. 1 on windows of 64 and passes the
+last state as the next \(h_0\). Each window can be eager, Triton-scan, or
+fused. Span is **linear in \(T/64\)**, not \(O(\log T)\). 64 is this
+repo's measured snap length at \(d_h=256\), seed 0, K=3 — not Gemini's
+\(10^{-7}\) claim as a theorem. Fallback: 32. Prefer Picard.
+
+Same probe as the K-curve (2080 Ti, seed 0, B=2, \(d_h=256\), eager, K=3).
+One cell, successive `randn` lengths (not a fresh seed per T).
+
+| T | scale | native | log | chunk 64 | log+64 |
+|---|---|---|---|---|---|
+| 64 | 1.0 | **7e-6** | 2e-5 | **7e-6** | 2e-5 |
+| 256 | 1.0 | 2.0 | 1.6 | 0.41 | **6e-5** |
+| 512 | 1.0 | 31 | 23 | 2.5e-2 | **1e-4** |
+| 1024 | 1.0 | 5.8e6 | 8e3 | **2e-4** | 3e-4 |
+| 2048 | 1.0 | 1.8e5 | 984 | 0.36 | 0.35 |
+| 256 | 0.3 | 0.20 | 3e-4 | 3e-3 | 4e-4 |
+| 2048 | 0.3 | 94 | 73 | **2e-3** | 5e-3 |
+
+Isolated seed-0 T=2048, `x_scale=1` (no prior `randn`): chunk 32 log
+**6e-4**, chunk 64 ~1e-3, chunk 128 **fails** (~2). Gemini's
+"T=64 always \(10^{-7}\) then the scan just carries" is false at this
+width. Chunking makes K=3 usable past a few hundred tokens at the cost
+of a **linear** span. Prefer `picard_iters` when the solve must stay
+\(O(\log T)\). Default stays `coords="native"`, `chunk_len=None`. `picard_iters=None`
+auto-selects P from T (library default).
 
 ## Not yet
 
-Packed VJP, fused head mix, FlashRNN bench, LM train.
+Packed VJP, fused head mix, LM train. Mamba-2 predictor is not this Picard
+(no extra SSM weights). FlashRNN on this 2080 Ti is `triton_fused` 8×32
+(not diag mix): T=2048 **5.8 ms** vs fused auto-P **77 ms** (13× slower).
+`cuda_fused` needs `nvcc` + CC 8.0. See `docs/bottlenecks.md`.

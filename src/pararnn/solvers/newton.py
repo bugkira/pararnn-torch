@@ -3,6 +3,7 @@
 K=3: App. A — residual to machine precision in 3–4 steps for ParaGRU/ParaLSTM.
 Init: eq. A.1, only t=0 sees ``h0``; later t still ``f(0, x_t)``. ParaSLSTM
 instead starts from the zero-hidden unroll (running ``m``/``n``, no ``R h``).
+``picard_iters`` None is auto P from T for ParaSLSTM (still prefix scans).
 
 Any cell with ``step(h, x)`` parallelizes: Autograd supplies ``J = ∂f/∂h``
 (DEER / Lim et al.). ParaGRU/ParaLSTM keep analytic J (paper §3) as the default.
@@ -10,6 +11,8 @@ Any cell with ``step(h, x)`` parallelizes: Autograd supplies ``J = ∂f/∂h``
 ``scan_backend='fused'`` is a handwritten Triton kernel for ParaGRU, ParaLSTM,
 and ParaSLSTM ``mix='diag'``, not a generic ``f``. ``'auto'`` picks fused
 (CUDA, those cells, fp16/fp32), else Triton scan + ``cell.step``, else eager.
+ParaSLSTM ``coords='log'`` uses the LSE fused kernel when ``scan_backend`` is
+``fused`` / ``auto`` on CUDA diag mix.
 
 Backward is **not** autograd through the K iterates. Paper eq. 2.6: one reverse
 scan of J^T, then a VJP of the batched cell. ParaGRU/ParaLSTM pack that VJP in
@@ -27,7 +30,15 @@ from torch import Tensor, nn
 
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
-from pararnn.cells.para_slstm import ParaSLSTM
+from pararnn.cells.para_slstm import (
+    ParaSLSTM,
+    SLSTMLogCoords,
+    slstm_clamp_log_coords,
+    slstm_decode_log,
+    slstm_encode_log,
+    slstm_picard_init,
+    slstm_zero_hidden_init,
+)
 from pararnn.layout import prepend_state, slstm_pack_heads, slstm_unpack_heads
 from pararnn.solvers.jacobian import step_and_jacobian
 from pararnn.solvers.scan import (
@@ -56,6 +67,7 @@ class NewtonStats:
     max_residual: float = float("nan")
     iters: int = 0
     scan_backend: str = ""
+    picard_iters: int = 0
 
 
 @dataclass
@@ -78,6 +90,20 @@ class NewtonConfig:
     # None disables early-stop. Default: skip remaining Newton steps when
     # max|F| is already below sequential-agreement scale (see App. A / 1e-4 tests).
     residual_atol: float | None = _DEFAULT_RESIDUAL_ATOL
+    # log: ParaSLSTM only — LSE cell in (u, log n, m, h). Not a paper default.
+    # Not the snap path once picard_iters is in the basin (native is as good
+    # or better; para-slstm.md). Fused diag has an LSE kernel. Fallback: native.
+    coords: str = "native"
+    # None = one Newton over the full T. int: sequential chunks of this length,
+    # each with its own K Newton steps; carry the last state as h0. 64 because
+    # T=64 K=3 snaps at d_h=256 seed 0 in this repo (para-slstm.md). Gemini /
+    # Mamba-2 SRAM tile. Fallback: 32 if a seed fails at 64. Sequential span.
+    chunk_len: int | None = None
+    # None = auto for ParaSLSTM: P=1 if T<=64 else P=3. Isolated seed 0
+    # B=2 had finer cutovers (P=1 at T=256, P=2 at T=1024); unseeded B=8
+    # T=256 P=1 failed 2e-2 so auto is conservative. Other cells: 0.
+    # Explicit 0 is zero-hidden only. Fallback: raise P, not K.
+    picard_iters: int | None = None
 
 
 def newton_apply(
@@ -100,6 +126,12 @@ def newton_apply(
         raise ValueError(f"unknown scan backend {config.scan_backend!r}")
     if config.jacobian not in ("auto", "analytic", "autograd"):
         raise ValueError(f"unknown jacobian {config.jacobian!r}")
+    if config.coords not in ("native", "log"):
+        raise ValueError(f"unknown newton coords {config.coords!r}")
+    if config.chunk_len is not None and int(config.chunk_len) < 1:
+        raise ValueError(f"chunk_len must be >= 1, got {config.chunk_len!r}")
+    if config.picard_iters is not None and int(config.picard_iters) < 0:
+        raise ValueError(f"picard_iters must be >= 0, got {config.picard_iters!r}")
     config = _resolve_backend(cell, x, config)
     params = tuple(cell.parameters())
     needs_grad = torch.is_grad_enabled() and (
@@ -165,8 +197,53 @@ def _pick_auto(cell: nn.Module, x: Tensor) -> str:
     return "eager"
 
 
+def slstm_auto_picard(seq_len: int) -> int:
+    """Library P for ParaSLSTM. Measured at ``d_h=256``, ``x_scale=1``, K=3.
+
+    Isolated seed 0, B=2: P=1 snaps T=256; T=1024 needs P=2; T=2048 needs P=3.
+    Unseeded B=8 (bench) P=1 at T=256 was 2e-2, not a snap. Auto is therefore
+    P=1 only for T<=64 (that length snaps at P=0 on the K-curve) and P=3
+    otherwise. Explicit 0 is zero-hidden. Fallback: raise P, not K.
+    """
+    if int(seq_len) <= 64:
+        return 1
+    return 3
+
+
+def _resolve_picard(cell: nn.Module, x: Tensor, config: NewtonConfig) -> NewtonConfig:
+    if config.picard_iters is None:
+        if isinstance(cell, ParaSLSTM):
+            chosen = slstm_auto_picard(x.shape[1])
+            if not torch.compiler.is_compiling():
+                log.debug(
+                    "slstm_picard_auto",
+                    extra={"chosen": chosen, "seq_len": x.shape[1], "d_h": cell.d_h},
+                )
+            return replace(config, picard_iters=chosen)
+        return replace(config, picard_iters=0)
+    if config.picard_iters and not isinstance(cell, ParaSLSTM):
+        raise TypeError(
+            "NewtonConfig(picard_iters=) is ParaSLSTM only "
+            f"(got {type(cell).__name__})"
+        )
+    return config
+
+
 def _resolve_backend(cell: nn.Module, x: Tensor, config: NewtonConfig) -> NewtonConfig:
+    config = _resolve_picard(cell, x, config)
     requested = config.scan_backend
+    if config.coords == "log":
+        if not isinstance(cell, ParaSLSTM):
+            raise TypeError(
+                "NewtonConfig(coords='log') is ParaSLSTM only "
+                f"(got {type(cell).__name__})"
+            )
+        if requested == "fused" and not _can_fuse(cell, x):
+            raise TypeError(_fused_error(cell, x))
+        if requested == "auto":
+            chosen = _pick_auto(cell, x)
+            return replace(config, scan_backend=chosen)
+        return config
     if requested == "auto":
         chosen = _pick_auto(cell, x)
         if not torch.compiler.is_compiling():
@@ -210,15 +287,15 @@ def _newton_forward(
     h0: Tensor | None = None,
     stats: NewtonStats | None = None,
 ) -> Tensor:
+    if config.chunk_len is not None:
+        return _newton_chunked(cell, x, config, h0=h0, stats=stats)
     if config.scan_backend == "fused":
         states = _newton_fused(cell, x, config, h0=h0)
         _fill_stats(cell, x, states, h0, config, iters=config.max_iters, stats=stats)
         return states
     wx = _wx_if_analytic(cell, x, config)
     if isinstance(cell, ParaSLSTM):
-        # Running (c,n,m) with R h = 0. App. A f(0,x_t) leaves n O(1) while
-        # sequential n accumulates; this guess is close enough for K=3 at T=48.
-        states = cell.zero_hidden_init(x, wx=wx, h0=h0)
+        states = _slstm_newton_guess(cell, x, config, h0=h0, wx=wx)
     else:
         h_prev0 = _init_h_prev(cell, x, h0)
         states, _ = step_and_jacobian(
@@ -230,10 +307,26 @@ def _newton_forward(
             jac_structure=config.jac_structure,
         )
 
+    native = cell
+    h0_loop = h0
+    if config.coords == "log":
+        eps = native.eps
+        states = slstm_encode_log(states, eps=eps)
+        zeros = x.new_zeros(x.shape[0], native.state_slots, native.d_h)
+        h0_loop = slstm_encode_log(
+            h0 if h0 is not None else zeros, eps=eps
+        )
+        cell = SLSTMLogCoords(native)
+        if not torch.compiler.is_compiling():
+            log.debug(
+                "newton_slstm_log_coords",
+                extra={"seq_len": x.shape[1], "batch": x.shape[0], "d_h": native.d_h},
+            )
+
     iters_done = 0
     last_res = float("nan")
     for it in range(config.max_iters):
-        h_prev = prepend_state(states, h0)
+        h_prev = prepend_state(states, h0_loop)
         pred, jac = step_and_jacobian(
             cell,
             h_prev,
@@ -254,6 +347,7 @@ def _newton_forward(
                     "batch": x.shape[0],
                     "jacobian": config.jacobian,
                     "scan_backend": config.scan_backend,
+                    "coords": config.coords,
                 },
             )
         atol = config.residual_atol
@@ -265,6 +359,7 @@ def _newton_forward(
                     "max_residual": last_res,
                     "atol": atol,
                     "seq_len": x.shape[1],
+                    "coords": config.coords,
                 },
             )
             break
@@ -273,7 +368,44 @@ def _newton_forward(
             states = (states.float() + config.omega * delta.float()).to(states.dtype)
         else:
             states = states + config.omega * delta
+        if config.coords == "log":
+            states = slstm_clamp_log_coords(states)
         iters_done = it + 1
+    if config.coords == "log":
+        states = slstm_decode_log(states, eps=native.eps)
+        cell = native
+    _fill_stats(cell, x, states, h0, config, iters=iters_done, stats=stats)
+    return states
+
+
+def _newton_chunked(
+    cell: nn.Module,
+    x: Tensor,
+    config: NewtonConfig,
+    *,
+    h0: Tensor | None,
+    stats: NewtonStats | None,
+) -> Tensor:
+    """Newton on windows of ``chunk_len``; last state of a chunk is the next ``h0``.
+
+    Span is linear in the number of chunks. Each window is the usual Alg. 1
+    (eager / triton / fused). T=64 K=3 snaps at bench width in this repo.
+    """
+    length = int(config.chunk_len)
+    inner = replace(config, chunk_len=None)
+    parts: list[Tensor] = []
+    carry = h0
+    iters_done = 0
+    for t0 in range(0, x.shape[1], length):
+        chunk_stats = NewtonStats() if stats is not None else None
+        piece = _newton_forward(
+            cell, x[:, t0 : t0 + length], inner, h0=carry, stats=chunk_stats
+        )
+        parts.append(piece)
+        carry = piece[:, -1]
+        if chunk_stats is not None:
+            iters_done += chunk_stats.iters
+    states = torch.cat(parts, dim=1)
     _fill_stats(cell, x, states, h0, config, iters=iters_done, stats=stats)
     return states
 
@@ -294,6 +426,7 @@ def _fill_stats(
     stats.max_residual = float((pred - states).detach().abs().amax())
     stats.iters = iters
     stats.scan_backend = config.scan_backend
+    stats.picard_iters = int(config.picard_iters or 0)
 
 
 def _newton_fused(
@@ -317,6 +450,7 @@ def _newton_fused(
             "max_iters": config.max_iters,
             "device": str(x.device),
             "h0": h0 is not None,
+            "picard_iters": int(config.picard_iters or 0),
         },
     )
     from pararnn.kernels.fused import fused_newton
@@ -327,6 +461,8 @@ def _newton_fused(
         max_iters=config.max_iters,
         omega=config.omega,
         h0=h0,
+        log_coords=config.coords == "log",
+        picard_iters=int(config.picard_iters or 0),
     )
 
 
@@ -356,6 +492,33 @@ def _eq26_vjp(
         mu = _reverse_scan(jac, partial, backend=backend)
     packed = isinstance(cell, (ParaGRU, ParaLSTM))
     return cell_vjp(cell, h_prev, x, mu, packed=packed)
+
+
+def _slstm_newton_guess(
+    cell: ParaSLSTM,
+    x: Tensor,
+    config: NewtonConfig,
+    *,
+    h0: Tensor | None,
+    wx: Tensor | None,
+) -> Tensor:
+    """Zero-hidden, or extra frozen-gate Picard scans. Still O(log T)."""
+    pre = wx if wx is not None else cell.W_x(x)
+    if config.picard_iters:
+        if not torch.compiler.is_compiling():
+            log.debug(
+                "slstm_picard_init",
+                extra={
+                    "n_picard": config.picard_iters,
+                    "seq_len": x.shape[1],
+                    "batch": x.shape[0],
+                    "d_h": cell.d_h,
+                },
+            )
+        return slstm_picard_init(
+            cell, pre, h0=h0, n_picard=config.picard_iters
+        )
+    return slstm_zero_hidden_init(pre, eps=cell.eps, h0=h0)
 
 
 def _init_h_prev(cell: nn.Module, x: Tensor, h0: Tensor | None) -> Tensor:

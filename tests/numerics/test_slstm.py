@@ -15,18 +15,28 @@ import torch
 from pararnn import (
     NewtonConfig,
     NewtonStats,
+    ParaGRU,
     ParaSLSTM,
     device,
     newton_apply,
     sequential_apply,
 )
+from pararnn.cells.para_slstm import (
+    SLSTMLogCoords,
+    slstm_decode_log,
+    slstm_encode_log,
+    slstm_picard_init,
+)
 from pararnn.layout import (
+    SLSTM_CELL,
     SLSTM_HIDDEN,
+    SLSTM_NORMALIZER,
     SLSTM_SLOTS,
     slstm_pack_heads,
     slstm_unpack_heads,
 )
 from pararnn.solvers.jacobian import jacobian_autograd
+from pararnn.solvers.newton import slstm_auto_picard
 from pararnn.solvers.scan import reverse_scan_block4, scan_block4, scan_dense
 
 log = logging.getLogger(__name__)
@@ -443,6 +453,7 @@ def test_slstm_diag_auto_picks_fused():
         stats=st,
     )
     assert st.scan_backend == "fused"
+    assert st.picard_iters == 1
 
 
 def test_slstm_fused_rejects_head_and_dense():
@@ -585,3 +596,294 @@ def test_slstm_newton_fused_fp16_matches_sequential():
     err = float((par.float() - seq.float()).abs().amax())
     assert err < 2e-2, err
     assert par.dtype is torch.float16
+
+
+@torch.no_grad()
+def test_slstm_log_coords_roundtrip():
+    torch.manual_seed(301)
+    eps = 1e-6
+    state = torch.zeros(2, SLSTM_SLOTS, 5, device=device)
+    state[:, SLSTM_CELL] = torch.tensor(
+        [[-2.0, -0.1, 0.0, 0.5, 3.0], [1.0, -4.0, 0.2, -0.01, 8.0]], device=device
+    )
+    state[:, SLSTM_NORMALIZER] = torch.tensor(
+        [[2.5, 1.0, 0.3, 12.0, 80.0], [1.0, 5.0, 4.0, 0.05, 2.5]], device=device
+    )
+    state[:, SLSTM_HIDDEN] = 0.2 * torch.randn(2, 5, device=device)
+    got = slstm_decode_log(slstm_encode_log(state, eps=eps), eps=eps)
+    torch.testing.assert_close(got, state, atol=1e-5, rtol=1e-5)
+
+
+@torch.no_grad()
+def test_slstm_log_decode_huge_n_is_finite():
+    u = torch.zeros(1, SLSTM_SLOTS, 2, device=device)
+    u[:, SLSTM_CELL] = 200.0
+    u[:, SLSTM_NORMALIZER] = 200.0
+    out = slstm_decode_log(u, eps=1e-6)
+    assert torch.isfinite(out).all()
+
+
+@torch.no_grad()
+def test_slstm_log_jac_matches_autograd():
+    torch.manual_seed(302)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    wrapped = SLSTMLogCoords(cell)
+    native = torch.randn(2, 6, SLSTM_SLOTS, 4, device=device)
+    native[:, :, SLSTM_NORMALIZER] = native[:, :, SLSTM_NORMALIZER].abs() + 1.0
+    native[:, :, SLSTM_CELL] = torch.tanh(native[:, :, SLSTM_CELL])
+    coords = slstm_encode_log(native, eps=cell.eps)
+    x = 0.3 * torch.randn(2, 6, 4, device=device)
+    pred_a, jac_a = wrapped.step_with_jacobian(coords, x)
+    pred_g, jac_g = jacobian_autograd(wrapped, coords, x, structure="block4")
+    torch.testing.assert_close(pred_g, pred_a, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(jac_g, jac_a, atol=1e-4, rtol=1e-4)
+
+
+@torch.no_grad()
+def test_slstm_log_newton_vs_sequential():
+    torch.manual_seed(101)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = 0.3 * torch.randn(2, 12, 4, device=device)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=3,
+            scan_backend="eager",
+            residual_atol=None,
+            coords="log",
+        ),
+    )
+    err = float((par - seq).abs().amax())
+    assert err < 2e-3, err
+
+
+@torch.no_grad()
+def test_slstm_log_coords_gru_rejected():
+    gru = ParaGRU(4, 4).to(device)
+    xg = torch.randn(2, 4, 4, device=device)
+    with pytest.raises(TypeError, match="ParaSLSTM"):
+        newton_apply(gru, xg, NewtonConfig(coords="log", scan_backend="eager"))
+
+
+@torch.no_grad()
+def test_slstm_log_auto_picks_fused():
+    torch.manual_seed(220)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(dev)
+    x = 0.3 * torch.randn(2, 12, 4, device=dev)
+    st = NewtonStats()
+    newton_apply(
+        cell,
+        x,
+        NewtonConfig(max_iters=3, residual_atol=None, coords="log"),
+        stats=st,
+    )
+    assert st.scan_backend == "fused"
+
+
+@torch.no_grad()
+def test_slstm_log_fused_matches_eager():
+    torch.manual_seed(101)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(dev)
+    x = 0.3 * torch.randn(2, 12, 4, device=dev)
+    seq = sequential_apply(cell, x)
+    cfg = dict(max_iters=3, residual_atol=None, coords="log")
+    eager = newton_apply(cell, x, NewtonConfig(**cfg, scan_backend="eager"))
+    fused = newton_apply(cell, x, NewtonConfig(**cfg, scan_backend="fused"))
+    torch.testing.assert_close(fused, eager, atol=2e-4, rtol=2e-4)
+    err = float((fused - seq).abs().amax())
+    assert err < 2e-3, err
+
+
+@torch.no_grad()
+def test_slstm_log_fused_matches_eager_across_tiles():
+    torch.manual_seed(101)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(dev)
+    x = 0.3 * torch.randn(2, 48, 4, device=dev)
+    seq = sequential_apply(cell, x)
+    cfg = dict(max_iters=3, residual_atol=None, coords="log")
+    eager = newton_apply(cell, x, NewtonConfig(**cfg, scan_backend="eager"))
+    fused = newton_apply(cell, x, NewtonConfig(**cfg, scan_backend="fused"))
+    err_e = float((fused - eager).abs().amax())
+    err_s = float((fused - seq).abs().amax())
+    assert err_e < 2e-4, err_e
+    assert err_s < 1e-4, err_s
+
+
+@torch.no_grad()
+def test_slstm_fused_chunked_matches_sequential():
+    torch.manual_seed(101)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(dev)
+    x = 0.3 * torch.randn(2, 96, 4, device=dev)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=3,
+            scan_backend="fused",
+            residual_atol=None,
+            chunk_len=64,
+        ),
+    )
+    err = float((par - seq).abs().amax())
+    assert err < 2e-3, err
+
+
+@torch.no_grad()
+def test_slstm_fused_log_chunked_matches_sequential():
+    torch.manual_seed(101)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(dev)
+    x = 0.3 * torch.randn(2, 96, 4, device=dev)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=3,
+            scan_backend="fused",
+            residual_atol=None,
+            chunk_len=64,
+            coords="log",
+        ),
+    )
+    err = float((par - seq).abs().amax())
+    assert err < 2e-3, err
+
+
+@torch.no_grad()
+def test_slstm_log_step_matches_native_ratio():
+    """LSE / convex combo ≈ encode(native(decode)) when n ≫ eps."""
+    torch.manual_seed(303)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    wrapped = SLSTMLogCoords(cell)
+    native = torch.randn(2, 5, SLSTM_SLOTS, 4, device=device)
+    native[:, :, SLSTM_NORMALIZER] = native[:, :, SLSTM_NORMALIZER].abs() + 1.0
+    native[:, :, SLSTM_CELL] = torch.tanh(native[:, :, SLSTM_CELL])
+    coords = slstm_encode_log(native, eps=cell.eps)
+    x = 0.3 * torch.randn(2, 5, 4, device=device)
+    got = wrapped.step(coords, x)
+    ref = slstm_encode_log(cell.step(slstm_decode_log(coords, eps=cell.eps), x), eps=cell.eps)
+    torch.testing.assert_close(got, ref, atol=2e-4, rtol=2e-4)
+
+
+@torch.no_grad()
+def test_slstm_chunked_newton_vs_sequential():
+    """T=64 snaps at this width on seed 0; two chunks should still match seq."""
+    torch.manual_seed(101)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = 0.3 * torch.randn(2, 96, 4, device=device)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=3,
+            scan_backend="eager",
+            residual_atol=None,
+            chunk_len=64,
+        ),
+    )
+    err = float((par - seq).abs().amax())
+    assert err < 2e-3, err
+
+
+@torch.no_grad()
+def test_slstm_picard_p0_matches_zero_hidden():
+    torch.manual_seed(310)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = 0.3 * torch.randn(2, 16, 4, device=device)
+    wx = cell.W_x(x)
+    z = cell.zero_hidden_init(x, wx=wx)
+    p0 = slstm_picard_init(cell, wx, n_picard=0)
+    torch.testing.assert_close(p0, z)
+    p1 = slstm_picard_init(cell, wx, n_picard=1)
+    assert float((p1 - z).abs().amax()) > 1e-4
+
+
+@torch.no_grad()
+def test_slstm_picard_newton_vs_sequential():
+    torch.manual_seed(101)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = 0.3 * torch.randn(2, 12, 4, device=device)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=3,
+            scan_backend="eager",
+            residual_atol=None,
+            picard_iters=1,
+        ),
+    )
+    err = float((par - seq).abs().amax())
+    assert err < 2e-3, err
+
+
+@torch.no_grad()
+def test_slstm_picard_gru_rejected():
+    gru = ParaGRU(4, 4).to(device)
+    xg = torch.randn(2, 4, 4, device=device)
+    with pytest.raises(TypeError, match="ParaSLSTM"):
+        newton_apply(
+            gru, xg, NewtonConfig(picard_iters=1, scan_backend="eager")
+        )
+
+
+@torch.no_grad()
+def test_slstm_picard_fused_matches_eager():
+    torch.manual_seed(101)
+    dev = _cuda_or_skip()
+    if dev is None:
+        return
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(dev)
+    x = 0.3 * torch.randn(2, 12, 4, device=dev)
+    seq = sequential_apply(cell, x)
+    cfg = dict(max_iters=3, residual_atol=None, picard_iters=1)
+    eager = newton_apply(cell, x, NewtonConfig(**cfg, scan_backend="eager"))
+    fused = newton_apply(cell, x, NewtonConfig(**cfg, scan_backend="fused"))
+    torch.testing.assert_close(fused, eager, atol=2e-4, rtol=2e-4)
+    err = float((fused - seq).abs().amax())
+    assert err < 2e-3, err
+
+
+def test_slstm_auto_picard_schedule():
+    assert slstm_auto_picard(12) == 1
+    assert slstm_auto_picard(64) == 1
+    assert slstm_auto_picard(65) == 3
+    assert slstm_auto_picard(256) == 3
+    assert slstm_auto_picard(2048) == 3
+
+
+@torch.no_grad()
+def test_slstm_auto_picard_default_snaps():
+    torch.manual_seed(101)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = 0.3 * torch.randn(2, 12, 4, device=device)
+    st = NewtonStats()
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(max_iters=3, scan_backend="eager", residual_atol=None),
+        stats=st,
+    )
+    assert st.picard_iters == 1
+    err = float((par - sequential_apply(cell, x)).abs().amax())
+    assert err < 2e-3, err
