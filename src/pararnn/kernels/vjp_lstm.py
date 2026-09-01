@@ -1,17 +1,17 @@
 """Triton VJP of the CIFG peephole ParaLSTM recurrence (eq. 3.1b).
 
 ``state_prev`` detached. ``W_x`` GEMM stays in PyTorch.
+Dtype gate is ``validate_cuda_tensors`` (bf16 if CC ≥ 8.0).
 """
 
 from __future__ import annotations
 
-import torch
 import triton
 import triton.language as tl
 from torch import Tensor
 from triton.language.extra.cuda.libdevice import tanh as _nv_tanh
 
-from pararnn.kernels.precision import check_cuda_real, load_acc, store_acc
+from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
 
 _BLOCK_T = 64
 _BLOCK_D = 32
@@ -25,12 +25,11 @@ def _tanh(x):
 
 
 @triton.jit
-def _load_state(s_ptr, pid_b, offs_t, offs_d, slot, mask, sb, st, ss, sd, FP16: tl.constexpr):
+def _load_state(s_ptr, pid_b, offs_t, offs_d, slot, mask, sb, st, ss, sd):
     return load_acc(
         s_ptr + pid_b * sb + offs_t[:, None] * st + slot * ss + offs_d[None, :] * sd,
         mask,
         0.0,
-        FP16,
     )
 
 
@@ -71,7 +70,6 @@ def _lstm_vjp_kernel(
     stride_ad,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    FP16: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -83,20 +81,20 @@ def _lstm_vjp_kernel(
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
     dmask = offs_d < d_h
 
-    c_prev = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd, FP16)
-    h_prev = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd, FP16)
-    mu_c = _load_state(mu_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_mb, stride_mt, stride_ms, stride_md, FP16)
-    mu_h = _load_state(mu_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_mb, stride_mt, stride_ms, stride_md, FP16)
+    c_prev = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd)
+    h_prev = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd)
+    mu_c = _load_state(mu_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_mb, stride_mt, stride_ms, stride_md)
+    mu_h = _load_state(mu_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_mb, stride_mt, stride_ms, stride_md)
 
     base = wx_ptr + pid_b * stride_wb + offs_t[:, None] * stride_wt
-    fx = load_acc(base + offs_d[None, :] * stride_wd, mask, 0.0, FP16)
-    zx = load_acc(base + (offs_d[None, :] + d_h) * stride_wd, mask, 0.0, FP16)
-    ox = load_acc(base + (offs_d[None, :] + 2 * d_h) * stride_wd, mask, 0.0, FP16)
-    a_f = load_acc(af_ptr + offs_d, dmask, 0.0, FP16)
-    a_z = load_acc(az_ptr + offs_d, dmask, 0.0, FP16)
-    a_o = load_acc(ao_ptr + offs_d, dmask, 0.0, FP16)
-    peephole_f = load_acc(cf_ptr + offs_d, dmask, 0.0, FP16)
-    peephole_o = load_acc(co_ptr + offs_d, dmask, 0.0, FP16)
+    fx = load_acc(base + offs_d[None, :] * stride_wd, mask, 0.0)
+    zx = load_acc(base + (offs_d[None, :] + d_h) * stride_wd, mask, 0.0)
+    ox = load_acc(base + (offs_d[None, :] + 2 * d_h) * stride_wd, mask, 0.0)
+    a_f = load_acc(af_ptr + offs_d, dmask, 0.0)
+    a_z = load_acc(az_ptr + offs_d, dmask, 0.0)
+    a_o = load_acc(ao_ptr + offs_d, dmask, 0.0)
+    peephole_f = load_acc(cf_ptr + offs_d, dmask, 0.0)
+    peephole_o = load_acc(co_ptr + offs_d, dmask, 0.0)
 
     f = 1.0 / (1.0 + tl.exp(-(a_f * h_prev + peephole_f * c_prev + fx)))
     z = _tanh(a_z * h_prev + zx)
@@ -114,16 +112,16 @@ def _lstm_vjp_kernel(
     d_fpre = d_f * f * (1.0 - f)
 
     gout = gwx_ptr + pid_b * stride_gb + offs_t[:, None] * stride_gt
-    store_acc(gout + offs_d[None, :] * stride_gd, d_fpre, mask, FP16)
-    store_acc(gout + (offs_d[None, :] + d_h) * stride_gd, d_zpre, mask, FP16)
-    store_acc(gout + (offs_d[None, :] + 2 * d_h) * stride_gd, d_opre, mask, FP16)
+    store_acc(gout + offs_d[None, :] * stride_gd, d_fpre, mask)
+    store_acc(gout + (offs_d[None, :] + d_h) * stride_gd, d_zpre, mask)
+    store_acc(gout + (offs_d[None, :] + 2 * d_h) * stride_gd, d_opre, mask)
 
     acc = pid_b * stride_ab + offs_t[:, None] * stride_at + offs_d[None, :] * stride_ad
-    store_acc(gaf_ptr + acc, d_fpre * h_prev, mask, FP16)
-    store_acc(gaz_ptr + acc, d_zpre * h_prev, mask, FP16)
-    store_acc(gao_ptr + acc, d_opre * h_prev, mask, FP16)
-    store_acc(gcf_ptr + acc, d_fpre * c_prev, mask, FP16)
-    store_acc(gco_ptr + acc, d_opre * c, mask, FP16)
+    store_acc(gaf_ptr + acc, d_fpre * h_prev, mask)
+    store_acc(gaz_ptr + acc, d_zpre * h_prev, mask)
+    store_acc(gao_ptr + acc, d_opre * h_prev, mask)
+    store_acc(gcf_ptr + acc, d_fpre * c_prev, mask)
+    store_acc(gco_ptr + acc, d_opre * c, mask)
 
 
 def lstm_recurrence_vjp(
@@ -136,7 +134,7 @@ def lstm_recurrence_vjp(
     c_o: Tensor,
     mu: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    fp16 = check_cuda_real(
+    validate_cuda_tensors(
         state_prev, wx, a_f, a_z, a_o, c_f, c_o, mu, name="lstm_recurrence_vjp"
     )
     state_prev = state_prev.contiguous()
@@ -181,7 +179,6 @@ def lstm_recurrence_vjp(
         *g_af_bt.stride(),
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
-        FP16=fp16,
     )
     dims = (0, 1)
     return (

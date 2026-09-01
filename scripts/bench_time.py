@@ -32,6 +32,7 @@ import yaml
 from torch import Tensor, nn
 
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
+from pararnn.kernels.precision import is_fused_dtype_supported
 from pararnn.solvers import (
     NewtonConfig,
     newton_apply,
@@ -39,7 +40,12 @@ from pararnn.solvers import (
     sequential_apply_compiled,
 )
 
-from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, setup_logging, wait_until_free
+from gpu import (
+    DEFAULT_EXPERIMENT_GPU_NAME,
+    select_device,
+    setup_logging,
+    wait_until_free,
+)
 
 log = logging.getLogger("bench")
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,15 +100,13 @@ def _lock_hash() -> str:
 
 
 def _torch_dtype(name: str) -> torch.dtype:
-    """YAML dtype. fp16 is Turing TC; bf16 is rejected (no bf16 TC)."""
+    """YAML dtype. bf16 fused/Triton needs compute capability ≥ 8.0."""
     if name in ("float32", "fp32"):
         return torch.float32
     if name in ("float16", "fp16"):
         return torch.float16
     if name in ("bfloat16", "bf16"):
-        raise ValueError(
-            "bfloat16 is not used on Turing (no bf16 tensor cores). Use float16."
-        )
+        return torch.bfloat16
     raise ValueError(f"unsupported dtype {name!r}")
 
 
@@ -110,10 +114,12 @@ def _agree_tol(dtype: torch.dtype, spec: dict) -> float:
     if "agree_tol" in spec:
         return float(spec["agree_tol"])
     # fp16 vs sequential fp16: residual ~1e-3 (docs/bottlenecks.md). Not 1e-4 vs fp32.
-    return 2e-3 if dtype is torch.float16 else 1e-4
+    return 2e-3 if dtype in (torch.float16, torch.bfloat16) else 1e-4
 
 
-def _build_cells(spec: dict, d_in: int, d_h: int, *, device, dtype: torch.dtype) -> dict[str, nn.Module]:
+def _build_cells(
+    spec: dict, d_in: int, d_h: int, *, device, dtype: torch.dtype
+) -> dict[str, nn.Module]:
     """Default: ParaGRU + ParaLSTM. YAML ``cells`` can pin a subset (sLSTM)."""
     raw = spec.get("cells")
     if not raw:
@@ -265,9 +271,7 @@ def _flashrnn_slstm(cell: nn.Module, x: Tensor, backend: str) -> None:
     bias = x.new_zeros(4, n_heads, d_head)
     s0 = x.new_zeros(4, batch, 1, n_heads, d_head)
     dtype = "float32" if x.dtype == torch.float32 else "float16"
-    flashrnn(
-        wx5, rec, bias, states=s0, function="slstm", backend=backend, dtype=dtype
-    )
+    flashrnn(wx5, rec, bias, states=s0, function="slstm", backend=backend, dtype=dtype)
 
 
 def _newton_compiled(
@@ -286,9 +290,7 @@ def _newton_compiled(
     fn = _compiled_newton.get(key)
     if fn is None:
 
-        def _fwd(
-            xx: Tensor, c: nn.Module = cell, conf: NewtonConfig = cfg
-        ) -> Tensor:
+        def _fwd(xx: Tensor, c: nn.Module = cell, conf: NewtonConfig = cfg) -> Tensor:
             return newton_apply(c, xx, conf)
 
         fn = torch.compile(_fwd, mode=mode)
@@ -363,7 +365,9 @@ def main() -> None:
     spec = yaml.safe_load(config_path.read_text())
     device = select_device(DEFAULT_EXPERIMENT_GPU_NAME)
     if device.type != "cuda":
-        raise RuntimeError("App. B needs the 2080 Ti (CUDA_VISIBLE_DEVICES to restrict)")
+        raise RuntimeError(
+            "App. B needs the 2080 Ti (CUDA_VISIBLE_DEVICES to restrict)"
+        )
     torch.cuda.set_device(device)
     wait_until_free(device, min_free_gib=8.0, poll_s=30.0)
     newton_cfg = _newton_config_from_spec(spec, scan_backend="eager")
@@ -410,7 +414,9 @@ def main() -> None:
             {
                 "gpu": torch.cuda.get_device_name(device),
                 "dtype": ",".join(dtype_names),
-                "protocol": "smoke-10-50" if int(spec["warmup"]) != 20 else "danieli2025-appB",
+                "protocol": "smoke-10-50"
+                if int(spec["warmup"]) != 20
+                else "danieli2025-appB",
                 "modes": ",".join(modes),
             }
         )
@@ -452,6 +458,16 @@ def main() -> None:
         try:
             for dtype_name in dtype_names:
                 dt = _torch_dtype(dtype_name)
+                if (
+                    dt is torch.bfloat16
+                    and not is_fused_dtype_supported(dt, device)
+                    and ("newton_fused" in modes or newton_cfg.scan_backend == "fused")
+                ):
+                    log.warning(
+                        "skip dtype=%s: fused bf16 needs compute capability >= 8.0",
+                        dtype_name,
+                    )
+                    continue
                 agree_tol = _agree_tol(dt, spec)
                 require_agreement = bool(spec.get("require_agreement", True))
                 x_scale = float(spec.get("x_scale", 1.0))
@@ -465,6 +481,7 @@ def main() -> None:
 
                 def mkey(cell: str, rest: str, d=dtype_name) -> str:
                     return f"{cell}_{d}_{rest}" if multi_dtype else f"{cell}_{rest}"
+
                 cells = _build_cells(spec, d_in, d_h, device=device, dtype=dt)
                 for cell_name, cell in cells.items():
                     for T in spec["seq_lens"]:
@@ -476,7 +493,9 @@ def main() -> None:
                         if T <= seq_max_seq:
                             if "newton" in modes or "newton_compiled" in modes:
                                 err = _agree(cell, x, newton_cfg)
-                                log.info("%s T=%d max|par-naive|=%.3e", cell_name, T, err)
+                                log.info(
+                                    "%s T=%d max|par-naive|=%.3e", cell_name, T, err
+                                )
                                 if err > agree_tol:
                                     msg = f"agreement failed {cell_name} T={T}: {err}"
                                     if require_agreement:
@@ -498,7 +517,9 @@ def main() -> None:
                                         raise RuntimeError(msg)
                                     log.warning("%s (logged, not fatal)", msg)
                                 mlflow.log_metric(
-                                    mkey(cell_name, "fused_max_abs_err"), err_f, step=int(T)
+                                    mkey(cell_name, "fused_max_abs_err"),
+                                    err_f,
+                                    step=int(T),
                                 )
 
                             if "sequential_eager" in modes:
@@ -573,10 +594,18 @@ def main() -> None:
                                 n_runs=n_runs,
                             )
                             rows.append(
-                                {"cell": cell_name, "mode": "newton", "T": T, "dtype": dtype_name, **par_stats}
+                                {
+                                    "cell": cell_name,
+                                    "mode": "newton",
+                                    "T": T,
+                                    "dtype": dtype_name,
+                                    **par_stats,
+                                }
                             )
                             mlflow.log_metric(
-                                mkey(cell_name, "newton_min_ms"), par_stats["min_ms"], step=int(T)
+                                mkey(cell_name, "newton_min_ms"),
+                                par_stats["min_ms"],
+                                step=int(T),
                             )
                             mlflow.log_metric(
                                 mkey(cell_name, "newton_peak_mib"),
@@ -633,8 +662,8 @@ def main() -> None:
                                 try:
                                     flash_stats = _time_one(
                                         f"{cell_name} flashrnn_{fr_backend}",
-                                        lambda c=cell, xx=x, b=fr_backend: _flashrnn_slstm(
-                                            c, xx, b
+                                        lambda c=cell, xx=x, b=fr_backend: (
+                                            _flashrnn_slstm(c, xx, b)
                                         ),
                                         x,
                                         warmup=warmup,
@@ -666,7 +695,8 @@ def main() -> None:
                                     mlflow.set_tag("flashrnn_backend", fr_backend)
                                     if fused_stats is not None:
                                         vs_fr = (
-                                            flash_stats["min_ms"] / fused_stats["min_ms"]
+                                            flash_stats["min_ms"]
+                                            / fused_stats["min_ms"]
                                         )
                                         log.info(
                                             "%s T=%d fused vs flashrnn (min)=%.2fx "
@@ -694,7 +724,9 @@ def main() -> None:
                                 compile_s = time.perf_counter() - t_compile
                                 with torch.no_grad():
                                     seq_h = sequential_apply(cell, x)
-                                err_c = float((compiled_h.float() - seq_h.float()).abs().amax())
+                                err_c = float(
+                                    (compiled_h.float() - seq_h.float()).abs().amax()
+                                )
                                 log.info(
                                     "%s T=%d max|compiled-naive|=%.3e compile_s=%.2f",
                                     cell_name,
@@ -753,7 +785,9 @@ def main() -> None:
                                 vs_eager,
                             )
                             mlflow.log_metric(
-                                mkey(cell_name, "compile_speedup"), vs_eager, step=int(T)
+                                mkey(cell_name, "compile_speedup"),
+                                vs_eager,
+                                step=int(T),
                             )
                             # Median, not min: CUDA-graph min can be a lucky short capture.
                             saved_s = (
@@ -791,7 +825,9 @@ def main() -> None:
                                 T,
                                 speedup,
                             )
-                            mlflow.log_metric(mkey(cell_name, "speedup"), speedup, step=int(T))
+                            mlflow.log_metric(
+                                mkey(cell_name, "speedup"), speedup, step=int(T)
+                            )
                         if seq_eager_stats is not None and fused_stats is not None:
                             vs_naive_rnn = (
                                 seq_eager_stats["min_ms"] / fused_stats["min_ms"]
@@ -803,7 +839,9 @@ def main() -> None:
                                 vs_naive_rnn,
                             )
                             mlflow.log_metric(
-                                mkey(cell_name, "fused_vs_seq_eager"), vs_naive_rnn, step=int(T)
+                                mkey(cell_name, "fused_vs_seq_eager"),
+                                vs_naive_rnn,
+                                step=int(T),
                             )
                         if seq_stats is not None and fused_stats is not None:
                             vs_seq_c = seq_stats["min_ms"] / fused_stats["min_ms"]
@@ -814,7 +852,9 @@ def main() -> None:
                                 vs_seq_c,
                             )
                             mlflow.log_metric(
-                                mkey(cell_name, "fused_vs_seq_compiled"), vs_seq_c, step=int(T)
+                                mkey(cell_name, "fused_vs_seq_compiled"),
+                                vs_seq_c,
+                                step=int(T),
                             )
                         if seq_eager_stats is not None and par_stats is not None:
                             vs_par_naive = (
@@ -827,7 +867,9 @@ def main() -> None:
                                 vs_par_naive,
                             )
                             mlflow.log_metric(
-                                mkey(cell_name, "newton_vs_seq_eager"), vs_par_naive, step=int(T)
+                                mkey(cell_name, "newton_vs_seq_eager"),
+                                vs_par_naive,
+                                step=int(T),
                             )
                         if seq_stats is not None and compiled_stats is not None:
                             speedup_c = seq_stats["min_ms"] / compiled_stats["min_ms"]
@@ -838,7 +880,9 @@ def main() -> None:
                                 speedup_c,
                             )
                             mlflow.log_metric(
-                                mkey(cell_name, "compiled_speedup"), speedup_c, step=int(T)
+                                mkey(cell_name, "compiled_speedup"),
+                                speedup_c,
+                                step=int(T),
                             )
                         _write_csv(rows, csv_path)
                         del x

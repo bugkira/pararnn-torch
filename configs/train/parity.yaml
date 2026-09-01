@@ -1,0 +1,58 @@
+# Running parity (Z2 word problem) smoke: stacked xLSTMBlock vs sequential
+# same cell vs a trained diagonal SSM. Not FlashRNN heads. Not TinyStories.
+#
+# Task: Merrill et al. 2024 §5 token-tagging — label at t is the product of
+# the prefix (here Z2 = running XOR). Dense supervision, not sequence-level
+# classification. Train length 32 (library Picard P=1). Eval also at 64
+# (length gen, not a curriculum of growing n).
+#
+# Optim: ParaRNN App. C synthetic (parity, k-hop): AdamW β=(0.9,0.999),
+# cosine LR 5e-4 decay to 0, 10% warmup, wd 1e-6, batch 16. Paper L=100;
+# this smoke is T=32 so CE/acc can move in hundreds of steps, not a
+# length-curriculum SOTA. Clip: App. C "except parity" → max_recurrent_norm
+# null. Fallback lr if token acc stays chance: 1e-3 then 1e-4 (Shallue grid,
+# not a search over K).
+#
+# 2026-09-02 2080 Ti: 300 steps × 3 lrs, all arms stay at chance
+# (eval_tok ≈ 0.52 = first-token copy). Next rung: configs/train/parity_t16.yaml
+# (T=16, 2000 steps, lr 1e-3 from that grid).
+#
+# GPU: 2080 Ti by name.
+
+task: running_parity
+seq_len: 32
+eval_seq_len: 64
+batch: 16
+d_h: 32
+num_layers: 2
+steps: 300
+warmup_frac: 0.1
+
+newton_iters: 3
+scan_backend: auto
+# App. C: no recurrent clip on parity.
+max_recurrent_norm: null
+
+lr: 5.0e-4
+lr_fallback:
+  - 1.0e-3
+  - 1.0e-4
+weight_decay: 1.0e-6
+adam_betas: [0.9, 0.999]
+dtype: float32
+seed: 0
+mix: diag
+arms:
+  - newton
+  - eager
+  - ssm
+
+mlflow_experiment: state-tracking
+mlflow_run_name: parity-xlstm-vs-ssm
+
+why: |
+  Quality of mix=diag, not solver ms. Stacked xLSTMBlock (pre-norm + residual)
+  on Z2 tagging (Merrill §5, running XOR). Newton vs sequential same cell vs
+  a trained S4D-Real selective SSM (Gu & Dao Δ∈[1e-3,1e-1]; scan_diag eager
+  for Autograd). Not mamba-ssm. Not FlashRNN. 2080 Ti. App. C synthetic
+  knobs; T=32 smoke not paper L=100 curriculum.

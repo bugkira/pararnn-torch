@@ -1,0 +1,48 @@
+# Dyck-1 train: our ParaSLSTM Newton vs NX-AI FlashRNN sequential sLSTM.
+# Not TinyStories. Matched mixing vs FlashRNN 1×32: see
+# configs/train/dyck_vs_flashrnn_head.yaml (mix=head, K=4). This file is
+# mix=diag fused vs sequential FlashRNN — not the same cell.
+
+task: dyck1
+# Even length. T=64 → library Picard P=1 (slstm_auto_picard). Long enough
+# that CUDA-event step time is not noise; still a toy, not LM context.
+seq_len: 64
+batch: 32
+# Same width as copy/dyck smokes. FlashRNN: 1 head × 32 (Turing smem; bwd
+# d_head ≤ 64). Not paper 125M.
+d_h: 32
+num_layers: 1
+# pytorch_port.md 50–200; 50 sees CE move on this alphabet (dyck.yaml).
+steps: 50
+# First steps include Triton compile; exclude from min/mean step_ms.
+warmup_time_steps: 5
+
+# Library contract: K=3 (App. A). P from T. fused is the CUDA train path.
+newton_iters: 3
+scan_backend: fused
+
+# Same Shallue-style 3-point grid as configs/train/dyck.yaml. Both backends
+# share one lr (not independent fallbacks).
+lr: 3.0e-3
+lr_fallback:
+  - 1.0e-3
+  - 1.0e-2
+weight_decay: 0.0
+dtype: float32
+seed: 0
+cell: para_slstm
+mix: diag
+backends:
+  - newton
+  - flashrnn
+
+mlflow_experiment: slstm-train-vs-flashrnn
+mlflow_run_name: dyck1-newton-vs-flashrnn
+
+why: |
+  Train-time comparison, not a forward-only bench. Same Dyck-1 next-token,
+  AdamW, seed, and lr on both arms. Newton: ParaSLSTM mix=diag, fused Alg. 1
+  + eq. 2.6. FlashRNN: sequential sLSTM kernel, 1×32 head mix, autograd
+  through the kernel. Mixing and n-floor differ (ours eps, theirs max(n,1));
+  do not read loss as a matched-weight ablation. GPU: 2080 Ti by name.
+  FlashRNN extra: NXAI Community License, not MIT.

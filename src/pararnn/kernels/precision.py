@@ -1,8 +1,13 @@
-"""fp16 DRAM + fp32 Newton accumulators (Turing). Not bf16.
+"""Narrow DRAM (fp16/bf16) + fp32 Newton/scan accumulators.
 
-Paper App. B cell plots are float32; LM training on A100 used bf16 weights.
-This box is Turing: fp16 tensor cores exist, bf16 TC do not. Scan/cell math
-runs in fp32 inside the kernel; activations and J tiles stay fp16 in DRAM.
+Paper App. B cell plots are float32; LM training used bf16 weights on Ampere.
+Algebra is fp32 inside Triton (`load_acc` / `store_acc`). Activations, J
+tiles, and residuals stay in the tensor dtype in DRAM. ``W_x`` is a PyTorch
+GEMM.
+
+bf16 fused/Triton is **compute capability ≥ 8.0** (Ampere+ tensor cores),
+not a GPU name. CC 7.x has no bf16 TC: ``auto`` falls back; explicit
+``fused`` raises.
 """
 
 from __future__ import annotations
@@ -12,42 +17,72 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
-_ALLOWED = (torch.float16, torch.float32)
+_NARROW_DTYPES = (torch.float16, torch.bfloat16)
+_BF16_MIN_MAJOR = 8  # Ampere / Ada / Hopper / Blackwell TC
 
 
-def check_cuda_real(*tensors: Tensor, name: str) -> bool:
-    """Validate CUDA fp16/fp32. Return True if the storage dtype is fp16."""
+def is_fused_dtype_supported(
+    dtype: torch.dtype, device: torch.device | str | int
+) -> bool:
+    """Whether fused/Triton scan may run this dtype on this **tensor** device.
+
+    fp32 and fp16: any CUDA. bf16: SM 8.0+. Query ``device``, not the current
+    CUDA context (multi-GPU boxes).
+    """
+    dev = torch.device(device)
+    if dev.type != "cuda":
+        return False
+    if dtype in (torch.float32, torch.float16):
+        return True
+    if dtype == torch.bfloat16:
+        major, _minor = torch.cuda.get_device_capability(dev)
+        return major >= _BF16_MIN_MAJOR
+    return False
+
+
+def validate_cuda_tensors(*tensors: Tensor, name: str) -> bool:
+    """CUDA, one device, one fused dtype. Return True if DRAM is fp16/bf16."""
     if not tensors:
         raise ValueError(f"{name}: no tensors")
-    dtype = tensors[0].dtype
+    ref = tensors[0]
+    dtype = ref.dtype
+    device = ref.device
     for t in tensors:
+        if not t.is_cuda:
+            raise RuntimeError(f"{name} requires CUDA, got {t.device}")
+        if t.device != device:
+            raise RuntimeError(
+                f"{name}: tensors on different devices ({t.device} vs {device})"
+            )
         if t.dtype != dtype:
             raise TypeError(f"{name}: dtype mismatch {t.dtype} vs {dtype}")
-        if not t.is_cuda:
-            raise RuntimeError(f"{name} requires CUDA")
-    if dtype is torch.bfloat16:
-        raise TypeError(
-            f"{name}: bfloat16 is not used on Turing (no bf16 tensor cores). "
-            "Use float16 (fp32 accumulators inside the kernel)."
-        )
-    if dtype not in _ALLOWED:
-        raise TypeError(f"{name} supports float16/float32, got {dtype}")
-    return dtype is torch.float16
+    if not is_fused_dtype_supported(dtype, device):
+        if dtype == torch.bfloat16:
+            major, minor = torch.cuda.get_device_capability(device)
+            raise TypeError(
+                f"{name}: bfloat16 needs CUDA compute capability >= 8.0 "
+                f"(Ampere+ tensor cores); got sm_{major}{minor} on {device}. "
+                "Use float16 or float32; cell+scan algebra stays fp32."
+            )
+        raise TypeError(f"{name} supports float16/float32/bfloat16, got {dtype}")
+    return dtype in _NARROW_DTYPES
+
+
+# Back-compat names from the capability gate; prefer the two above.
+fused_dtype_ok = is_fused_dtype_supported
+check_cuda_real = validate_cuda_tensors
 
 
 @triton.jit
-def load_acc(ptr, mask, other, FP16: tl.constexpr):
-    """Load fp16/fp32, return fp32 for the Newton/scan algebra."""
-    x = tl.load(ptr, mask=mask, other=other)
-    if FP16:
-        x = x.to(tl.float32)
-    return x
+def load_acc(ptr, mask, other):
+    """Load DRAM (fp16, bf16, or fp32) and return fp32 for Newton/scan algebra.
+
+    ``.to(tl.float32)`` is a no-op when the pointer is already fp32.
+    """
+    return tl.load(ptr, mask=mask, other=other).to(tl.float32)
 
 
 @triton.jit
-def store_acc(ptr, val, mask, FP16: tl.constexpr):
-    """Store an fp32 accumulator; downcast when DRAM is fp16."""
-    if FP16:
-        tl.store(ptr, val.to(tl.float16), mask=mask)
-    else:
-        tl.store(ptr, val, mask=mask)
+def store_acc(ptr, val, mask):
+    """Store an fp32 accumulator; cast to the pointer's element type."""
+    tl.store(ptr, val.to(ptr.dtype.element_ty), mask=mask)

@@ -10,14 +10,15 @@ Any cell with ``step(h, x)`` parallelizes: Autograd supplies ``J = ∂f/∂h``
 
 ``scan_backend='fused'`` is a handwritten Triton kernel for ParaGRU, ParaLSTM,
 and ParaSLSTM ``mix='diag'``, not a generic ``f``. ``'auto'`` picks fused
-(CUDA, those cells, fp16/fp32), else Triton scan + ``cell.step``, else eager.
+(CUDA, those cells, fp16/fp32, and bf16 on compute capability ≥ 8.0), else
+Triton scan + ``cell.step``, else eager.
 ParaSLSTM ``coords='log'`` uses the LSE fused kernel when ``scan_backend`` is
 ``fused`` / ``auto`` on CUDA diag mix.
 
 Backward is **not** autograd through the K iterates. Paper eq. 2.6: one reverse
-scan of J^T, then a VJP of the batched cell. ParaGRU/ParaLSTM pack that VJP in
-Triton on CUDA (``W_x`` GEMM still PyTorch). Custom cells use Autograd on
-``step``. IFT is not this.
+scan of J^T, then a VJP of the batched cell. ParaGRU/ParaLSTM and ParaSLSTM
+``mix='diag'`` pack that VJP in Triton on CUDA (``W_x`` GEMM still PyTorch).
+Head/dense sLSTM and custom cells use Autograd on ``step``. IFT is not this.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from pararnn.cells.para_slstm import (
     slstm_picard_init,
     slstm_zero_hidden_init,
 )
+from pararnn.kernels.precision import is_fused_dtype_supported
 from pararnn.layout import prepend_state, slstm_pack_heads, slstm_unpack_heads
 from pararnn.solvers.jacobian import step_and_jacobian
 from pararnn.solvers.scan import (
@@ -52,7 +54,7 @@ from pararnn.solvers.scan import (
     scan_dense,
     scan_diag,
 )
-from pararnn.solvers.vjp import cell_vjp
+from pararnn.solvers.vjp import cell_vjp, uses_packed_vjp
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +68,12 @@ LIBRARY_NEWTON_ITERS = 3
 # Sequential agreement is 1e-4…2e-3; diverged sLSTM is 1e2…1e14 (para-slstm.md).
 # 1.0 sits between. None disables (K-curves, P=0 timing benches).
 _DEFAULT_RESIDUAL_FAIL = 1.0
+# Warn (do not raise) when max|F| is past sequential-agreement but under
+# residual_fail. Train can miss the P=1 basin on one batch after Adam
+# (para-slstm.md / docs/next.md); 1.0 would stay silent.
+_RESIDUAL_WARN = 1e-3
+# Auto Picard rungs (slstm_auto_picard). Train adapt climbs this, not K.
+_PICARD_RUNGS = (1, 3, 5)
 
 
 class NewtonDivergenceError(RuntimeError):
@@ -77,6 +85,9 @@ class NewtonStats:
     """Filled by ``newton_apply(..., stats=)`` after the forward."""
 
     max_residual: float = float("nan")
+    # Residual evaluations in the Newton loop (≤ max_iters), including the
+    # eval that triggered early-stop. 0 if max_iters=0. Fused has no
+    # early-stop: this is max_iters.
     iters: int = 0
     scan_backend: str = ""
     picard_iters: int = 0
@@ -120,6 +131,16 @@ class NewtonConfig:
     # (slstm_auto_picard). Other cells: 0. Explicit 0 is zero-hidden.
     # Fallback if residual_fail fires: raise P, not K.
     picard_iters: int | None = None
+    # None: retry P on ParaSLSTM only when picard_iters was auto (None at
+    # the call). Explicit P (benches, head-smoke) stays put. True/False force.
+    # Not Eisenstat–Walker (docs/next.md): we exact-solve Jδ=-F; this is a
+    # better guess when K=3 misses the basin after Adam.
+    picard_adapt: bool | None = None
+    # Retry the solve at the next P rung if max|F| exceeds this.
+    # 1e-3 = newton_residual_high / sequential-agreement band (para-slstm.md).
+    # Dyck P=1 miss was 0.557, under residual_fail=1.0. None: only retry
+    # when residual_fail would raise.
+    picard_retry_atol: float | None = _RESIDUAL_WARN
     # assoc: tl.associative_scan.
     # seq: serial tl.range prefix in the tile — ablation only.
     scan_tile: str = "assoc"
@@ -153,6 +174,10 @@ def newton_apply(
         raise ValueError(f"max_iters must be >= 0, got {config.max_iters!r}")
     if config.picard_iters is not None and int(config.picard_iters) < 0:
         raise ValueError(f"picard_iters must be >= 0, got {config.picard_iters!r}")
+    if config.picard_retry_atol is not None and float(config.picard_retry_atol) < 0:
+        raise ValueError(
+            f"picard_retry_atol must be >= 0 or None, got {config.picard_retry_atol!r}"
+        )
     if config.residual_fail is not None and float(config.residual_fail) < 0:
         raise ValueError(
             f"residual_fail must be >= 0 or None, got {config.residual_fail!r}"
@@ -161,31 +186,42 @@ def newton_apply(
         raise ValueError(f"unknown scan_tile {config.scan_tile!r}")
     config = _resolve_backend(cell, x, config)
     params = tuple(cell.parameters())
+    has_h0 = h0 is not None
     needs_grad = torch.is_grad_enabled() and (
-        x.requires_grad or any(p.requires_grad for p in params)
+        x.requires_grad
+        or (has_h0 and h0.requires_grad)
+        or any(p.requires_grad for p in params)
     )
     if not needs_grad:
         return _newton_forward(cell, x, config, h0=h0, stats=stats)
 
+    # Nested: cell/config/stats are not tensors. Autograd.Function.apply
+    # cannot take them; a module-level class storing them as attributes is
+    # racy under concurrent newton_apply. h0 must be an apply() input or
+    # its gradient is dropped (eq. 2.6: J_0^T μ_0).
+    h0_leaf = h0 if has_h0 else x.new_zeros(())
+
     class _NewtonFixedPoint(torch.autograd.Function):
         @staticmethod
-        def forward(ctx, x_in: Tensor, *param_tensors: Tensor) -> Tensor:
+        def forward(ctx, x_in: Tensor, h0_in: Tensor, *param_tensors: Tensor) -> Tensor:
             del param_tensors
+            h0_fwd = h0_in if has_h0 else None
             with torch.no_grad():
-                states = _newton_forward(cell, x_in, config, h0=h0, stats=stats)
+                states = _newton_forward(cell, x_in, config, h0=h0_fwd, stats=stats)
+            ctx.has_h0 = has_h0
             ctx.scan_backend = (
                 "triton" if config.scan_backend == "fused" else config.scan_backend
             )
             ctx.jacobian = config.jacobian
             ctx.jac_structure = config.jac_structure
-            ctx.h0 = h0.detach() if h0 is not None else None
-            ctx.save_for_backward(states, x_in)
+            ctx.save_for_backward(states, x_in, h0_in)
             return states
 
         @staticmethod
         def backward(ctx, grad_states: Tensor):
-            states, x_in = ctx.saved_tensors
-            grad_x, param_grads = _eq26_vjp(
+            states, x_in, h0_in = ctx.saved_tensors
+            h0_fwd = h0_in if ctx.has_h0 else None
+            grad_x, param_grads, grad_h0 = _eq26_vjp(
                 cell,
                 states,
                 x_in,
@@ -193,17 +229,19 @@ def newton_apply(
                 backend=ctx.scan_backend,
                 jacobian=ctx.jacobian,
                 jac_structure=ctx.jac_structure,
-                h0=ctx.h0,
+                h0=h0_fwd,
             )
             if not x_in.requires_grad:
                 grad_x = None
-            return (grad_x, *param_grads)
+            if not ctx.has_h0 or not h0_in.requires_grad:
+                grad_h0 = None
+            return (grad_x, grad_h0, *param_grads)
 
-    return _NewtonFixedPoint.apply(x, *params)
+    return _NewtonFixedPoint.apply(x, h0_leaf, *params)
 
 
 def _can_triton_scan(x: Tensor) -> bool:
-    return x.is_cuda and x.dtype in (torch.float16, torch.float32)
+    return is_fused_dtype_supported(x.dtype, x.device)
 
 
 def _can_fuse(cell: nn.Module, x: Tensor) -> bool:
@@ -240,6 +278,18 @@ def slstm_auto_picard(seq_len: int) -> int:
     return 5
 
 
+def slstm_picard_next(picard_iters: int) -> int | None:
+    """Next auto Picard rung after ``picard_iters``, or None at the cap (5).
+
+    Ladder is ``{1, 3, 5}`` (slstm_auto_picard / para-slstm.md), not EW η.
+    """
+    p = int(picard_iters)
+    for rung in _PICARD_RUNGS:
+        if p < rung:
+            return rung
+    return None
+
+
 def _resolve_picard(cell: nn.Module, x: Tensor, config: NewtonConfig) -> NewtonConfig:
     if config.picard_iters is None:
         if isinstance(cell, ParaSLSTM):
@@ -253,14 +303,19 @@ def _resolve_picard(cell: nn.Module, x: Tensor, config: NewtonConfig) -> NewtonC
         return replace(config, picard_iters=0)
     if config.picard_iters and not isinstance(cell, ParaSLSTM):
         raise TypeError(
-            "NewtonConfig(picard_iters=) is ParaSLSTM only "
-            f"(got {type(cell).__name__})"
+            f"NewtonConfig(picard_iters=) is ParaSLSTM only (got {type(cell).__name__})"
         )
     return config
 
 
 def _resolve_backend(cell: nn.Module, x: Tensor, config: NewtonConfig) -> NewtonConfig:
+    auto_p = config.picard_iters is None
     config = _resolve_picard(cell, x, config)
+    if config.picard_adapt is None:
+        config = replace(
+            config,
+            picard_adapt=auto_p and isinstance(cell, ParaSLSTM),
+        )
     requested = config.scan_backend
     if config.coords == "log":
         if not isinstance(cell, ParaSLSTM):
@@ -293,19 +348,20 @@ def _resolve_backend(cell: nn.Module, x: Tensor, config: NewtonConfig) -> Newton
 
 
 def _fused_error(cell: nn.Module, x: Tensor) -> str:
-    if x.dtype is torch.bfloat16:
+    if x.dtype == torch.bfloat16 and not is_fused_dtype_supported(x.dtype, x.device):
+        major, minor = torch.cuda.get_device_capability(x.device)
         return (
-            "fused Newton: bfloat16 is not used on Turing (no bf16 tensor cores). "
+            "fused Newton: bfloat16 needs CUDA compute capability >= 8.0 "
+            f"(Ampere+ tensor cores); got sm_{major}{minor} on {x.device}. "
             "Use float16; cell+scan algebra stays fp32."
         )
     if isinstance(cell, ParaSLSTM) and cell.mix != "diag":
         return (
-            "scan_backend='fused' is mix='diag' only (4x4 SRAM); "
-            f"got mix={cell.mix!r}"
+            f"scan_backend='fused' is mix='diag' only (4x4 SRAM); got mix={cell.mix!r}"
         )
     return (
         "scan_backend='fused' needs CUDA ParaGRU/ParaLSTM/ParaSLSTM(mix='diag') "
-        f"in float16/float32 (got {type(cell).__name__} {x.dtype} {x.device})"
+        f"in float16/float32/bfloat16 (got {type(cell).__name__} {x.dtype} {x.device})"
     )
 
 
@@ -319,11 +375,89 @@ def _newton_forward(
 ) -> Tensor:
     if config.chunk_len is not None:
         return _newton_chunked(cell, x, config, h0=h0, stats=stats)
+    if (
+        config.picard_adapt
+        and isinstance(cell, ParaSLSTM)
+        and not torch.compiler.is_compiling()
+    ):
+        return _newton_forward_picard_adapt(cell, x, config, h0=h0, stats=stats)
+    return _newton_solve(cell, x, config, h0=h0, stats=stats)
+
+
+def _picard_retry_needed(res: float, config: NewtonConfig) -> bool:
+    if not math.isfinite(res):
+        return True
+    cap = config.picard_retry_atol
+    if cap is not None and res > cap:
+        return True
+    fail = config.residual_fail
+    return fail is not None and res > fail
+
+
+def _newton_forward_picard_adapt(
+    cell: nn.Module,
+    x: Tensor,
+    config: NewtonConfig,
+    *,
+    h0: Tensor | None,
+    stats: NewtonStats | None,
+) -> Tensor:
+    """Re-run Alg. 1 at the next P rung when the guess was outside the basin."""
+    cfg = config
+    while True:
+        st = stats if stats is not None else NewtonStats()
+        quiet = replace(cfg, residual_fail=None)
+        states = _newton_solve(cell, x, quiet, h0=h0, stats=st)
+        res = st.max_residual
+        nxt = slstm_picard_next(int(cfg.picard_iters or 0))
+        if _picard_retry_needed(res, config) and nxt is not None:
+            if not torch.compiler.is_compiling():
+                log.info(
+                    "picard_adapt",
+                    extra={
+                        "from_p": int(cfg.picard_iters or 0),
+                        "to_p": nxt,
+                        "max_residual": res,
+                        "seq_len": int(x.shape[1]),
+                        "batch": int(x.shape[0]),
+                        "d_h": cell.d_h,
+                        "scan_backend": cfg.scan_backend,
+                    },
+                )
+            cfg = replace(cfg, picard_iters=nxt)
+            continue
+        cap = config.residual_fail
+        if cap is not None and (not math.isfinite(res) or res > cap):
+            _fill_stats(
+                cell,
+                x,
+                states,
+                h0,
+                config,
+                iters=st.iters,
+                stats=st,
+                residual_history=st.residual_history,
+                known_residual=res,
+            )
+        return states
+
+
+def _newton_solve(
+    cell: nn.Module,
+    x: Tensor,
+    config: NewtonConfig,
+    *,
+    h0: Tensor | None = None,
+    stats: NewtonStats | None = None,
+) -> Tensor:
+    if config.chunk_len is not None:
+        return _newton_chunked(cell, x, config, h0=h0, stats=stats)
     if config.scan_backend == "fused":
         states = _newton_fused(cell, x, config, h0=h0)
+        # Fused kernels run exactly max_iters (no residual early-stop).
         _fill_stats(cell, x, states, h0, config, iters=config.max_iters, stats=stats)
         return states
-    wx = _wx_if_analytic(cell, x, config)
+    wx = _wx_if_analytic(cell, x, config.jacobian)
     if isinstance(cell, ParaSLSTM):
         states = _slstm_newton_guess(cell, x, config, h0=h0, wx=wx)
     else:
@@ -342,10 +476,13 @@ def _newton_forward(
     if config.coords == "log":
         eps = native.eps
         states = slstm_encode_log(states, eps=eps)
-        zeros = x.new_zeros(x.shape[0], native.state_slots, native.d_h)
-        h0_loop = slstm_encode_log(
-            h0 if h0 is not None else zeros, eps=eps
-        )
+        if h0 is None:
+            h0_loop = slstm_encode_log(
+                x.new_zeros(x.shape[0], native.state_slots, native.d_h),
+                eps=eps,
+            )
+        else:
+            h0_loop = slstm_encode_log(h0, eps=eps)
         cell = SLSTMLogCoords(native)
         if not torch.compiler.is_compiling():
             log.debug(
@@ -353,9 +490,12 @@ def _newton_forward(
                 extra={"seq_len": x.shape[1], "batch": x.shape[0], "d_h": native.d_h},
             )
 
+    structure = config.jac_structure or getattr(cell, "jac_structure", None)
     iters_done = 0
     last_res = float("nan")
     history: list[float] = []
+    residual_is_current = False
+    atol = config.residual_atol
     for it in range(config.max_iters):
         h_prev = prepend_state(states, h0_loop)
         pred, jac = step_and_jacobian(
@@ -367,9 +507,11 @@ def _newton_forward(
             jac_structure=config.jac_structure,
         )
         residual = pred - states
-        last_res = float(residual.detach().abs().amax())
-        history.append(last_res)
-        delta = _scan(jac, residual, backend=config.scan_backend)
+        iters_done = it + 1
+        if atol is not None:
+            last_res = float(residual.detach().abs().amax())
+            history.append(last_res)
+            residual_is_current = True
         if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
             log.debug(
                 "newton_iter",
@@ -383,29 +525,32 @@ def _newton_forward(
                     "coords": config.coords,
                 },
             )
-        atol = config.residual_atol
         if atol is not None and last_res < atol:
-            log.info(
-                "newton_early_stop",
-                extra={
-                    "iters": it,
-                    "max_residual": last_res,
-                    "atol": atol,
-                    "seq_len": x.shape[1],
-                    "coords": config.coords,
-                },
-            )
+            if log.isEnabledFor(logging.INFO) and not torch.compiler.is_compiling():
+                log.info(
+                    "newton_early_stop",
+                    extra={
+                        "iters": iters_done,
+                        "max_residual": last_res,
+                        "atol": atol,
+                        "seq_len": x.shape[1],
+                        "coords": config.coords,
+                    },
+                )
             break
+        delta = _scan(jac, residual, backend=config.scan_backend, structure=structure)
         if states.dtype == torch.float16:
             states = (states.float() + config.omega * delta.float()).to(states.dtype)
         else:
             states = states + config.omega * delta
         if config.coords == "log":
             states = slstm_clamp_log_coords(states)
-        iters_done = it + 1
+        residual_is_current = False
     if config.coords == "log":
         states = slstm_decode_log(states, eps=native.eps)
         cell = native
+        # last_res was in LSE coords; fail-loud / stats need native F.
+        residual_is_current = False
     _fill_stats(
         cell,
         x,
@@ -415,6 +560,7 @@ def _newton_forward(
         iters=iters_done,
         stats=stats,
         residual_history=history,
+        known_residual=last_res if residual_is_current else None,
     )
     return states
 
@@ -461,11 +607,15 @@ def _fill_stats(
     iters: int,
     stats: NewtonStats | None,
     residual_history: list[float] | tuple[float, ...] = (),
+    known_residual: float | None = None,
 ) -> None:
     if stats is None and config.residual_fail is None:
         return
-    pred = cell.step(prepend_state(states, h0), x)
-    res = float((pred - states).detach().abs().amax())
+    if known_residual is None:
+        pred = cell.step(prepend_state(states, h0), x)
+        res = float((pred - states).detach().abs().amax())
+    else:
+        res = known_residual
     hist = tuple(residual_history)
     if stats is not None:
         stats.max_residual = res
@@ -474,11 +624,6 @@ def _fill_stats(
         stats.picard_iters = int(config.picard_iters or 0)
         stats.residual_history = hist
     cap = config.residual_fail
-    if cap is None:
-        return
-    diverged = not math.isfinite(res) or res > cap
-    if not diverged:
-        return
     extra = {
         "max_residual": res,
         "residual_fail": cap,
@@ -490,12 +635,21 @@ def _fill_stats(
         "scan_backend": config.scan_backend,
         "residual_history": hist[-8:],
     }
-    log.error("newton_diverged", extra=extra)
-    raise NewtonDivergenceError(
-        f"Newton residual {res:.3e} after {iters} iters exceeds residual_fail="
-        f"{cap:g} (seq_len={x.shape[1]}, picard={int(config.picard_iters or 0)}, "
-        f"history={hist[-8:]!r}). For ParaSLSTM raise P, not K."
-    )
+    diverged = not math.isfinite(res) or (cap is not None and res > cap)
+    if diverged and cap is not None:
+        if not torch.compiler.is_compiling():
+            log.error("newton_diverged", extra=extra)
+        raise NewtonDivergenceError(
+            f"Newton residual {res:.3e} after {iters} iters exceeds residual_fail="
+            f"{cap:g} (seq_len={x.shape[1]}, picard={int(config.picard_iters or 0)}, "
+            f"history={hist[-8:]!r}). For ParaSLSTM raise P, not K."
+        )
+    if (
+        res > _RESIDUAL_WARN
+        and log.isEnabledFor(logging.WARNING)
+        and not torch.compiler.is_compiling()
+    ):
+        log.warning("newton_residual_high", extra=extra)
 
 
 def _newton_fused(
@@ -547,10 +701,15 @@ def _eq26_vjp(
     jacobian: str = "auto",
     jac_structure: str | None = None,
     h0: Tensor | None = None,
-) -> tuple[Tensor | None, tuple[Tensor | None, ...]]:
-    """``∇_x L`` and per-parameter grads from direct ``∂_H L`` (eq. 2.6 + cell VJP)."""
+) -> tuple[Tensor | None, tuple[Tensor | None, ...], Tensor | None]:
+    """``∇_x L``, per-parameter grads, and ``∇_{h0} L`` (eq. 2.6 + cell VJP).
+
+    ``∇_{h0} L = J_0^T μ_0``. Reverse scan over ``H`` does not use ``J_0``
+    (no ``h_{-1}`` in the trajectory); that factor is the h0 adjoint.
+    """
     h_prev = prepend_state(states, h0)
-    wx = _wx_if_analytic(cell, x, NewtonConfig(jacobian=jacobian, jac_structure=jac_structure))
+    wx = _wx_if_analytic(cell, x, jacobian)
+    structure = jac_structure or getattr(cell, "jac_structure", None)
     with torch.no_grad():
         _, jac = step_and_jacobian(
             cell,
@@ -560,9 +719,11 @@ def _eq26_vjp(
             jacobian=jacobian,
             jac_structure=jac_structure,
         )
-        mu = _reverse_scan(jac, partial, backend=backend)
-    packed = isinstance(cell, (ParaGRU, ParaLSTM))
-    return cell_vjp(cell, h_prev, x, mu, packed=packed)
+        mu = _reverse_scan(jac, partial, backend=backend, structure=structure)
+    packed = uses_packed_vjp(cell)
+    grad_x, param_grads = cell_vjp(cell, h_prev, x, mu, packed=packed)
+    grad_h0 = None if h0 is None else _t0_state_vjp(jac, mu)
+    return grad_x, param_grads, grad_h0
 
 
 def _slstm_newton_guess(
@@ -586,9 +747,7 @@ def _slstm_newton_guess(
                     "d_h": cell.d_h,
                 },
             )
-        return slstm_picard_init(
-            cell, pre, h0=h0, n_picard=config.picard_iters
-        )
+        return slstm_picard_init(cell, pre, h0=h0, n_picard=config.picard_iters)
     return slstm_zero_hidden_init(pre, eps=cell.eps, h0=h0)
 
 
@@ -600,9 +759,9 @@ def _init_h_prev(cell: nn.Module, x: Tensor, h0: Tensor | None) -> Tensor:
     return h_prev0
 
 
-def _wx_if_analytic(cell: nn.Module, x: Tensor, config: NewtonConfig) -> Tensor | None:
+def _wx_if_analytic(cell: nn.Module, x: Tensor, jacobian: str) -> Tensor | None:
     """Reuse ``W_x(x)`` only on the analytic-J path (eq. 3.1)."""
-    mode = config.jacobian
+    mode = jacobian
     if mode == "auto":
         mode = "analytic" if hasattr(cell, "step_with_jacobian") else "autograd"
     if mode != "analytic":
@@ -618,7 +777,87 @@ def _input_affine(cell: nn.Module, x: Tensor) -> Tensor | None:
     return lin(x)
 
 
-def _scan(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tensor:
+def _scan(
+    jac: Tensor,
+    residual: Tensor,
+    *,
+    backend: str = "eager",
+    structure: str | None = None,
+) -> Tensor:
+    if structure is not None:
+        return _scan_named(jac, residual, backend=backend, structure=structure)
+    return _scan_infer(jac, residual, backend=backend)
+
+
+def _reverse_scan(
+    jac: Tensor,
+    partial: Tensor,
+    *,
+    backend: str = "eager",
+    structure: str | None = None,
+) -> Tensor:
+    if structure is not None:
+        return _reverse_scan_named(jac, partial, backend=backend, structure=structure)
+    return _reverse_scan_infer(jac, partial, backend=backend)
+
+
+def _scan_named(
+    jac: Tensor, residual: Tensor, *, backend: str, structure: str
+) -> Tensor:
+    if structure == "diag":
+        return scan_diag(jac, residual, backend=backend)
+    if structure == "block2":
+        return scan_block2(jac, residual, backend=backend)
+    if structure == "block4":
+        return scan_block4(jac, residual, backend=backend)
+    if structure == "head":
+        packed_h = _head_slot_pack(jac, residual)
+        if packed_h is None:
+            raise ValueError(
+                f"jac_structure='head' but jac {tuple(jac.shape)} "
+                f"residual {tuple(residual.shape)}"
+            )
+        jac_f, res_f, shape, n_heads, d_head = packed_h
+        delta = scan_dense(jac_f, res_f, backend=backend)
+        return _head_slot_unpack(delta, shape, n_heads, d_head)
+    if structure == "dense":
+        packed = _dense_slot_pack(jac, residual)
+        if packed is not None:
+            jac_f, res_f, shape = packed
+            return scan_dense(jac_f, res_f, backend=backend).reshape(shape)
+        return scan_dense(jac, residual, backend=backend)
+    raise ValueError(f"unknown jac_structure {structure!r}")
+
+
+def _reverse_scan_named(
+    jac: Tensor, partial: Tensor, *, backend: str, structure: str
+) -> Tensor:
+    if structure == "diag":
+        return reverse_scan_diag(jac, partial, backend=backend)
+    if structure == "block2":
+        return reverse_scan_block2(jac, partial, backend=backend)
+    if structure == "block4":
+        return reverse_scan_block4(jac, partial, backend=backend)
+    if structure == "head":
+        packed_h = _head_slot_pack(jac, partial)
+        if packed_h is None:
+            raise ValueError(
+                f"jac_structure='head' but jac {tuple(jac.shape)} "
+                f"partial {tuple(partial.shape)}"
+            )
+        jac_f, part_f, shape, n_heads, d_head = packed_h
+        mu = reverse_scan_dense(jac_f, part_f, backend=backend)
+        return _head_slot_unpack(mu, shape, n_heads, d_head)
+    if structure == "dense":
+        packed = _dense_slot_pack(jac, partial)
+        if packed is not None:
+            jac_f, part_f, shape = packed
+            return reverse_scan_dense(jac_f, part_f, backend=backend).reshape(shape)
+        return reverse_scan_dense(jac, partial, backend=backend)
+    raise ValueError(f"unknown jac_structure {structure!r}")
+
+
+def _scan_infer(jac: Tensor, residual: Tensor, *, backend: str) -> Tensor:
     packed = _dense_slot_pack(jac, residual)
     if packed is not None:
         jac_f, res_f, shape = packed
@@ -635,10 +874,15 @@ def _scan(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tensor:
         return scan_dense(jac, residual, backend=backend)
     if jac.dim() == 5 and jac.shape[-3] == 4:
         return scan_block4(jac, residual, backend=backend)
-    return scan_block2(jac, residual, backend=backend)
+    if jac.dim() == 5 and jac.shape[-3] == 2:
+        return scan_block2(jac, residual, backend=backend)
+    raise ValueError(
+        f"cannot dispatch scan for jac {tuple(jac.shape)} residual "
+        f"{tuple(residual.shape)}; set NewtonConfig.jac_structure"
+    )
 
 
-def _reverse_scan(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Tensor:
+def _reverse_scan_infer(jac: Tensor, partial: Tensor, *, backend: str) -> Tensor:
     packed = _dense_slot_pack(jac, partial)
     if packed is not None:
         jac_f, part_f, shape = packed
@@ -655,7 +899,38 @@ def _reverse_scan(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Te
         return reverse_scan_dense(jac, partial, backend=backend)
     if jac.dim() == 5 and jac.shape[-3] == 4:
         return reverse_scan_block4(jac, partial, backend=backend)
-    return reverse_scan_block2(jac, partial, backend=backend)
+    if jac.dim() == 5 and jac.shape[-3] == 2:
+        return reverse_scan_block2(jac, partial, backend=backend)
+    raise ValueError(
+        f"cannot dispatch reverse scan for jac {tuple(jac.shape)} partial "
+        f"{tuple(partial.shape)}; set NewtonConfig.jac_structure"
+    )
+
+
+def _t0_state_vjp(jac: Tensor, mu: Tensor) -> Tensor:
+    """``J_0^T μ_0`` — adjoint of paper ``h_0``. Layout matches ``_scan``."""
+    packed = _dense_slot_pack(jac, mu)
+    if packed is not None:
+        jac_f, mu_f, shape = packed
+        g = torch.matmul(
+            jac_f[:, 0].transpose(-1, -2), mu_f[:, 0].unsqueeze(-1)
+        ).squeeze(-1)
+        return g.reshape(shape[0], *shape[2:])
+    packed_h = _head_slot_pack(jac, mu)
+    if packed_h is not None:
+        jac_f, mu_f, shape, n_heads, d_head = packed_h
+        g = torch.matmul(
+            jac_f[:, 0].transpose(-1, -2), mu_f[:, 0].unsqueeze(-1)
+        ).squeeze(-1)
+        packed_h0 = g.reshape(shape[0], n_heads, 4 * d_head)
+        return slstm_unpack_heads(packed_h0, n_heads, d_head)
+    if jac.dim() == mu.dim():
+        return jac[:, 0] * mu[:, 0]
+    if jac.dim() == 4:
+        return torch.matmul(
+            jac[:, 0].transpose(-1, -2), mu[:, 0].unsqueeze(-1)
+        ).squeeze(-1)
+    return torch.einsum("boid,bod->bid", jac[:, 0], mu[:, 0])
 
 
 def _dense_slot_pack(
@@ -692,8 +967,8 @@ def _head_slot_pack(
         return None
     packed = slstm_pack_heads(vec, n_heads, d_head)
     b, t = vec.shape[:2]
-    jac_f = jac.permute(0, 2, 1, 3, 4).reshape(b * n_heads, t, sd, sd)
-    vec_f = packed.permute(0, 2, 1, 3).reshape(b * n_heads, t, sd)
+    jac_f = jac.permute(0, 2, 1, 3, 4).reshape(b * n_heads, t, sd, sd).contiguous()
+    vec_f = packed.permute(0, 2, 1, 3).reshape(b * n_heads, t, sd).contiguous()
     return jac_f, vec_f, vec.shape, n_heads, d_head
 
 

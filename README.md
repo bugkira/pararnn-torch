@@ -8,13 +8,13 @@ This is **not** Apple’s library. The algorithm comes from [arXiv:2510.21450](h
 
 Working today: a **sequence module** you can train.
 
-- **`ParaRNN`**: `nn.Module`, batch-first `(B, T, d_in)`. `.train()` runs Newton+scan (Alg. 1); `.eval()` unrolls `step`. Optional Triton fused Newton on CUDA.
+- **`ParaRNN`**: `nn.Module`, default batch-first `(B, T, d_in)` (`batch_first=False` is `nn.LSTM` time-major at the wrapper). `solver='auto'` (default): `.train()` runs Newton+scan (Alg. 1); `.eval()` unrolls `step`. `solver='newton'` / `'sequential'` force that path. Optional Triton fused Newton on CUDA.
 - Diagonal **ParaGRU** and CIFG peephole **ParaLSTM** (paper §3), plus **any** ``step(h, x)`` cell: Autograd Jacobian (DEER). Default is analytic J when the cell provides it. Cell contract: `d_h` + `step` (`pararnn.cells.protocol`).
 - Sequential unroll (eager oracle) and **Newton + Blelloch scan** (Alg. 1, \(K=3\); 2×2 blocks are elementwise, not ``bmm``). Mixing cells: ``jac_structure="dense"``.
-- Optional ``NewtonConfig(scan_backend="triton")`` for the **diag, 2×2, and 4×4** scans, or ``"fused"`` for **cell + J + scan** in Triton (CUDA float16/float32; algebra fp32; **ParaGRU/LSTM and ParaSLSTM ``mix='diag'``**, not any ``f``; head/dense sLSTM stay on ``step``). Default is ``"auto"``: fused on CUDA for those cells (fp16/fp32), else Triton scan + ``step``, else eager. ``W_x(x)`` stays a PyTorch GEMM. Not Apple's fused CUDA. On this 2080 Ti at \(T=2048\) (10/50 smoke, not App. B, not 665×): fused GRU **2.4 ms** vs naive ParaRNN 27 ms (**11×**) vs compiled sequential 812 ms (**339×**) vs naive RNN 959 ms (**400×**); LSTM **6.5 ms** vs 62 ms (**9.6×**) vs 865 ms (**134×**) vs 1338 ms (**207×**). fp16 fused (same shapes, paired run): GRU **1.80 vs 2.61 ms** fp32 (**1.45×**), **66 vs 123 MiB**; LSTM **5.45 vs 6.41 ms** (**1.18×**). Not bf16. Tables: [`docs/bottlenecks.md`](docs/bottlenecks.md#fused-newton).
-- Backward through Newton is **eq. 2.6 reverse scan**, not autograd through the \(K\) iterates. ParaGRU/ParaLSTM pack the cell VJP in Triton on CUDA (``W_x`` still one GEMM). Custom cells VJP through Autograd on ``step``. IFT is still ours-later.
-- Numerics tests: analytic Jacobians vs autograd; parallel vs sequential; Newton grads vs sequential BPTT; custom diag/dense cells; packed VJP vs Autograd; Triton diag/2×2/4×4 scans and fused Newton vs substitution / sequential; **fp16 fused vs sequential separately** (atol \(2\times10^{-3}\); fused rejects bf16); wrapper train/eval vs raw solvers.
-- Toy copy / Dyck-1 smokes live in `examples/` (`uv run python examples/toy_copy.py`, `uv run python examples/dyck_language.py`). Not SlimPajama.
+- Optional ``NewtonConfig(scan_backend="triton")`` for the **diag, 2×2, and 4×4** scans, or ``"fused"`` for **cell + J + scan** in Triton (CUDA float16/float32, and **bf16 on compute capability ≥ 8.0**; algebra fp32; **ParaGRU/LSTM and ParaSLSTM ``mix='diag'``**, not any ``f``; head/dense sLSTM stay on ``step``). Default is ``"auto"``: fused on CUDA for those cells when `is_fused_dtype_supported` (fp16/fp32 any CUDA; bf16 if SM 8.0+), else Triton scan + ``step``, else eager. Explicit ``fused`` + bf16 on SM 7.x raises (capability, not a GPU name). ``W_x(x)`` stays a PyTorch GEMM. Not Apple's fused CUDA. On this 2080 Ti at \(T=2048\) (10/50 smoke, not App. B, not 665×): fused GRU **2.4 ms** vs naive ParaRNN 27 ms (**11×**) vs compiled sequential 812 ms (**339×**) vs naive RNN 959 ms (**400×**); LSTM **6.5 ms** vs 62 ms (**9.6×**) vs 865 ms (**134×**) vs 1338 ms (**207×**). fp16 fused (same shapes, paired run): GRU **1.80 vs 2.61 ms** fp32 (**1.45×**), **66 vs 123 MiB**; LSTM **5.45 vs 6.41 ms** (**1.18×**). Tables: [`docs/bottlenecks.md`](docs/bottlenecks.md#fused-newton).
+- Backward through Newton is **eq. 2.6 reverse scan**, not autograd through the \(K\) iterates. ParaGRU/ParaLSTM and ParaSLSTM ``mix='diag'`` pack the cell VJP in Triton on CUDA (``W_x`` still one GEMM). Head/dense sLSTM and custom cells VJP through Autograd on ``step``. IFT is still ours-later.
+- Numerics tests: analytic Jacobians vs autograd; parallel vs sequential; Newton grads vs sequential BPTT; custom diag/dense cells; packed VJP vs Autograd; Triton diag/2×2/4×4 scans and fused Newton vs substitution / sequential; **fp16 fused vs sequential separately** (atol \(2\times10^{-3}\)); fused **bf16 vs sequential on SM 8.0+**, still raises on SM 7.x; wrapper train/eval vs raw solvers (`solver=` override).
+- Toy copy / Dyck-1 / Z2-parity smokes live in `examples/` (`uv run python examples/toy_copy.py`, `uv run python examples/dyck_language.py`, `uv run python examples/parity.py --config configs/train/parity_t16.yaml`). Dyck-1 train vs FlashRNN: `uv run python examples/slstm_vs_flashrnn.py` (`uv sync --extra flashrnn`). Head mix (same 1×32 as Turing FlashRNN): `--config configs/train/dyck_vs_flashrnn_head.yaml`. Not SlimPajama. Sequence-parallel scan (two CUDA streams as virtual ranks): `uv run python scripts/seq_parallel_ranks.py` — see [`docs/seq-parallel-report.md`](docs/seq-parallel-report.md) and [`docs/tex/seq-parallel-pararnn.tex`](docs/tex/seq-parallel-pararnn.tex). **DDP works for FlashRNN too**; the note is about *time* span, not “FlashRNN cannot use many GPUs”.
 
 `torch.compile` is **not** in `src/`. A bench can wrap `newton_apply` at the call site (`configs/bench/newton_compile.yaml`). On this 2080 Ti that is real after warmup (GRU short \(T\) tens of ×; LSTM \(T=2048\) about 2.6×), but Dynamo is **4–113 s per new \(T\)**. LSTM at LM length needs ~2–3k forwards to break even. Do not quote those × as if compile were free. Numbers: [`docs/bottlenecks.md`](docs/bottlenecks.md#compile-newton).
 
@@ -55,7 +55,7 @@ uv sync --group dev
 uv run pytest -q
 ```
 
-The PyTorch extra is the cu128 index in `pyproject.toml`, not a `requirements.txt`. Put the module on a device like any `nn.Module` (`.to(device)` or `device=` / `dtype=` on the cell, same as `nn.Linear`). Lab benches pin a GPU **by name** in `scripts/gpu.py`; restrict visibility with `CUDA_VISIBLE_DEVICES`. Turing cards have no bf16 tensor cores; tests run float32 and fp16 (not bf16).
+The PyTorch extra is the cu128 index in `pyproject.toml`, not a `requirements.txt`. Put the module on a device like any `nn.Module` (`.to(device)` or `device=` / `dtype=` on the cell, same as `nn.Linear`). Lab benches pin a GPU **by name** in `scripts/gpu.py`; restrict visibility with `CUDA_VISIBLE_DEVICES`. Fused/Triton bf16 is **compute capability ≥ 8.0** (`torch.cuda.get_device_capability` on the tensor device), not a card name in `src/`. SM 7.x tests run float32 and fp16.
 
 ## Quickstart
 
@@ -68,22 +68,24 @@ cell = ParaGRU(d_in=32, d_h=64, device=device)
 model = ParaRNN(cell, config=NewtonConfig(max_iters=3))
 x = torch.randn(4, 128, 32, device=device)
 
-model.train()  # Newton + scan (Alg. 1)
+model.train()  # solver='auto' → Newton + scan (Alg. 1)
 y_train = model(x)
 
 model.eval()   # sequential unroll of cell.step
 y_eval = model(x)
 # y_train ≈ y_eval  (see tests/numerics/)
+# ParaRNN(..., solver="newton") still Newton in eval(); solver="sequential" unrolls in train().
 ```
 
-`ParaLSTM` uses the same wrapper. State shape is `(batch, time, 2, d_h)`. Stacking (`num_layers>1`) is naive — no residual or LayerNorm in `ParaRNN`. `xLSTMBlock` is that missing piece for sLSTM: pre-norm + residual, `backend="newton"` or `"eager"`.
+`ParaLSTM` / `ParaSLSTM` default **output is the hidden slot** `(B, T, d_h)` (a `Linear` on top). Full paper state `(c, h)` / `(c, n, m, h)` is `output_hidden=False`. Kernels stay paper `[c, h]`; `hidden_layout="pytorch"` swaps LSTM `h0` and `return_hidden`'s last state only. Stacking (`num_layers>1`) is naive — no residual or LayerNorm in `ParaRNN`. `xLSTMBlock` is that missing piece for sLSTM: pre-norm + residual, `backend="newton"` or `"eager"`. `ParaSLSTM(..., mix="head", n_heads=...)` is the xLSTM mixing (eager Newton, not fused); library fused path is `mix="diag"`. mLSTM is not in this repo — xLSTM already scans it; they would take our sLSTM Newton, not a second matrix cell ([`docs/xlstm.md`](docs/xlstm.md)).
 
-Solvers are still callable on a cell: `newton_apply(cell, x)`, `sequential_apply(cell, x)`. `NewtonConfig(scan_backend="fused")` is a handwritten kernel for ParaGRU/LSTM and ParaSLSTM `mix='diag'`, not a generic `f`. Nonzero `h0` is prepended in that kernel. `NewtonStats` reports residual and K used. After K steps, `max|F| > 1` raises `NewtonDivergenceError` (disable with `residual_fail=None`). ParaSLSTM Picard P is `{1, 3, 5}` from T; do not raise K if that fires.
+Solvers are still callable on a cell: `newton_apply(cell, x)`, `sequential_apply(cell, x)`. `NewtonConfig(scan_backend="fused")` is a handwritten kernel for ParaGRU/LSTM and ParaSLSTM `mix='diag'`, not a generic `f`. Nonzero `h0` is prepended in that kernel. `NewtonStats` reports residual and K used. After K steps, `max|F| > 1` raises `NewtonDivergenceError` (disable with `residual_fail=None`). ParaSLSTM Picard P is `{1, 3, 5}` from T; do not raise K if that fires. Head-mix train at \(T\le 64\) needs **P=3** (`configs/train/dyck_vs_flashrnn_head.yaml`).
 
 ## Trade-offs
 
+- Data-parallel SGD works for FlashRNN and for Newton. Sequence-parallel *time* is the Newton scan monoid, not “FlashRNN cannot use many GPUs”. See [`docs/tex/seq-parallel-pararnn.tex`](docs/tex/seq-parallel-pararnn.tex).
 - Fixed-size \(h_t\) will not match attention on needle-in-a-haystack over 100k tokens.
-- Nonlinear recurrence is the theoretically motivated tool for automata / parity / nested state (Merrill et al., 2024). That is a hypothesis to test, not a benchmark result from this repo.
+- Nonlinear recurrence is the theoretically motivated tool for automata / parity / nested state (Merrill et al., 2024). This repo has a **Z2 tagging smoke** (not A5, not L=100): stacked `xLSTMBlock` `mix='diag'` last-token 1.0 at T=16 and held-out T=32; a trained S4D-Real selective SSM stays at chance on the last token. Numbers: [`docs/para-slstm.md`](docs/para-slstm.md#quality-z2-tagging).
 - Audio DSP (NAM, Wright-style LSTM amps) already runs sequential LSTM in real time. ParaRNN would help *training* long takes, not a free quality win.
 
 ## Roadmap
@@ -93,14 +95,16 @@ Solvers are still callable on a cell: `newton_apply(cell, x)`, `sequential_apply
 - [x] Reverse-scan backward (eq. 2.6); ParaGRU/LSTM cell VJP packed in Triton on CUDA
 - [x] Triton / CUDA parallel reduction — diag + 2×2 + 4×4 scans and fused Newton (`kernels/`, opt-in `scan_backend="triton"` / `"fused"`). Not Apple's kernels.
 - [x] Sequence module `ParaRNN` (`.train()` Newton, `.eval()` sequential) + toy copy / Dyck-1 examples
-- [x] `scan_backend="auto"` (tensor device, not a lab GPU helper in `forward`); fused `h0`; NewtonStats / early-stop; list-of-cells / `return_hidden` / LSTM `output_hidden`
-- [ ] Linear SSM (Mamba-2) predictor + one Newton corrector (this repo’s idea, not in the paper)
+- [x] `scan_backend="auto"` (tensor device, not a lab GPU helper in `forward`); fused `h0`; NewtonStats / early-stop; list-of-cells / `return_hidden` / default hidden-slot output; `solver` / `batch_first` / `hidden_layout`
+- [x] Train-diag Picard adapt: auto-P retries \{1,3,5\} if \(\max|F|>10^{-3}\) ([`docs/next.md`](docs/next.md)). Explicit `picard_iters` does not. Not Eisenstat–Walker.
+- [ ] Linear SSM (Mamba-2) as a **trained cell**. Solver hybrid parked: P=5 K=1 is 24.2→20.1 ms fwd at T=2048 vs library P=3 K=3 (`scripts/bench_hybrid_pk.py`).
 - [ ] IFT adjoint (Bai et al., DEQ 2019) — optional extra; training backward today is eq. 2.6
-- [x] Para-sLSTM `mix='diag'` (4×4 fused Newton, auto Picard P∈{1,3,5}, fail-loud). Head/dense stay eager. Not xLSTM-7B.
-- [x] `xLSTMBlock`: LayerNorm + residual around ParaSLSTM (`backend="newton"|"eager"`). Not NX-AI, not mLSTM. FlashRNN stays a bench.
+- [x] Para-sLSTM `mix='diag'` (4×4 fused Newton, auto Picard P∈{1,3,5}, fail-loud). `mix='head'` is eager Newton (`scan_dense` per head), not fused. Train smoke: `configs/train/dyck_vs_flashrnn_head.yaml` (K=4). Not xLSTM-7B.
+- [x] `xLSTMBlock`: LayerNorm + residual around ParaSLSTM (`backend="newton"|"eager"`). Not NX-AI. FlashRNN stays a bench. If xLSTM took this repo it would be the sLSTM train path, not a second mLSTM ([`docs/xlstm.md`](docs/xlstm.md)).
+- [x] Z2 tagging smoke (`examples/parity.py`): `mix='diag'` Newton = sequential; last-token 1.0 vs S4D-Real SSM chance. Not A5, not paper L=100.
 - [ ] Hugging Face `PreTrainedModel` once a cell+solver stack actually trains
 - [ ] SlimPajama baselines at small scale
-- [ ] DSP / syntactic-state evals
+- [ ] A5 / deeper Dyck / DSP
 
 ## References
 
@@ -112,7 +116,7 @@ Solvers are still callable on a cell: `newton_apply(cell, x)`, `sequential_apply
 - Merrill et al. *The Illusion of State in State-Space Models*. [arXiv:2404.08819](https://arxiv.org/abs/2404.08819).
 - Bai, Kolter, Koltun. *Deep Equilibrium Models*. NeurIPS 2019. [arXiv:1909.01377](https://arxiv.org/abs/1909.01377).
 
-Annotated bibliography: [`docs/literature.md`](docs/literature.md). Notes on the Apple tree: [`docs/apple-ml-pararnn.md`](docs/apple-ml-pararnn.md). Eager-scan bottlenecks and ranked fixes: [`docs/bottlenecks.md`](docs/bottlenecks.md).
+Annotated bibliography: [`docs/literature.md`](docs/literature.md). Notes on the Apple tree: [`docs/apple-ml-pararnn.md`](docs/apple-ml-pararnn.md). Eager-scan bottlenecks and ranked fixes: [`docs/bottlenecks.md`](docs/bottlenecks.md). xLSTM taking our sLSTM Newton: [`docs/xlstm.md`](docs/xlstm.md).
 
 ## License
 

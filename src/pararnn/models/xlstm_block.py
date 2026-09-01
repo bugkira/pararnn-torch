@@ -4,22 +4,23 @@ Beck et al. 2024 put LayerNorm + residual around sLSTM in the backbone.
 ``ParaRNN`` does not: stacking there is naive. This module is that missing
 block so an xLSTM-style stack can swap the recurrence backend.
 
-``backend="newton"``: Newton+scan while ``self.training``, sequential
-``step`` in ``eval()`` (same contract as ``ParaRNN``).
-``backend="eager"``: always sequential. FlashRNN is a bench in ``scripts/``,
-not a switch here — Turing has no ``cuda_fused``, and we do not stub it.
+``backend="newton"``: ``ParaRNN`` ``solver="auto"`` (Newton while
+``self.training``, sequential ``step`` in ``eval()``).
+``backend="eager"``: ``solver="sequential"`` always. Pass ``solver=`` to
+override. FlashRNN is a bench in ``scripts/``, not a switch here —
+``cuda_fused`` needs compute capability ≥ 8.0, and we do not stub it.
 """
 
 from __future__ import annotations
+
+from typing import Literal
 
 import torch
 from torch import Tensor, nn
 
 from pararnn.cells.para_slstm import ParaSLSTM
 from pararnn.layers.para_rnn import ParaRNN
-from pararnn.layout import SLSTM_HIDDEN
 from pararnn.solvers.newton import NewtonConfig
-from pararnn.solvers.sequential import sequential_apply
 
 _BACKENDS = ("newton", "eager")
 
@@ -28,7 +29,9 @@ class xLSTMBlock(nn.Module):
     """``(B, T, d_model) → (B, T, d_model)``: LN → sLSTM → residual add.
 
     ``mix='diag'`` is the fused Newton cell. Head mix is the xLSTM compromise
-    and stays on ``step``. Not mLSTM. Not xLSTM-7B.
+    and stays on ``step``. ``max_recurrent_norm`` is App. C.1 (0.5 LM; ``None``
+    on parity). This block is the sLSTM half an xLSTM stack could swap in
+    for parallel *training*; mLSTM stays theirs. Not NX-AI. Not xLSTM-7B.
     """
 
     def __init__(
@@ -38,7 +41,10 @@ class xLSTMBlock(nn.Module):
         backend: str = "newton",
         mix: str = "diag",
         n_heads: int | None = None,
+        max_recurrent_norm: float | None = 0.5,
         config: NewtonConfig | None = None,
+        solver: Literal["auto", "newton", "sequential"] | None = None,
+        batch_first: bool = True,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
@@ -57,12 +63,17 @@ class xLSTMBlock(nn.Module):
             d_h=d_model,
             mix=mix,
             n_heads=n_heads,
+            max_recurrent_norm=max_recurrent_norm,
             **factory_kwargs,
         )
+        if solver is None:
+            solver = "sequential" if backend == "eager" else "auto"
         self.rnn = ParaRNN(
             cell,
             config=config or NewtonConfig(),
             output_hidden=True,
+            solver=solver,
+            batch_first=batch_first,
         )
 
     @property
@@ -74,9 +85,5 @@ class xLSTMBlock(nn.Module):
 
     def forward(self, x: Tensor, h0: Tensor | None = None) -> Tensor:
         z = self.norm(x)
-        if self.backend == "eager":
-            states = sequential_apply(self.cell, z, h0)
-            h = states[:, :, SLSTM_HIDDEN, :]
-        else:
-            h = self.rnn(z, h0)
+        h = self.rnn(z, h0)
         return x + h

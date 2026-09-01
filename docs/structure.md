@@ -13,9 +13,9 @@ Three layers, mapped to **existing** dirs (not a rename of working imports):
    is the sequence `nn.Module` (Newton in `.train()`, sequential in `.eval()`).
    A cell is not a sequence layer: Autograd-generic `step(h, x)` has to live
    somewhere, and `ParaGRU.forward` vs `ParaGRU.step` would collide.
-3. **Integrations** — `examples/` (copy, Dyck-1), `scripts/` (timing + this-box GPU).
+   3. **Integrations** — `examples/` (copy, Dyck-1, Z2 parity), `scripts/` (timing + this-box GPU).
    `models/xLSTMBlock`: pre-norm + residual around ParaSLSTM, `backend="newton"|"eager"`.
-   FlashRNN stays in `scripts/`. HF LM later.
+   FlashRNN stays in `scripts/` and `examples/slstm_vs_flashrnn.py`. HF LM later.
 
 ```
 ParaRNN/
@@ -24,8 +24,13 @@ ParaRNN/
 │   ├── literature.md           # annotated bibliography
 │   ├── apple-ml-pararnn.md     # notes on the official repo
 │   ├── bottlenecks.md          # eager Newton+scan: measured bottlenecks, ranked fixes
+│   ├── accelerator-review.md   # GPU/Triton review checklist (memory, sync, numerics)
 │   ├── pytorch_port.md         # archive: v0.2 solver → nn.Module (not the live backlog)
+│   ├── next.md                 # diag-only backlog; train Picard adapt (not EW)
 │   ├── para-slstm.md           # sLSTM Newton (diag fused; head/dense eager)
+│   ├── xlstm.md                # if NX-AI xlstm took our sLSTM Newton (not our mLSTM)
+│   ├── seq-parallel-report.md  # two-stream virtual ranks vs FlashRNN DDP claim
+│   ├── tex/                    # seq-parallel-pararnn.tex (DDP vs time-span)
 │   ├── structure.md            # this file
 │   └── papers/                 # PDFs via scripts/fetch_papers.sh (gitignored)
 ├── third_party/
@@ -44,7 +49,7 @@ ParaRNN/
 │   │   └── …                   # newton_*.py, scan_diag, VJP, Picard
 │   ├── hybrid/                 # later: linear SSM predictor + 1-step Newton
 │   └── models/                 # xLSTMBlock (prenorm + residual; newton|eager)
-├── examples/                   # toy_copy.py, dyck_language.py; not a package
+├── examples/                   # toy_copy.py, dyck_language.py, parity.py, slstm_vs_flashrnn.py; not a package
 ├── tests/
 │   ├── unit/                   # shapes, configs, inits
 │   └── numerics/               # sequential vs parallel agreement, residual vs K
@@ -54,6 +59,7 @@ ParaRNN/
 │   ├── utils/                  # mlflow_helper.py for examples
 │   ├── bench_time.py           # App. B; newton_fused / newton_slstm / compile YAML
 │   ├── bench_slstm_tiled.py    # serial tile scan vs assoc; vs FlashRNN
+│   ├── seq_parallel_ranks.py   # two CUDA streams as virtual scan ranks
 │   ├── profile_hotpath.py      # CUPTI: GRU T=64/2048, LSTM T=512
 │   └── fetch_papers.sh
 ├── pyproject.toml              # uv; package name pararnn-torch
@@ -62,9 +68,9 @@ ParaRNN/
 
 ## v0.3 (implemented)
 
-v0.2 plus: `NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` + residual early-stop + **fail-loud** (`NewtonDivergenceError` if max|F|>1 after K); `ParaRNN` list-of-cells, `return_hidden`, LSTM `output_hidden`; **ParaSLSTM** `mix='diag'` (fused 4×4, library K=3, Picard P∈{1,3,5} from T); **xLSTMBlock** (pre-norm + residual, `backend="newton"|"eager"`). Examples: toy copy + Dyck-1.
+v0.2 plus: `NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` + residual early-stop + **fail-loud** (`NewtonDivergenceError` if max|F|>1 after K); `ParaRNN` list-of-cells, `return_hidden`, LSTM `output_hidden`; **ParaSLSTM** `mix='diag'` (fused 4×4) and **`mix='head'`** (eager `scan_dense`, K=4, train smoke vs FlashRNN); **xLSTMBlock** (pre-norm + residual, `backend="newton"|"eager"`). Examples: toy copy + Dyck-1 + Z2 parity (`examples/parity.py`). Sequence-parallel two-tile scan: `scan_diag_two_ranks` (one GPU, two streams).
 
-Not in v0.3: Mamba predictor, IFT adjoint, HF LM, sLSTM head-fused, pretrained weights.
+Not in v0.3: Mamba predictor, IFT adjoint, HF LM, sLSTM head-fused, pretrained weights. We do not ship mLSTM (xLSTM already has it).
 
 ## Naming
 

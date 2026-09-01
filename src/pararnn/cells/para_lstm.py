@@ -40,6 +40,7 @@ class ParaLSTM(nn.Module):
         self.d_in = d_in
         self.d_h = d_h
         self.state_slots = 2
+        self.hidden_slot = LSTM_HIDDEN
         self.max_recurrent_norm = max_recurrent_norm
 
         # a_f, a_z, a_o and peepholes c_f, c_o (paper eq. 3.3).

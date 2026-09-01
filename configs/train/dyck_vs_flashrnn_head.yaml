@@ -1,0 +1,44 @@
+# Dyck-1 train: ParaSLSTM mix=head vs FlashRNN (same 1×32 mixing).
+# Not fused (head J is 4 d_head × 4 d_head, not 4×4 SRAM). Turing: auto →
+# triton scan + step, or eager. FlashRNN stays sequential triton_fused.
+
+task: dyck1
+seq_len: 64
+batch: 32
+d_h: 32
+num_layers: 1
+steps: 50
+warmup_time_steps: 5
+
+# Head mix snaps at K=4 on the T=8 d_h=4 prototype (para-slstm.md).
+# Do not copy GRU K=3. If residual_fail fires: raise P, then try K=5.
+newton_iters: 4
+# Auto P is 1 at T<=64 (next-token uses T=63). P=1 residual_fail'd at
+# step 20 (max|F|=1.9, history overshot to 10). Library fallback: P=3.
+picard_iters: 3
+scan_backend: auto
+
+lr: 3.0e-3
+lr_fallback:
+  - 1.0e-3
+  - 1.0e-2
+weight_decay: 0.0
+dtype: float32
+seed: 0
+cell: para_slstm
+mix: head
+# Matches FlashRNN triton_fused on Turing (D=32). Not mix=diag.
+n_heads: 1
+backends:
+  - newton
+  - flashrnn
+
+mlflow_experiment: slstm-train-vs-flashrnn
+mlflow_run_name: dyck1-head-vs-flashrnn
+
+why: |
+  Fair mixing vs NX-AI FlashRNN: both 1 head × 32, not our fused diag.
+  Newton is still Alg. 1 (eager/triton scan_dense of 128×128 J per step),
+  not a fused head kernel. K=4 from para-slstm.md head table. P=3 because
+  auto P=1 at T=63 residual_fail'd (raise P, not K).
+  FlashRNN extra: NXAI Community License.

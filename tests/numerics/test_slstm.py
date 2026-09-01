@@ -37,7 +37,7 @@ from pararnn.layout import (
     slstm_unpack_heads,
 )
 from pararnn.solvers.jacobian import jacobian_autograd
-from pararnn.solvers.newton import slstm_auto_picard
+from pararnn.solvers.newton import slstm_auto_picard, slstm_picard_next
 from pararnn.solvers.scan import reverse_scan_block4, scan_block4, scan_dense
 
 log = logging.getLogger(__name__)
@@ -304,6 +304,27 @@ def test_slstm_newton_bwd_matches_sequential_bptt():
         assert p_a.grad is not None, n
         torch.testing.assert_close(p_a.grad, p_b.grad, atol=5e-4, rtol=1e-4)
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=5e-4, rtol=1e-4)
+
+
+def test_slstm_newton_h0_grad_matches_sequential_bptt():
+    torch.manual_seed(2041)
+    d_in, d_h, t = 4, 4, 8
+    x = 0.3 * torch.randn(2, t, d_in, device=device)
+    w = torch.randn(2, t, SLSTM_SLOTS, d_h, device=device)
+    cell_s = ParaSLSTM(d_in, d_h, mix="diag").to(device)
+    cell_n = ParaSLSTM(d_in, d_h, mix="diag").to(device)
+    cell_n.load_state_dict(cell_s.state_dict())
+    h0 = 0.2 * torch.randn(2, SLSTM_SLOTS, d_h, device=device)
+    h0_s = h0.clone().requires_grad_(True)
+    h0_n = h0.clone().requires_grad_(True)
+    cfg = NewtonConfig(
+        max_iters=5, scan_backend="eager", residual_atol=None, picard_iters=1
+    )
+    loss_s = (sequential_apply(cell_s, x, h0_s) * w).sum()
+    loss_s.backward()
+    loss_n = (newton_apply(cell_n, x, cfg, h0=h0_n) * w).sum()
+    loss_n.backward()
+    torch.testing.assert_close(h0_s.grad, h0_n.grad, atol=5e-4, rtol=1e-4)
 
 
 def test_slstm_pack_heads_roundtrip():
@@ -940,3 +961,63 @@ def test_slstm_auto_picard_default_snaps():
     assert st.picard_iters == 1
     err = float((par - sequential_apply(cell, x)).abs().amax())
     assert err < 2e-3, err
+
+
+def test_slstm_picard_next_rungs():
+    assert slstm_picard_next(0) == 1
+    assert slstm_picard_next(1) == 3
+    assert slstm_picard_next(2) == 3
+    assert slstm_picard_next(3) == 5
+    assert slstm_picard_next(5) is None
+    assert slstm_picard_next(9) is None
+
+
+@torch.no_grad()
+def test_slstm_picard_adapt_climbs_on_far_guess():
+    """P=1 at T=256 is below the auto rung; adapt should raise P, not K.
+
+    Init-scale table in para-slstm.md: T=256 K=3 without enough Picard is
+    outside the sequential basin. Explicit P=1 + picard_adapt=True is the
+    train-diag path (docs/next.md). Fallback if this seed snaps at P=1:
+    the assert on seq err still holds.
+    """
+    torch.manual_seed(0)
+    cell = ParaSLSTM(d_in=8, d_h=8, mix="diag").to(device)
+    x = torch.randn(2, 256, 8, device=device)
+    st = NewtonStats()
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=3,
+            scan_backend="eager",
+            picard_iters=1,
+            picard_adapt=True,
+        ),
+        stats=st,
+    )
+    assert st.picard_iters in (1, 3, 5)
+    if st.max_residual > 1e-3:
+        assert st.picard_iters >= 3
+    err = float((par - sequential_apply(cell, x)).abs().amax())
+    assert err < 2e-3, err
+
+
+@torch.no_grad()
+def test_slstm_explicit_p_skips_adapt():
+    torch.manual_seed(0)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = 0.3 * torch.randn(2, 12, 4, device=device)
+    st = NewtonStats()
+    newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=3,
+            scan_backend="eager",
+            picard_iters=1,
+            picard_adapt=False,
+        ),
+        stats=st,
+    )
+    assert st.picard_iters == 1

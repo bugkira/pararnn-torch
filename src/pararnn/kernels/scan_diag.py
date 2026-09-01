@@ -5,8 +5,8 @@ Not Apple's PCR: same monoid as ``pararnn.solvers.scan``, via
 ``tl.associative_scan`` (Triton 3.6, bundled with this PyTorch).
 
 ``(J_r, r_r) ⊕ (J_l, r_l) = (J_r J_l, J_r r_l + r_r)``.
-Tile time; pad with identity ``(1, 0)``. CUDA float16/float32; algebra in fp32.
-Not bf16 (Turing has no bf16 tensor cores).
+Tile time; pad with identity ``(1, 0)``. CUDA float16/float32, and bf16 on
+compute capability ≥ 8.0; algebra in fp32. DRAM is the tensor dtype.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
-from pararnn.kernels.precision import check_cuda_real, load_acc, store_acc
+from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +64,6 @@ def _local_scan_kernel(
     stride_ard,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    FP16: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -78,13 +77,11 @@ def _local_scan_kernel(
         j_ptr + pid_b * stride_jb + offs_t[:, None] * stride_jt + offs_d[None, :] * stride_jd,
         mask,
         1.0,
-        FP16,
     )
     r = load_acc(
         r_ptr + pid_b * stride_rb + offs_t[:, None] * stride_rt + offs_d[None, :] * stride_rd,
         mask,
         0.0,
-        FP16,
     )
     j_s, r_s = tl.associative_scan((j, r), 0, _compose_diag)
     store_acc(
@@ -94,7 +91,6 @@ def _local_scan_kernel(
         + offs_d[None, :] * stride_ojd,
         j_s,
         mask,
-        FP16,
     )
     store_acc(
         r_out_ptr
@@ -103,7 +99,6 @@ def _local_scan_kernel(
         + offs_d[None, :] * stride_ord,
         r_s,
         mask,
-        FP16,
     )
     last = (tl.arange(0, BLOCK_T) == (BLOCK_T - 1))[:, None]
     agg_j = tl.sum(tl.where(last, j_s, 0.0), axis=0)
@@ -113,13 +108,11 @@ def _local_scan_kernel(
         agg_j_ptr + pid_b * stride_ajb + pid_c * stride_ajc + offs_d * stride_ajd,
         agg_j,
         dmask,
-        FP16,
     )
     store_acc(
         agg_r_ptr + pid_b * stride_arb + pid_c * stride_arc + offs_d * stride_ard,
         agg_r,
         dmask,
-        FP16,
     )
 
 
@@ -141,7 +134,6 @@ def _chunk_incl_kernel(
     stride_id,
     CHUNK_PAD: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    FP16: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     d0 = tl.program_id(1) * BLOCK_D
@@ -155,7 +147,6 @@ def _chunk_incl_kernel(
         + offs_d[None, :] * stride_ajd,
         mask,
         1.0,
-        FP16,
     )
     r = load_acc(
         agg_r_ptr
@@ -164,7 +155,6 @@ def _chunk_incl_kernel(
         + offs_d[None, :] * stride_ard,
         mask,
         0.0,
-        FP16,
     )
     _, r_s = tl.associative_scan((j, r), 0, _compose_diag)
     store_acc(
@@ -174,7 +164,6 @@ def _chunk_incl_kernel(
         + offs_d[None, :] * stride_id,
         r_s,
         mask,
-        FP16,
     )
 
 
@@ -200,7 +189,6 @@ def _apply_carry_kernel(
     stride_od,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    FP16: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -217,7 +205,6 @@ def _apply_carry_kernel(
         + offs_d[None, :] * stride_jd,
         mask,
         1.0,
-        FP16,
     )
     r_loc = load_acc(
         r_loc_ptr
@@ -226,14 +213,12 @@ def _apply_carry_kernel(
         + offs_d[None, :] * stride_rd,
         mask,
         0.0,
-        FP16,
     )
     idx_c = tl.where(pid_c > 0, pid_c - 1, 0)
     carry = load_acc(
         incl_r_ptr + pid_b * stride_ib + idx_c * stride_ic + offs_d * stride_id,
         offs_d < d_h,
         0.0,
-        FP16,
     )
     carry = tl.where(pid_c > 0, carry, 0.0)
     out = j_loc * carry[None, :] + r_loc
@@ -244,7 +229,6 @@ def _apply_carry_kernel(
         + offs_d[None, :] * stride_od,
         out,
         mask,
-        FP16,
     )
 
 
@@ -252,7 +236,7 @@ def scan_diag_triton(jac: Tensor, residual: Tensor) -> Tensor:
     """Same contract as ``scan_diag``: ``δ_t = jac_t * δ_{t-1} + residual_t``."""
     if jac.shape != residual.shape or jac.dim() != 3:
         raise ValueError("jac and residual must be (batch, time, d)")
-    fp16 = check_cuda_real(jac, residual, name="scan_diag_triton")
+    validate_cuda_tensors(jac, residual, name="scan_diag_triton")
     batch, time, d_h = residual.shape
     if time <= 1:
         return residual.clone()
@@ -299,7 +283,6 @@ def scan_diag_triton(jac: Tensor, residual: Tensor) -> Tensor:
         agg_r.stride(2),
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
-        FP16=fp16,
     )
 
     if n_chunks == 1:
@@ -327,7 +310,6 @@ def scan_diag_triton(jac: Tensor, residual: Tensor) -> Tensor:
         incl_r.stride(2),
         CHUNK_PAD=_CHUNK_PAD,
         BLOCK_D=_BLOCK_D,
-        FP16=fp16,
     )
     out = torch.empty_like(residual)
     _apply_carry_kernel[(batch, n_chunks, n_dtiles)](
@@ -351,7 +333,6 @@ def scan_diag_triton(jac: Tensor, residual: Tensor) -> Tensor:
         out.stride(2),
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
-        FP16=fp16,
     )
     log.debug(
         "scan_diag_triton",

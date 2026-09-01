@@ -16,10 +16,8 @@ Remaining items are **other science**, not package polish.
 
 | Pri | Change | Why this high | Effect | Confidence |
 |---|---|---|---|---|
-| 1 | Hybrid Mamba-2 predictor + **one** Newton (ours, not Apple) | DEER: Newton wants a good guess. After residual early-stop. | **Up to ~3×** if the guess is close. | **Low** until ablation |
-| 2 | IFT adjoint (Bai / DEQ) | Eq. 2.6 is in. IFT is extra. | \(O(1)\) in solver depth. | **Low** until 2.6 is the bottleneck |
-| 3 | Para-sLSTM **head fused / LM** | Diag cell + Picard + 4×4 fused is in this package. FlashRNN `cuda_fused` needs CC 8.0 (2080 Ti is 7.5). Head mix still out. | Matching K=3 at width 256 via auto P. | **Medium** on FlashRNN until Ampere; **high** on head mix |
-| 4 | HF / SlimPajama / 125M | Empty `PreTrainedModel` is worse than none. | Paper-scale claim. | **Low** until a real train loop |
+| 1 | IFT adjoint (Bai / DEQ) | Eq. 2.6 is in. IFT is extra. | \(O(1)\) in solver depth. | **Low** until 2.6 is the bottleneck |
+| 2 | HF / SlimPajama / 125M | Empty `PreTrainedModel` is worse than none. Not 2080 Ti. | Paper-scale claim. | **Low** until a real train loop |
 
 Do **not** bake `torch.compile` into `src/` (Dynamo 4–113 s per new \(T\)).
 Do **not** pick a GPU inside `ParaRNN.forward`. The module follows the tensor / `.to(device)`.
@@ -29,10 +27,11 @@ Do **not** treat `fused` as “any \(f\)”.
 
 | Pri | Change | Why this was first | Result |
 |---|---|---|---|
-| 0 | ``scan_backend="auto"`` by tensor (fused if CUDA GRU/LSTM fp16/32, else Triton scan, else eager). Log the choice. Fused kernels prepend ``h0``. Early-stop + ``NewtonStats``. Layer: list of cells, ``return_hidden``, LSTM ``output_hidden``. | Default eager hid fused; fused ignored nonzero ``h0``. | Default is ``auto``. Fused+``h0`` matches sequential. Residual is an API. |
+| 0 | ``scan_backend="auto"`` by tensor (fused if CUDA GRU/LSTM/sLSTM-diag and ``is_fused_dtype_supported``: fp16/fp32 any CUDA, bf16 if CC ≥ 8.0). Log the choice. Fused kernels prepend ``h0``. Early-stop + ``NewtonStats``. Layer: list of cells, ``return_hidden``, default hidden-slot output, ``solver`` / ``batch_first`` / ``hidden_layout``. | Default eager hid fused; fused ignored nonzero ``h0``. | Default is ``auto``. Fused+``h0`` matches sequential. Residual is an API. |
+| 0c | Hybrid Picard \(H^{(0)}\) + K=1 vs library P(T)+K=3. Untrained S4D-Real SSM guess. | DEER: Newton wants a close guess. | **24.2 → 20.1 ms** fused fwd at T=2048 (P=5 K=1 vs P=3 K=3, same snap). P=3 K=1 misses (err 0.15). S4D-Real guess diverges. Parked (library still auto-P+K=3). Dyck train T=64 not faster. `scripts/bench_hybrid_pk.py`. |
 | 1 | Any ``step(h, x)`` via Autograd Jacobian (DEER / Lim et al.). ``jacobian="auto"``: analytic if the cell has ``step_with_jacobian``, else ``torch.func``. | Two hardcoded cells is not a library. | Custom channelwise cell and dense mix (``jac_structure="dense"``) match sequential. Ones-JVP is exact iff ``f`` is channelwise; otherwise set ``dense``. Fused Newton stays ParaGRU/LSTM (not any ``f``). |
-| 2 | Eq. 2.6 cell VJP packed on CUDA for ParaGRU/ParaLSTM (Triton elementwise + ``W_x`` GEMM). Reverse scan already Triton when ``scan_backend`` is ``triton``/``fused``. | Backward was ``autograd.grad(cell.step)``. | Packed VJP matches Autograd VJP. Existing BPTT tests still pass. Custom cells keep Autograd on ``step`` (their ops are already CUDA). |
-| 3 | fp16 DRAM / fp32 Newton accumulators on Turing. Agreement tests **separately** (atol \(2\times10^{-3}\)). **Not bf16**. | Halves scan DRAM. TC help `W_x` only. | Smoke 10/50, same process as fp32 fused: at \(T=2048\) GRU **1.80 vs 2.61 ms** (**1.45×**), **66 vs 123 MiB** (**1.86×**); LSTM **5.45 vs 6.41 ms** (**1.18×**), **107 vs 205 MiB** (**1.91×**). Short \(T\) is slower. Residual \(\sim10^{-3}\). See [fp16](#fp16). |
+| 2 | Eq. 2.6 cell VJP packed on CUDA for ParaGRU/ParaLSTM and ParaSLSTM ``mix='diag'`` (Triton elementwise + ``W_x`` GEMM). Reverse scan already Triton when ``scan_backend`` is ``triton``/``fused``. Head/dense sLSTM stay Autograd on ``step``. | Backward was ``autograd.grad(cell.step)``. | Packed VJP matches Autograd VJP. Existing BPTT tests still pass. Custom cells keep Autograd on ``step``. **sLSTM diag, 2080 Ti, 2026-09-02** (`scripts/bench_packed_vjp.py`, smoke 10/50): isolated VJP min **0.75 vs 2.37 ms** at Dyck B=32 T=64 d_h=32 (**3.2×**); **3.79 vs 8.71 ms** at B=8 T=2048 d_h=256 (**2.3×**). Full Newton bwd **4.04 vs 8.27 ms** (**2.0×**) / **21.6 vs 26.8 ms** (**1.24×**) — reverse scan is shared. Forward unchanged. Dyck 50-step CE identical (max \(\lvert\Delta\mathrm{CE}\rvert=1.2\times10^{-7}\)); train bwd+AdamW mean **8.1 vs 10.7 ms**. Speed, not quality. |
+| 3 | fp16 DRAM / fp32 Newton accumulators. Agreement tests **separately** (atol \(2\times10^{-3}\)). bf16 fused is **CC ≥ 8.0**, not a missing kernel; SM 7.x still rejects. | Halves scan DRAM. TC help `W_x` only. | Smoke 10/50, same process as fp32 fused: at \(T=2048\) GRU **1.80 vs 2.61 ms** (**1.45×**), **66 vs 123 MiB** (**1.86×**); LSTM **5.45 vs 6.41 ms** (**1.18×**), **107 vs 205 MiB** (**1.91×**). Short \(T\) is slower. Residual \(\sim10^{-3}\). See [fp16](#fp16). |
 | 4 | Triton **fused Newton** (cell + J + scan per Alg. 1 iter). Opt-in `scan_backend="fused"`. GEMM `W_x` stays in PyTorch. Not Apple's kernel. Backward still eq. 2.6. | Newton still launched the eager cell \(K+1\) times after the scans landed. Paper 665× is fused CUDA, not this. | Smoke 10/50, \(T=2048\): GRU fused **2.4 ms** vs naive ParaRNN 27 ms (**11×**) vs naive RNN 959 ms (**400×**); LSTM **6.5 ms** vs 62 ms (**9.6×**) vs 1338 ms (**207×**). Peak mem vs naive ParaRNN **~3–4×** lower. ParaSLSTM diag fused **P=0 30 ms** is a **diverged** Newton; sequential-matched auto-P after Triton Picard is **23.6 ms** vs compiled seq 814 ms (**34×**) vs FlashRNN 5.8 ms (**0.25×**). See [Fused Newton](#fused-newton) and [Fused sLSTM](#fused-slstm). |
 | 5 | LSTM 2×2 as four muls, not `einsum`→`bmm`; Blelloch scan (not Hillis–Steele). No `torch.associative_scan` (CUDA/compile prototype, no CPU, no autograd). | **86% of LSTM CUDA** was tiny GEMVs. HS was \(O(T\log T)\) traffic. | Smoke: LSTM \(T=512\) 113→**46 ms**; \(T=2048\) 537→**82 ms**, 7.5 GiB→**719 MiB**; \(T=4096\) **fits, 1.4 GiB** (was OOM). GRU \(T=2048\) 29→**36 ms** (gather tax). |
 | 6 | Call-site `torch.compile(newton_apply)` (`reduce-overhead`). **Not** in `src/`. App. B `min_ms` is after warmup and **hides** Dynamo. | Launch tax on small \(T\). | Steady-state GRU \(T\le 256\) **~20–40×**; LSTM \(T=64\) **~16×**. Compile itself is **4–113 s** per new \(T\). LSTM at LM length needs **~2k forwards** to break even. See [Compile Newton](#compile-newton). |
@@ -304,7 +303,7 @@ per-step slope (~15 µs fused vs ~2.8 µs FlashRNN), not more T.
 
 ## fp16
 
-Turing: fp16 tensor cores exist; **no bf16 TC**. Activations, \(J\) tiles, and residuals stay fp16 in DRAM; Newton/scan algebra is fp32 inside Triton (`load_acc` / `store_acc`) and in eager Blelloch. `W_x` is still a PyTorch GEMM — that is where TC help. Fused and triton backends **reject bfloat16**. Agreement is vs sequential in the **same** dtype (atol \(2\times10^{-3}\)), not vs fp32 sequential.
+Turing (SM 7.5): fp16 tensor cores exist; **no bf16 TC**. Ampere+ (SM 8.0+): fused/Triton **bf16** uses the same fp32 algebra + narrow DRAM (`is_fused_dtype_supported` on the **tensor** device). Activations, \(J\) tiles, and residuals stay in the tensor dtype in DRAM; Newton/scan algebra is fp32 inside Triton (`load_acc` / `store_acc`) and in eager Blelloch. `W_x` is still a PyTorch GEMM — that is where TC help. Explicit `scan_backend='fused'` + bf16 on SM 7.x raises (compute capability, not a GPU name). Agreement is vs sequential in the **same** dtype (atol \(2\times10^{-3}\)), not vs fp32 sequential.
 
 `uv run python scripts/bench_time.py --config configs/bench/newton_fp16.yaml`. MLflow `newton-fp16-bench`. CSV: `outputs/bench_newton_fp16.csv`. **10 warmup / 50 runs, min ms, not App. B.** Same process, 2080 Ti, B=8, \(d_h=256\), \(K=3\), modes fused only. fp32 numbers here are the paired run, not the earlier fused-vs-naive table (GRU \(T=2048\) was 2.40 ms there, **2.61 ms** here).
 
@@ -346,7 +345,7 @@ Memory at LM length is **~2×** as expected (half DRAM). Time is **1.2–1.45×*
 |---|---|---|
 | compile / CUDA Graphs | Yes as **opt-in at fixed \(T\)**, not a library default | Steady-state is real. Compile tax is 4–113 s. Do not quote App. B `min_ms` as if Dynamo were free. |
 | Fused CUDA/Triton PCR | Yes, **fused Newton is in** (`scan_backend="fused"`) | Still not Apple's kernel. Vs naive ParaRNN **~8–11×** at LM length; vs naive RNN **~200–400×**. Not 665×. |
-| FP16/BF16 + tensor cores | fp16 DRAM + fp32 accum **is in** | No bf16 TC on Turing. TC help `W_x` only. Scan is not 2× at short \(T\) (slower). Residual \(\sim10^{-3}\). |
+| FP16/BF16 + tensor cores | fp16 DRAM + fp32 accum **is in**; bf16 fused on CC ≥ 8.0 | SM 7.x has no bf16 TC. TC help `W_x` only. Scan is not 2× at short \(T\) (slower). Residual \(\sim10^{-3}\). |
 
 ## Profile
 
@@ -373,7 +372,7 @@ Memory at LM length is **~2×** as expected (half DRAM). Time is **1.2–1.45×*
 - Bake `torch.compile` into `src/`. Opt-in at the call site; log `compile_s`.
 - Quote compiled `min_ms` without the compile wall time.
 - Quote fused × as fig. 2/5 or 665×. The smoke table is 2080 Ti, 10/50, vs *our* naive RNN / naive ParaRNN.
-- bf16 / “tensor cores for the scan”.
+- bf16 as a scan speedup, or GPU **names** in `src/` (capability only). Lab benches still pin the 2080 Ti in `scripts/gpu.py`.
 - Quote the first App. B 50× as if it were vs compiled sequential.
 - Compare our ms to fig. 2/5.
 

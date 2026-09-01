@@ -29,6 +29,8 @@ def sequential_apply(
     unchanged (no ``wx=``).
     """
     batch, time, _ = x.shape
+    if time < 1:
+        raise ValueError(f"sequential_apply needs time >= 1, got {time}")
     if h0 is None:
         h = _zero_state(cell, batch, x)
     else:
@@ -63,6 +65,9 @@ def sequential_apply_compiled(
     not compile Newton. Mode: PyTorch 2 compile tutorial (graphs for repeated
     small ops), not a paper hyperparameter.
     """
+    batch, time, _ = x.shape
+    if time < 1:
+        raise ValueError(f"sequential_apply_compiled needs time >= 1, got {time}")
     key = (id(cell), mode)
     compiled = _compiled_steps.get(key)
     if compiled is None:
@@ -72,7 +77,6 @@ def sequential_apply_compiled(
 
         compiled = torch.compile(_step, mode=mode)
         _compiled_steps[key] = compiled
-    batch, time, _ = x.shape
     h = h0 if h0 is not None else _zero_state(cell, batch, x)
     outs = []
     for t in range(time):

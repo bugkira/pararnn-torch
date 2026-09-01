@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+import pytest
 import torch
 
 from pararnn.cells import ParaGRU, ParaLSTM
@@ -59,7 +60,9 @@ def test_scan_block2_matches_forward_substitution():
     ref[:, 0] = residual[:, 0]
     for s in range(1, t):
         # J @ delta_prev + r  (einsum out,in)
-        ref[:, s] = torch.einsum("boid,bid->bod", jac[:, s], ref[:, s - 1]) + residual[:, s]
+        ref[:, s] = (
+            torch.einsum("boid,bid->bod", jac[:, s], ref[:, s - 1]) + residual[:, s]
+        )
     torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-5)
 
 
@@ -81,6 +84,41 @@ def test_paralstm_newton_matches_sequential():
     x = torch.randn(3, 32, 8, device=device)
     seq = sequential_apply(cell, x)
     par = newton_apply(cell, x, NewtonConfig(max_iters=3))
+    err = (par - seq).abs().amax()
+    assert err < 1e-4, err
+
+
+def test_sequential_rejects_empty_time():
+    cell = ParaGRU(d_in=4, d_h=8).to(device)
+    x = torch.randn(2, 0, 4, device=device)
+    with pytest.raises(ValueError, match="time >= 1"):
+        sequential_apply(cell, x)
+    with pytest.raises(ValueError, match="time >= 1"):
+        sequential_apply_compiled(cell, x)
+
+
+@torch.no_grad()
+def test_paragru_newton_t1_matches_sequential():
+    torch.manual_seed(41)
+    cell = ParaGRU(d_in=8, d_h=16).to(device)
+    x = torch.randn(3, 1, 8, device=device)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(cell, x, NewtonConfig(max_iters=3, scan_backend="eager"))
+    err = (par - seq).abs().amax()
+    assert err < 1e-4, err
+
+
+@torch.no_grad()
+def test_paragru_newton_eager_no_residual_atol():
+    torch.manual_seed(42)
+    cell = ParaGRU(d_in=8, d_h=16).to(device)
+    x = torch.randn(2, 16, 8, device=device)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(max_iters=3, scan_backend="eager", residual_atol=None),
+    )
     err = (par - seq).abs().amax()
     assert err < 1e-4, err
 
@@ -112,7 +150,9 @@ def test_reverse_scan_block2_matches_backward_substitution():
     torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-5)
 
 
-def _assert_param_grads_close(cell_a: torch.nn.Module, cell_b: torch.nn.Module, atol: float) -> None:
+def _assert_param_grads_close(
+    cell_a: torch.nn.Module, cell_b: torch.nn.Module, atol: float
+) -> None:
     for (n, p_a), (_, p_b) in zip(cell_a.named_parameters(), cell_b.named_parameters()):
         assert p_a.grad is not None, n
         assert p_b.grad is not None, n
@@ -135,6 +175,64 @@ def test_paragru_newton_bwd_matches_sequential_bptt():
     loss_n.backward()
     _assert_param_grads_close(cell_s, cell_n, atol=2e-4)
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=2e-4, rtol=1e-4)
+
+
+def test_paragru_newton_h0_grad_matches_sequential_bptt():
+    torch.manual_seed(14)
+    d_in, d_h, t = 5, 7, 16
+    x = torch.randn(2, t, d_in, device=device)
+    w = torch.randn(2, t, d_h, device=device)
+    cell_s = ParaGRU(d_in, d_h).to(device)
+    cell_n = ParaGRU(d_in, d_h).to(device)
+    cell_n.load_state_dict(cell_s.state_dict())
+    h0 = 0.3 * torch.randn(2, d_h, device=device)
+    h0_s = h0.clone().requires_grad_(True)
+    h0_n = h0.clone().requires_grad_(True)
+    x_s = x.clone().requires_grad_(True)
+    x_n = x.clone().requires_grad_(True)
+    cfg = NewtonConfig(max_iters=3, scan_backend="eager")
+    loss_s = (sequential_apply(cell_s, x_s, h0_s) * w).sum()
+    loss_s.backward()
+    loss_n = (newton_apply(cell_n, x_n, cfg, h0=h0_n) * w).sum()
+    loss_n.backward()
+    _assert_param_grads_close(cell_s, cell_n, atol=2e-4)
+    torch.testing.assert_close(x_s.grad, x_n.grad, atol=2e-4, rtol=1e-4)
+    torch.testing.assert_close(h0_s.grad, h0_n.grad, atol=2e-4, rtol=1e-4)
+
+
+def test_paragru_h0_only_requires_grad():
+    """Eq. 2.6 must see h0 even when x and θ are frozen."""
+    torch.manual_seed(15)
+    cell = ParaGRU(d_in=4, d_h=6).to(device)
+    for p in cell.parameters():
+        p.requires_grad_(False)
+    x = torch.randn(2, 12, 4, device=device)
+    h0 = (0.3 * torch.randn(2, 6, device=device)).detach().requires_grad_(True)
+    cfg = NewtonConfig(max_iters=3, scan_backend="eager")
+    y = newton_apply(cell, x, cfg, h0=h0)
+    y.sum().backward()
+    assert h0.grad is not None
+    assert h0.grad.abs().sum() > 0
+
+
+def test_paralstm_newton_h0_grad_matches_sequential_bptt():
+    torch.manual_seed(16)
+    d_in, d_h, t = 5, 6, 12
+    x = torch.randn(2, t, d_in, device=device)
+    w = torch.randn(2, t, 2, d_h, device=device)
+    cell_s = ParaLSTM(d_in, d_h).to(device)
+    cell_n = ParaLSTM(d_in, d_h).to(device)
+    cell_n.load_state_dict(cell_s.state_dict())
+    h0 = 0.3 * torch.randn(2, 2, d_h, device=device)
+    h0_s = h0.clone().requires_grad_(True)
+    h0_n = h0.clone().requires_grad_(True)
+    cfg = NewtonConfig(max_iters=3, scan_backend="eager")
+    loss_s = (sequential_apply(cell_s, x, h0_s) * w).sum()
+    loss_s.backward()
+    loss_n = (newton_apply(cell_n, x, cfg, h0=h0_n) * w).sum()
+    loss_n.backward()
+    _assert_param_grads_close(cell_s, cell_n, atol=5e-4)
+    torch.testing.assert_close(h0_s.grad, h0_n.grad, atol=5e-4, rtol=1e-4)
 
 
 def test_paralstm_newton_bwd_matches_sequential_bptt():
@@ -259,7 +357,9 @@ def test_triton_scan_block2_matches_substitution():
         ref = torch.zeros_like(residual)
         ref[:, 0] = residual[:, 0]
         for s in range(1, t):
-            ref[:, s] = torch.einsum("boid,bid->bod", jac[:, s], ref[:, s - 1]) + residual[:, s]
+            ref[:, s] = (
+                torch.einsum("boid,bid->bod", jac[:, s], ref[:, s - 1]) + residual[:, s]
+            )
         torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-5)
 
 
@@ -476,19 +576,76 @@ def test_paragru_newton_fused_fp16_matches_eager():
 
 
 @torch.no_grad()
-def test_fused_rejects_bf16():
+def test_fused_bf16_capability():
+    """Fused bf16: CC ≥ 8.0 agrees with sequential; CC 7.x raises."""
     device = _cuda_or_skip()
     if device is None:
         return
+    from pararnn.kernels.precision import is_fused_dtype_supported
+
     cell = ParaGRU(d_in=4, d_h=8).to(device=device, dtype=torch.bfloat16)
     x = torch.randn(2, 16, 4, device=device, dtype=torch.bfloat16)
-    try:
-        newton_apply(cell, x, NewtonConfig(max_iters=1, scan_backend="fused"))
-    except TypeError as exc:
-        assert "bfloat16" in str(exc)
+    if not is_fused_dtype_supported(torch.bfloat16, device):
+        with pytest.raises(TypeError, match="compute capability"):
+            newton_apply(cell, x, NewtonConfig(max_iters=1, scan_backend="fused"))
         return
-    raise AssertionError("fused Newton must reject bfloat16 on Turing")
+    seq = sequential_apply(cell, x)
+    fused = newton_apply(cell, x, NewtonConfig(max_iters=3, scan_backend="fused"))
+    err = (fused.float() - seq.float()).abs().amax()
+    assert err < _FP16_ATOL, float(err)
 
+
+@torch.no_grad()
+def test_auto_bf16_matches_sequential():
+    """``auto`` uses fused on CC≥8, eager on SM 7.x — neither should raise."""
+    device = _cuda_or_skip()
+    if device is None:
+        return
+    from pararnn.kernels.precision import is_fused_dtype_supported
+
+    cell = ParaGRU(d_in=4, d_h=8).to(device=device, dtype=torch.bfloat16)
+    x = torch.randn(2, 16, 4, device=device, dtype=torch.bfloat16)
+    par = newton_apply(cell, x, NewtonConfig(max_iters=3, scan_backend="auto"))
+    if not is_fused_dtype_supported(torch.bfloat16, device):
+        return
+    seq = sequential_apply(cell, x)
+    err = (par.float() - seq.float()).abs().amax()
+    assert err < _FP16_ATOL, float(err)
+
+
+def test_is_fused_dtype_supported_cpu_false():
+    from pararnn.kernels.precision import is_fused_dtype_supported
+
+    assert is_fused_dtype_supported(torch.float32, torch.device("cpu")) is False
+    assert is_fused_dtype_supported(torch.float16, torch.device("cpu")) is False
+    assert is_fused_dtype_supported(torch.bfloat16, torch.device("cpu")) is False
+    if device.type == "cuda":
+        assert is_fused_dtype_supported(torch.float32, device) is True
+        assert is_fused_dtype_supported(torch.float16, device) is True
+        major, _minor = torch.cuda.get_device_capability(device)
+        assert is_fused_dtype_supported(torch.bfloat16, device) is (major >= 8)
+
+
+def test_validate_cuda_tensors_dtype_and_device():
+    from pararnn.kernels.precision import validate_cuda_tensors
+
+    a = torch.zeros(2, device="cpu")
+    with pytest.raises(RuntimeError, match="CUDA"):
+        validate_cuda_tensors(a, name="t")
+    if device.type != "cuda":
+        return
+    x = torch.zeros(2, device=device)
+    assert validate_cuda_tensors(x, name="t") is False
+    h = torch.zeros(2, device=device, dtype=torch.float16)
+    assert validate_cuda_tensors(h, name="t") is True
+    with pytest.raises(TypeError, match="dtype mismatch"):
+        validate_cuda_tensors(x, h, name="t")
+    if torch.cuda.device_count() < 2:
+        return
+    other = torch.device("cuda:1")
+    y = torch.zeros(2, device=other)
+    with pytest.raises(RuntimeError, match="different devices"):
+        validate_cuda_tensors(x, y, name="t")
 
 @torch.no_grad()
 def test_paragru_newton_h0_matches_sequential():

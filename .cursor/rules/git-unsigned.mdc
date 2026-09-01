@@ -1,0 +1,17 @@
+---
+description: This repo's commits are unsigned. Do not use the work signing key.
+alwaysApply: true
+---
+
+# Unsigned commits (this repo only)
+
+This is a **personal** repo. The global git config signs with a **work**
+x509/GPG key. That key must never touch these commits.
+
+- Commits and tags here are **unsigned**.
+- Use the repo-local config (`git config --local`), already `commit.gpgsign=false`
+  and `tag.gpgsign=false`. If a commit fails with `gpg failed to sign`, set those
+  two again **locally**. Do not pass `--no-gpg-sign` as the standing fix.
+- Never `git config --global`. Never copy `user.signingkey` / `gpg.format=x509`
+  into this repo.
+- Do not `--no-verify`.

@@ -8,6 +8,7 @@ from torch import Tensor, nn
 
 from pararnn import NewtonConfig, ParaRNN, newton_apply, sequential_apply
 from pararnn.cells import ParaGRU, ParaLSTM
+from pararnn.layout import swap_lstm_ch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -104,10 +105,10 @@ def test_two_layer_lstm_feeds_hidden_slot():
     x = torch.randn(2, 7, 5, device=device)
     layer.train()
     y = layer(x)
-    assert y.shape == (2, 7, 2, 8)
+    assert y.shape == (2, 7, 8)
     h = newton_apply(layer.layers[0], x, cfg)
     h = newton_apply(layer.layers[1], h[:, :, 1, :], cfg)
-    torch.testing.assert_close(y, h, atol=0, rtol=0)
+    torch.testing.assert_close(y, h[:, :, 1, :], atol=0, rtol=0)
 
 
 @torch.no_grad()
@@ -119,7 +120,9 @@ def test_h0_eval_and_train():
     x = torch.randn(3, 10, 4, device=device)
     h0 = 0.3 * torch.randn(3, 6, device=device)
     layer.eval()
-    torch.testing.assert_close(layer(x, h0=h0), sequential_apply(cell, x, h0), atol=0, rtol=0)
+    torch.testing.assert_close(
+        layer(x, h0=h0), sequential_apply(cell, x, h0), atol=0, rtol=0
+    )
     layer.train()
     torch.testing.assert_close(
         layer(x, h0=h0), newton_apply(cell, x, cfg, h0=h0), atol=0, rtol=0
@@ -167,3 +170,116 @@ def test_return_hidden_and_output_hidden_lstm():
     assert y.shape == (2, 7, 6)
     torch.testing.assert_close(y, full[:, :, 1, :], atol=0, rtol=0)
     torch.testing.assert_close(h_last, full[:, -1], atol=0, rtol=0)
+
+
+@torch.no_grad()
+def test_lstm_default_output_is_hidden():
+    torch.manual_seed(79)
+    cell = ParaLSTM(d_in=4, d_h=6).to(device)
+    layer = ParaRNN(cell)
+    layer.eval()
+    x = torch.randn(2, 5, 4, device=device)
+    y = layer(x)
+    full = sequential_apply(cell, x)
+    assert y.shape == (2, 5, 6)
+    torch.testing.assert_close(y, full[:, :, 1, :], atol=0, rtol=0)
+    cell_full = ParaLSTM(d_in=4, d_h=6).to(device)
+    cell_full.load_state_dict(cell.state_dict())
+    layer_full = ParaRNN(cell_full, output_hidden=False)
+    layer_full.eval()
+    y_full = layer_full(x)
+    assert y_full.shape == (2, 5, 2, 6)
+    torch.testing.assert_close(y_full, full, atol=0, rtol=0)
+
+
+@torch.no_grad()
+def test_solver_newton_in_eval_matches_newton_apply():
+    torch.manual_seed(80)
+    cell = ParaGRU(d_in=6, d_h=8).to(device)
+    cfg = NewtonConfig(max_iters=3)
+    layer = ParaRNN(cell, config=cfg, solver="newton")
+    layer.eval()
+    x = torch.randn(2, 16, 6, device=device)
+    torch.testing.assert_close(layer(x), newton_apply(cell, x, cfg), atol=0, rtol=0)
+
+
+@torch.no_grad()
+def test_solver_sequential_in_train_matches_sequential_apply():
+    torch.manual_seed(81)
+    cell = ParaGRU(d_in=6, d_h=8).to(device)
+    layer = ParaRNN(cell, solver="sequential")
+    layer.train()
+    x = torch.randn(2, 16, 6, device=device)
+    torch.testing.assert_close(layer(x), sequential_apply(cell, x), atol=0, rtol=0)
+
+
+def test_extra_repr_lists_boundary_flags():
+    cell = ParaGRU(d_in=4, d_h=5).to(device)
+    layer = ParaRNN(cell, solver="auto", batch_first=True)
+    text = layer.extra_repr()
+    assert "solver='auto'" in text
+    assert "effective=newton" in text
+    assert "batch_first=True" in text
+    assert "output_hidden=False" in text
+    assert "hidden_layout='paper'" in text
+    layer.eval()
+    assert "effective=sequential" in layer.extra_repr()
+
+
+def test_solver_rejects_unknown():
+    with pytest.raises(ValueError, match="solver"):
+        ParaRNN(ParaGRU(d_in=3, d_h=4), solver="picard")  # type: ignore[arg-type]
+
+
+@torch.no_grad()
+def test_batch_first_false_matches_batch_first():
+    torch.manual_seed(82)
+    cell_a = ParaGRU(d_in=5, d_h=7).to(device)
+    cell_b = ParaGRU(d_in=5, d_h=7).to(device)
+    cell_b.load_state_dict(cell_a.state_dict())
+    bf = ParaRNN(cell_a)
+    tf = ParaRNN(cell_b, batch_first=False)
+    bf.eval()
+    tf.eval()
+    x_bf = torch.randn(3, 9, 5, device=device)
+    x_tf = x_bf.transpose(0, 1)
+    y_bf = bf(x_bf)
+    y_tf = tf(x_tf)
+    assert y_tf.shape == (9, 3, 7)
+    torch.testing.assert_close(y_tf, y_bf.transpose(0, 1), atol=0, rtol=0)
+    h0 = 0.2 * torch.randn(3, 7, device=device)
+    torch.testing.assert_close(
+        tf(x_tf, h0=h0),
+        sequential_apply(cell_b, x_bf, h0).transpose(0, 1),
+        atol=0,
+        rtol=0,
+    )
+
+
+@torch.no_grad()
+def test_hidden_layout_pytorch_swaps_h0_and_last():
+    torch.manual_seed(83)
+    cell_a = ParaLSTM(d_in=4, d_h=6).to(device)
+    cell_b = ParaLSTM(d_in=4, d_h=6).to(device)
+    cell_b.load_state_dict(cell_a.state_dict())
+    paper = ParaRNN(cell_a, return_hidden=True, hidden_layout="paper")
+    pytorch = ParaRNN(cell_b, return_hidden=True, hidden_layout="pytorch")
+    paper.eval()
+    pytorch.eval()
+    x = torch.randn(2, 7, 4, device=device)
+    h0_paper = 0.3 * torch.randn(2, 2, 6, device=device)
+    h0_pytorch = swap_lstm_ch(h0_paper)
+    y_p, last_p = paper(x, h0=h0_paper)
+    y_t, last_t = pytorch(x, h0=h0_pytorch)
+    torch.testing.assert_close(y_p, y_t, atol=0, rtol=0)
+    torch.testing.assert_close(last_t, swap_lstm_ch(last_p), atol=0, rtol=0)
+    torch.testing.assert_close(last_p[:, 0], last_t[:, 1], atol=0, rtol=0)
+
+
+def test_hidden_layout_pytorch_rejects_non_lstm():
+    with pytest.raises(TypeError, match="ParaLSTM"):
+        ParaRNN(ParaGRU(d_in=3, d_h=5), hidden_layout="pytorch")
+    from pararnn.cells import ParaSLSTM
+
+    with pytest.raises(TypeError, match="ParaLSTM"):
+        ParaRNN(ParaSLSTM(d_in=4, d_h=4), hidden_layout="pytorch")

@@ -72,6 +72,7 @@ def test_early_stop_fewer_than_max_iters():
         stats=st,
     )
     assert st.iters < 8
+    assert st.iters >= 1
     assert st.max_residual < 1e-4
     assert st.scan_backend == "eager"
 

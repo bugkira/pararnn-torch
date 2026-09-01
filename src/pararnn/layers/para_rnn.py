@@ -5,28 +5,45 @@ from __future__ import annotations
 import inspect
 import logging
 from collections.abc import Sequence
+from typing import Literal
 
 import torch
 from torch import Tensor, nn
 
+from pararnn.cells.para_lstm import ParaLSTM
 from pararnn.cells.protocol import check_cell
+from pararnn.layout import swap_lstm_ch
 from pararnn.solvers.newton import NewtonConfig, NewtonStats, newton_apply
 from pararnn.solvers.sequential import sequential_apply
 
 log = logging.getLogger(__name__)
 
+_SOLVERS = ("auto", "newton", "sequential")
+_HIDDEN_LAYOUTS = ("paper", "pytorch")
+
 
 class ParaRNN(nn.Module):
-    """Stack of RNN cells as a batch-first sequence module.
+    """Stack of RNN cells as a sequence module.
 
-    ``self.training`` selects the solver: Newton+scan (Alg. 1) while training,
-    sequential ``step`` unroll in ``eval()``. No residual or LayerNorm here —
-    stacking is naive; the caller owns the backbone.
+    ``solver='auto'`` (default) follows ``self.training``: Newton+scan (Alg. 1)
+    while training, sequential ``step`` in ``eval()``. ``solver='newton'`` /
+    ``'sequential'`` force that path (benches, decode without ``eval()``).
+    Gating is **not** ``torch.is_grad_enabled()`` — ``@torch.no_grad()`` plus
+    ``train()`` is how numerics tests compare to ``newton_apply``.
 
-    ``x`` is ``(batch, time, d_in)``. Default output is the last cell's full
-    state (GRU: ``(B, T, d_h)``; LSTM: ``(B, T, 2, d_h)``; sLSTM:
-    ``(B, T, 4, d_h)``). Intermediate multi-slot layers feed only the hidden
-    slot into the next layer.
+    Default ``x`` is ``(batch, time, d_in)``. ``batch_first=False`` takes
+    ``nn.LSTM`` ``(time, batch, …)`` and permutes at this wrapper only.
+    ``h0`` stays batch-leading ``(B, …)``.
+
+    Default output is the last cell's **hidden slot** when that cell has
+    ``state_slots > 1`` (LSTM / sLSTM → ``(B, T, d_h)``). GRU is unchanged
+    ``(B, T, d_h)``. ``output_hidden=False`` keeps the full trajectory
+    (LSTM ``(B, T, 2, d_h)``, sLSTM ``(B, T, 4, d_h)``). Intermediate
+    multi-slot layers still feed only the hidden slot into the next layer.
+
+    ``hidden_layout='pytorch'`` swaps LSTM slots on ``h0`` and on
+    ``return_hidden``'s last state (nn.LSTM tuple is ``(h, c)``). Kernels
+    stay paper ``[c, h]``. Not valid on GRU/sLSTM.
     """
 
     def __init__(
@@ -36,35 +53,75 @@ class ParaRNN(nn.Module):
         num_layers: int = 1,
         config: NewtonConfig | None = None,
         return_hidden: bool = False,
-        output_hidden: bool = False,
+        output_hidden: bool | None = None,
+        solver: Literal["auto", "newton", "sequential"] = "auto",
+        batch_first: bool = True,
+        hidden_layout: Literal["paper", "pytorch"] = "paper",
     ) -> None:
         super().__init__()
+        if solver not in _SOLVERS:
+            raise ValueError(f"solver must be one of {_SOLVERS}, got {solver!r}")
+        if hidden_layout not in _HIDDEN_LAYOUTS:
+            raise ValueError(
+                f"hidden_layout must be one of {_HIDDEN_LAYOUTS}, got {hidden_layout!r}"
+            )
         self.config = config or NewtonConfig()
         self.return_hidden = return_hidden
-        self.output_hidden = output_hidden
+        self.solver = solver
+        self.batch_first = batch_first
+        self.hidden_layout = hidden_layout
         self.last_stats: list[NewtonStats] = []
         self.layers = nn.ModuleList(_build_layers(cell, num_layers))
+        if hidden_layout == "pytorch":
+            _require_lstm_layout(self.layers)
+        if output_hidden is None:
+            self.output_hidden = _hidden_slot(self.layers[-1]) is not None
+        else:
+            self.output_hidden = output_hidden
+
+    def _use_newton(self) -> bool:
+        if self.solver == "newton":
+            return True
+        if self.solver == "sequential":
+            return False
+        return self.training
+
+    def extra_repr(self) -> str:
+        return (
+            f"solver={self.solver!r}, effective={self._effective_solver()}, "
+            f"batch_first={self.batch_first}, output_hidden={self.output_hidden}, "
+            f"hidden_layout={self.hidden_layout!r}"
+        )
+
+    def _effective_solver(self) -> str:
+        return "newton" if self._use_newton() else "sequential"
 
     def forward(
         self, x: Tensor, h0: Tensor | Sequence[Tensor] | None = None
     ) -> Tensor | tuple[Tensor, Tensor]:
+        if not self.batch_first:
+            x = x.transpose(0, 1)
         h0s = _split_h0(h0, len(self.layers))
+        if self.hidden_layout == "pytorch":
+            h0s = [None if h is None else swap_lstm_ch(h) for h in h0s]
         h = x
         n = len(self.layers)
         self.last_stats = []
+        use_newton = self._use_newton()
         if log.isEnabledFor(logging.DEBUG):
             log.debug(
                 "para_rnn_forward",
                 extra={
                     "training": self.training,
-                    "solver": "newton" if self.training else "sequential",
+                    "solver": self._effective_solver(),
+                    "solver_flag": self.solver,
                     "num_layers": n,
                     "batch": x.shape[0],
                     "seq_len": x.shape[1],
                 },
             )
         for i, cell in enumerate(self.layers):
-            if self.training:
+            if use_newton:
                 st = NewtonStats()
                 h = newton_apply(cell, h, self.config, h0=h0s[i], stats=st)
                 self.last_stats.append(st)
@@ -77,12 +134,18 @@ class ParaRNN(nn.Module):
         slot = _hidden_slot(self.layers[-1])
         if self.output_hidden and slot is not None:
             y = h[:, :, slot, :]
+        if self.hidden_layout == "pytorch":
+            last = swap_lstm_ch(last)
+        if not self.batch_first:
+            y = y.transpose(0, 1)
         if self.return_hidden:
             return y, last
         return y
 
 
-def _build_layers(cell: nn.Module | Sequence[nn.Module], num_layers: int) -> list[nn.Module]:
+def _build_layers(
+    cell: nn.Module | Sequence[nn.Module], num_layers: int
+) -> list[nn.Module]:
     if isinstance(cell, (list, tuple)):
         if not cell:
             raise ValueError("cell list must be non-empty")
@@ -155,7 +218,19 @@ def _hidden_slot(cell: nn.Module) -> int | None:
     return getattr(cell, "hidden_slot", 1)
 
 
-def _split_h0(h0: Tensor | Sequence[Tensor] | None, n_layers: int) -> list[Tensor | None]:
+def _require_lstm_layout(layers: nn.ModuleList) -> None:
+    for cell in layers:
+        if not isinstance(cell, ParaLSTM):
+            raise TypeError(
+                "hidden_layout='pytorch' is ParaLSTM only "
+                "(nn.LSTM (h, c) vs paper (c, h)); "
+                f"got {type(cell).__name__}"
+            )
+
+
+def _split_h0(
+    h0: Tensor | Sequence[Tensor] | None, n_layers: int
+) -> list[Tensor | None]:
     if h0 is None:
         return [None] * n_layers
     if n_layers == 1:

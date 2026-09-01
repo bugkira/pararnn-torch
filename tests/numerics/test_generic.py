@@ -6,7 +6,7 @@ import torch
 from torch import Tensor, nn
 
 from pararnn import NewtonConfig, newton_apply, sequential_apply
-from pararnn.cells import ParaGRU, ParaLSTM
+from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
 from pararnn.solvers.jacobian import jacobian_autograd
 from pararnn.solvers.scan import scan_dense
 from pararnn.solvers.vjp import cell_vjp
@@ -164,6 +164,39 @@ def test_paralstm_packed_vjp_matches_autograd_vjp():
     h = torch.randn(2, 8, 2, 6, device=device)
     x = torch.randn(2, 8, 5, device=device)
     mu = torch.randn(2, 8, 2, 6, device=device)
+    gx_p, gp_p = cell_vjp(cell, h, x, mu, packed=True)
+    gx_a, gp_a = cell_vjp(cell, h, x, mu, packed=False)
+    torch.testing.assert_close(gx_p, gx_a, atol=5e-5, rtol=5e-5)
+    for a, b in zip(gp_p, gp_a):
+        if a is None and b is None:
+            continue
+        torch.testing.assert_close(a, b, atol=5e-5, rtol=5e-5)
+
+
+def test_paraslstm_diag_packed_vjp_matches_autograd_vjp():
+    torch.manual_seed(59)
+    cell = ParaSLSTM(d_in=5, d_h=7, mix="diag").to(device)
+    with torch.no_grad():
+        cell.R[0, 0] = 0.8
+        cell.R[1, 3] = -0.9
+    h = torch.randn(2, 9, 4, 7, device=device)
+    x = torch.randn(2, 9, 5, device=device)
+    mu = torch.randn(2, 9, 4, 7, device=device)
+    gx_p, gp_p = cell_vjp(cell, h, x, mu, packed=True)
+    gx_a, gp_a = cell_vjp(cell, h, x, mu, packed=False)
+    torch.testing.assert_close(gx_p, gx_a, atol=5e-5, rtol=5e-5)
+    for a, b in zip(gp_p, gp_a):
+        if a is None and b is None:
+            continue
+        torch.testing.assert_close(a, b, atol=5e-5, rtol=5e-5)
+
+
+def test_paraslstm_head_packed_vjp_falls_back_to_autograd():
+    torch.manual_seed(60)
+    cell = ParaSLSTM(d_in=5, d_h=6, mix="head", n_heads=2).to(device)
+    h = torch.randn(2, 5, 4, 6, device=device)
+    x = torch.randn(2, 5, 5, device=device)
+    mu = torch.randn(2, 5, 4, 6, device=device)
     gx_p, gp_p = cell_vjp(cell, h, x, mu, packed=True)
     gx_a, gp_a = cell_vjp(cell, h, x, mu, packed=False)
     torch.testing.assert_close(gx_p, gx_a, atol=5e-5, rtol=5e-5)

@@ -13,13 +13,19 @@ Paper (1-based)
     J_l := ∂f/∂h_prev at (h_{l-1}, x_l)     # footnote: J_SSM |_{h_{l-1}} ≡ A_l
     δh_l = J_l δh_{l-1} + (f(h_{l-1}, x_l) - h_l),  δh_0 = 0
 
-Code (0-based, batch-first)
+Code (0-based, batch-first **inside** cells/solvers/kernels)
     t = 0..T-1  corresponds to paper l = t+1
     x: (batch, time, d_in)
     GRU state h: (batch, time, d_h)
     LSTM state: (batch, time, 2, d_h) with index 0 = cell c, 1 = hidden h
-        (paper concatenates [c, h]; PyTorch nn.LSTM's hidden tuple is (h, c) — inverted)
+        (paper concatenates [c, h]; nn.LSTM's hidden tuple is (h, c) — inverted)
     sLSTM state: (batch, time, 4, d_h) = (c, n, m, h) — Beck et al. 2024, not ParaRNN.
+
+``ParaRNN`` boundary only (not kernels): ``batch_first=False`` permutes ``x``
+and the output like ``nn.LSTM``; ``h0`` stays batch-leading. ``hidden_layout=
+'pytorch'`` swaps LSTM slots 0/1 on ``h0`` and on ``return_hidden``'s last
+state via ``swap_lstm_ch``. Internal Newton/scan layout is always paper
+``[c, h]``.
 
 Scan
     Work-efficient Blelloch on 0-based time (pad to ``2^k`` with identity).
@@ -32,6 +38,20 @@ import torch
 
 LSTM_CELL = 0
 LSTM_HIDDEN = 1
+
+
+def swap_lstm_ch(state: torch.Tensor) -> torch.Tensor:
+    """Swap LSTM slots 0/1. Paper ``(c, h)`` ↔ ``nn.LSTM`` ``(h, c)``.
+
+    Kernels and VJP never see this. ``state`` is ``(..., 2, d_h)`` — ``h0``
+    or last-step, not a time major that would flip the sequence.
+    """
+    if state.ndim < 2 or state.shape[-2] != 2:
+        raise ValueError(
+            f"swap_lstm_ch expects (..., 2, d_h), got {tuple(state.shape)}"
+        )
+    return state.flip(-2)
+
 
 # sLSTM (Beck et al. 2024): four-slot state, not Apple's CIFG pair.
 SLSTM_CELL = 0

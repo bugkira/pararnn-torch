@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
@@ -20,6 +21,25 @@ def test_gru_jacobian_matches_autograd():
             expect = torch.zeros_like(g)
             expect[i] = j_diag[b, i]
             torch.testing.assert_close(g, expect, atol=1e-5, rtol=1e-5)
+
+
+def test_gru_step_wx_without_x():
+    torch.manual_seed(2)
+    cell = ParaGRU(d_in=5, d_h=7)
+    h_prev = torch.randn(3, 7)
+    x = torch.randn(3, 5)
+    wx = cell.W_x(x)
+    torch.testing.assert_close(cell.step(h_prev, x), cell.step(h_prev, wx=wx))
+    h_new, j = cell.step_with_jacobian(h_prev, wx=wx)
+    h_ref, j_ref = cell.step_with_jacobian(h_prev, x)
+    torch.testing.assert_close(h_new, h_ref)
+    torch.testing.assert_close(j, j_ref)
+
+
+def test_gru_step_needs_x_or_wx():
+    cell = ParaGRU(d_in=3, d_h=4)
+    with pytest.raises(ValueError, match="x or wx"):
+        cell.step(torch.zeros(2, 4))
 
 
 def test_lstm_jacobian_matches_autograd():

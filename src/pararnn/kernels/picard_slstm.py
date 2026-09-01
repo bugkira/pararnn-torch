@@ -7,6 +7,9 @@ scans (tile + chunk), not a serial ``chunk_len`` loop.
 
 Newton still needs the 4x4 ``J`` of ``(c, n, m, h)`` because ``R h``
 couples the next gates. This kernel is the Picard *guess*.
+
+After the max-plus apply, phase-m temps ``a_loc``/``b_loc``/``agg_*``/
+``incl_m`` are dead and alias the ``n``/``c`` scan lanes. ``m`` stays live.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ import triton.language as tl
 from torch import Tensor
 from triton.language.extra.cuda.libdevice import tanh as _nv_tanh
 
-from pararnn.kernels.precision import check_cuda_real, load_acc, store_acc
+from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
 from pararnn.layout import (
     SLSTM_CELL,
     SLSTM_HIDDEN,
@@ -49,13 +52,12 @@ def _compose_diag2(j_l, n_l, c_l, j_r, n_r, c_r):
 
 
 @triton.jit
-def _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, gate, mask, sb, st, sd, FP16: tl.constexpr):
+def _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, gate, mask, sb, st, sd):
     idx = offs_d + gate * d_h
     return load_acc(
         pre_ptr + pid_b * sb + offs_t[:, None] * st + idx[None, :] * sd,
         mask,
         0.0,
-        FP16,
     )
 
 
@@ -75,7 +77,6 @@ def _m_local_kernel(
     stride_bab, stride_bac, stride_bad,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    FP16: tl.constexpr,
     NEG_INF: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
@@ -86,26 +87,24 @@ def _m_local_kernel(
     offs_t = t0 + tl.arange(0, BLOCK_T)
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
-    z_i = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 0, mask, stride_pb, stride_pt, stride_pd, FP16)
-    z_f = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 1, mask, stride_pb, stride_pt, stride_pd, FP16)
+    z_i = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 0, mask, stride_pb, stride_pt, stride_pd)
+    z_f = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 1, mask, stride_pb, stride_pt, stride_pd)
     a = tl.where(mask, z_f, 0.0)
     b = tl.where(mask, z_i, NEG_INF)
     a_s, b_s = tl.associative_scan((a, b), 0, _compose_maxplus)
-    store_acc(a_ptr + pid_b * stride_ab + offs_t[:, None] * stride_at + offs_d[None, :] * stride_ad, a_s, mask, FP16)
-    store_acc(b_ptr + pid_b * stride_bb + offs_t[:, None] * stride_bt + offs_d[None, :] * stride_bd, b_s, mask, FP16)
+    store_acc(a_ptr + pid_b * stride_ab + offs_t[:, None] * stride_at + offs_d[None, :] * stride_ad, a_s, mask)
+    store_acc(b_ptr + pid_b * stride_bb + offs_t[:, None] * stride_bt + offs_d[None, :] * stride_bd, b_s, mask)
     last = (tl.arange(0, BLOCK_T) == (BLOCK_T - 1))[:, None]
     dmask = offs_d < d_h
     store_acc(
         agg_a_ptr + pid_b * stride_aab + pid_c * stride_aac + offs_d * stride_aad,
         tl.sum(tl.where(last, a_s, 0.0), axis=0),
         dmask,
-        FP16,
     )
     store_acc(
         agg_b_ptr + pid_b * stride_bab + pid_c * stride_bac + offs_d * stride_bad,
         tl.sum(tl.where(last, b_s, 0.0), axis=0),
         dmask,
-        FP16,
     )
 
 
@@ -123,7 +122,6 @@ def _m_chunk_kernel(
     stride_ib, stride_ic, stride_id,
     CHUNK_PAD: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    FP16: tl.constexpr,
     NEG_INF: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
@@ -136,22 +134,19 @@ def _m_chunk_kernel(
         agg_a_ptr + pid_b * stride_aab + offs_c[:, None] * stride_aac + offs_d[None, :] * stride_aad,
         mask,
         0.0,
-        FP16,
     )
     b = load_acc(
         agg_b_ptr + pid_b * stride_bab + offs_c[:, None] * stride_bac + offs_d[None, :] * stride_bad,
         mask,
         NEG_INF,
-        FP16,
     )
     a_s, b_s = tl.associative_scan((a, b), 0, _compose_maxplus)
-    m0 = load_acc(m0_ptr + pid_b * stride_m0b + offs_d * stride_m0d, dmask, 0.0, FP16)
+    m0 = load_acc(m0_ptr + pid_b * stride_m0b + offs_d * stride_m0d, dmask, 0.0)
     m_end = tl.maximum(a_s + m0[None, :], b_s)
     store_acc(
         incl_m_ptr + pid_b * stride_ib + offs_c[:, None] * stride_ic + offs_d[None, :] * stride_id,
         m_end,
         mask,
-        FP16,
     )
 
 
@@ -171,7 +166,7 @@ def _m_apply_kernel(
     stride_mb, stride_mt, stride_md,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    FP16: tl.constexpr,
+    NEG_INF: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -186,21 +181,18 @@ def _m_apply_kernel(
         a_ptr + pid_b * stride_ab + offs_t[:, None] * stride_at + offs_d[None, :] * stride_ad,
         mask,
         0.0,
-        FP16,
     )
     b = load_acc(
         b_ptr + pid_b * stride_bb + offs_t[:, None] * stride_bt + offs_d[None, :] * stride_bd,
         mask,
-        0.0,
-        FP16,
+        NEG_INF,
     )
-    m0 = load_acc(m0_ptr + pid_b * stride_m0b + offs_d * stride_m0d, dmask, 0.0, FP16)
+    m0 = load_acc(m0_ptr + pid_b * stride_m0b + offs_d * stride_m0d, dmask, 0.0)
     idx_c = tl.where(pid_c > 0, pid_c - 1, 0)
     prev = load_acc(
         incl_m_ptr + pid_b * stride_ib + idx_c * stride_ic + offs_d * stride_id,
         dmask,
         0.0,
-        FP16,
     )
     carry = tl.where(pid_c > 0, prev, m0)
     m = tl.maximum(a + carry[None, :], b)
@@ -208,7 +200,6 @@ def _m_apply_kernel(
         m_ptr + pid_b * stride_mb + offs_t[:, None] * stride_mt + offs_d[None, :] * stride_md,
         m,
         mask,
-        FP16,
     )
 
 
@@ -239,7 +230,6 @@ def _nc_local_kernel(
     SLOT_M: tl.constexpr,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    FP16: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -250,14 +240,13 @@ def _nc_local_kernel(
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
     dmask = offs_d < d_h
-    z_i = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 0, mask, stride_pb, stride_pt, stride_pd, FP16)
-    z_f = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 1, mask, stride_pb, stride_pt, stride_pd, FP16)
-    z_z = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 2, mask, stride_pb, stride_pt, stride_pd, FP16)
+    z_i = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 0, mask, stride_pb, stride_pt, stride_pd)
+    z_f = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 1, mask, stride_pb, stride_pt, stride_pd)
+    z_z = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 2, mask, stride_pb, stride_pt, stride_pd)
     m = load_acc(
         m_ptr + pid_b * stride_mb + offs_t[:, None] * stride_mt + offs_d[None, :] * stride_md,
         mask,
         0.0,
-        FP16,
     )
     offs_tm1 = offs_t - 1
     mask_prev = (offs_tm1[:, None] >= 0) & (offs_tm1[:, None] < time) & (offs_d[None, :] < d_h)
@@ -265,25 +254,21 @@ def _nc_local_kernel(
         m_ptr + pid_b * stride_mb + offs_tm1[:, None] * stride_mt + offs_d[None, :] * stride_md,
         mask_prev,
         0.0,
-        FP16,
     )
     m0 = load_acc(
         h0_ptr + pid_b * stride_h0b + SLOT_M * stride_h0s + offs_d * stride_h0d,
         dmask,
         0.0,
-        FP16,
     )
     n0 = load_acc(
         h0_ptr + pid_b * stride_h0b + SLOT_N * stride_h0s + offs_d * stride_h0d,
         dmask,
         0.0,
-        FP16,
     )
     c0 = load_acc(
         h0_ptr + pid_b * stride_h0b + SLOT_C * stride_h0s + offs_d * stride_h0d,
         dmask,
         0.0,
-        FP16,
     )
     is_t0 = (offs_t == 0)[:, None]
     m_prev = tl.where(is_t0, m0[None, :], m_prev)
@@ -298,27 +283,24 @@ def _nc_local_kernel(
     res_n = tl.where(mask, res_n, 0.0)
     res_c = tl.where(mask, res_c, 0.0)
     j_s, n_s, c_s = tl.associative_scan((j, res_n, res_c), 0, _compose_diag2)
-    store_acc(j_ptr + pid_b * stride_jb + offs_t[:, None] * stride_jt + offs_d[None, :] * stride_jd, j_s, mask, FP16)
-    store_acc(n_ptr + pid_b * stride_nb + offs_t[:, None] * stride_nt + offs_d[None, :] * stride_nd, n_s, mask, FP16)
-    store_acc(c_ptr + pid_b * stride_cb + offs_t[:, None] * stride_ct + offs_d[None, :] * stride_cd, c_s, mask, FP16)
+    store_acc(j_ptr + pid_b * stride_jb + offs_t[:, None] * stride_jt + offs_d[None, :] * stride_jd, j_s, mask)
+    store_acc(n_ptr + pid_b * stride_nb + offs_t[:, None] * stride_nt + offs_d[None, :] * stride_nd, n_s, mask)
+    store_acc(c_ptr + pid_b * stride_cb + offs_t[:, None] * stride_ct + offs_d[None, :] * stride_cd, c_s, mask)
     last = (tl.arange(0, BLOCK_T) == (BLOCK_T - 1))[:, None]
     store_acc(
         agg_j_ptr + pid_b * stride_ajb + pid_c * stride_ajc + offs_d * stride_ajd,
         tl.sum(tl.where(last, j_s, 0.0), axis=0),
         dmask,
-        FP16,
     )
     store_acc(
         agg_n_ptr + pid_b * stride_anb + pid_c * stride_anc + offs_d * stride_and,
         tl.sum(tl.where(last, n_s, 0.0), axis=0),
         dmask,
-        FP16,
     )
     store_acc(
         agg_c_ptr + pid_b * stride_acb + pid_c * stride_acc + offs_d * stride_acd,
         tl.sum(tl.where(last, c_s, 0.0), axis=0),
         dmask,
-        FP16,
     )
 
 
@@ -338,7 +320,6 @@ def _nc_chunk_kernel(
     stride_icb, stride_icc, stride_icd,
     CHUNK_PAD: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    FP16: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     d0 = tl.program_id(1) * BLOCK_D
@@ -349,32 +330,27 @@ def _nc_chunk_kernel(
         agg_j_ptr + pid_b * stride_ajb + offs_c[:, None] * stride_ajc + offs_d[None, :] * stride_ajd,
         mask,
         1.0,
-        FP16,
     )
     n = load_acc(
         agg_n_ptr + pid_b * stride_anb + offs_c[:, None] * stride_anc + offs_d[None, :] * stride_and,
         mask,
         0.0,
-        FP16,
     )
     c = load_acc(
         agg_c_ptr + pid_b * stride_acb + offs_c[:, None] * stride_acc + offs_d[None, :] * stride_acd,
         mask,
         0.0,
-        FP16,
     )
     _, n_s, c_s = tl.associative_scan((j, n, c), 0, _compose_diag2)
     store_acc(
         incl_n_ptr + pid_b * stride_inb + offs_c[:, None] * stride_inc + offs_d[None, :] * stride_ind,
         n_s,
         mask,
-        FP16,
     )
     store_acc(
         incl_c_ptr + pid_b * stride_icb + offs_c[:, None] * stride_icc + offs_d[None, :] * stride_icd,
         c_s,
         mask,
-        FP16,
     )
 
 
@@ -402,7 +378,6 @@ def _nc_apply_h_kernel(
     SLOT_H: tl.constexpr,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    FP16: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -417,56 +392,48 @@ def _nc_apply_h_kernel(
         j_ptr + pid_b * stride_jb + offs_t[:, None] * stride_jt + offs_d[None, :] * stride_jd,
         mask,
         1.0,
-        FP16,
     )
     n_loc = load_acc(
         n_loc_ptr + pid_b * stride_nb + offs_t[:, None] * stride_nt + offs_d[None, :] * stride_nd,
         mask,
         0.0,
-        FP16,
     )
     c_loc = load_acc(
         c_loc_ptr + pid_b * stride_cb + offs_t[:, None] * stride_ct + offs_d[None, :] * stride_cd,
         mask,
         0.0,
-        FP16,
     )
     idx_c = tl.where(pid_c > 0, pid_c - 1, 0)
     cn = load_acc(
         incl_n_ptr + pid_b * stride_inb + idx_c * stride_inc + offs_d * stride_ind,
         dmask,
         0.0,
-        FP16,
     )
     cc = load_acc(
         incl_c_ptr + pid_b * stride_icb + idx_c * stride_icc + offs_d * stride_icd,
         dmask,
         0.0,
-        FP16,
     )
     cn = tl.where(pid_c > 0, cn, 0.0)
     cc = tl.where(pid_c > 0, cc, 0.0)
     n = j * cn[None, :] + n_loc
     c = j * cc[None, :] + c_loc
-    z_o = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 3, mask, stride_pb, stride_pt, stride_pd, FP16)
+    z_o = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 3, mask, stride_pb, stride_pt, stride_pd)
     h = tl.sigmoid(z_o) * (c / (n + eps))
     store_acc(
         out_ptr + pid_b * stride_ob + offs_t[:, None] * stride_ot + SLOT_C * stride_os + offs_d[None, :] * stride_od,
         c,
         mask,
-        FP16,
     )
     store_acc(
         out_ptr + pid_b * stride_ob + offs_t[:, None] * stride_ot + SLOT_N * stride_os + offs_d[None, :] * stride_od,
         n,
         mask,
-        FP16,
     )
     store_acc(
         out_ptr + pid_b * stride_ob + offs_t[:, None] * stride_ot + SLOT_H * stride_os + offs_d[None, :] * stride_od,
         h,
         mask,
-        FP16,
     )
 
 
@@ -490,7 +457,7 @@ def frozen_gate_scan_triton(
             raise ValueError(f"h0 shape {tuple(h0.shape)} != {(batch, SLSTM_SLOTS, d_h)}")
         if h0.dtype != pre.dtype:
             h0 = h0.to(dtype=pre.dtype)
-    fp16 = check_cuda_real(pre, h0, name="frozen_gate_scan_triton")
+    validate_cuda_tensors(pre, h0, name="frozen_gate_scan_triton")
     n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
     if n_chunks > _CHUNK_PAD:
         raise ValueError(
@@ -524,7 +491,6 @@ def frozen_gate_scan_triton(
         *agg_b.stride(),
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
-        FP16=fp16,
         NEG_INF=_NEG_INF,
     )
     if n_chunks == 1:
@@ -544,7 +510,6 @@ def frozen_gate_scan_triton(
             *incl_m.stride(),
             CHUNK_PAD=_CHUNK_PAD,
             BLOCK_D=_BLOCK_D,
-            FP16=fp16,
             NEG_INF=_NEG_INF,
         )
     _m_apply_kernel[grid](
@@ -563,14 +528,16 @@ def frozen_gate_scan_triton(
         *m.stride(),
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
-        FP16=fp16,
+        NEG_INF=_NEG_INF,
     )
 
-    j_loc = pre.new_empty(batch, time, d_h)
-    n_loc = pre.new_empty(batch, time, d_h)
+    # Phase-m temps are dead after apply. Reuse as nc scan lanes (not ``m``:
+    # that is the stabilizer and is copied into ``out``).
+    j_loc = a_loc
+    n_loc = b_loc
     c_loc = pre.new_empty(batch, time, d_h)
-    agg_j = pre.new_empty(batch, n_chunks, d_h)
-    agg_n = pre.new_empty(batch, n_chunks, d_h)
+    agg_j = agg_a
+    agg_n = agg_b
     agg_c = pre.new_empty(batch, n_chunks, d_h)
     _nc_local_kernel[grid](
         pre,
@@ -598,11 +565,10 @@ def frozen_gate_scan_triton(
         SLOT_M=SLSTM_STABILIZER,
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
-        FP16=fp16,
     )
     out = pre.new_empty(batch, time, SLSTM_SLOTS, d_h)
     out[:, :, SLSTM_STABILIZER, :] = m
-    incl_n = n_loc.new_empty(batch, n_chunks, d_h)
+    incl_n = incl_m
     incl_c = c_loc.new_empty(batch, n_chunks, d_h)
     if n_chunks > 1:
         _nc_chunk_kernel[grid_d](
@@ -620,7 +586,6 @@ def frozen_gate_scan_triton(
             *incl_c.stride(),
             CHUNK_PAD=_CHUNK_PAD,
             BLOCK_D=_BLOCK_D,
-            FP16=fp16,
         )
     else:
         incl_n.zero_()
@@ -648,7 +613,6 @@ def frozen_gate_scan_triton(
         SLOT_H=SLSTM_HIDDEN,
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
-        FP16=fp16,
     )
     log.debug(
         "frozen_gate_scan_triton",

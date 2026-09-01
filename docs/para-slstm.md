@@ -12,7 +12,8 @@ normalizer `n`, mixing `R h`). FlashRNN keeps sLSTM sequential. ParaRNN fused
 GRU/LSTM does not implement this cell.
 
 This repo's earlier literature note had sLSTM/mLSTM swapped. The code
-follows Beck et al.
+follows Beck et al. We do not ship mLSTM (xLSTM already scans it). What
+they could take is this Newton sLSTM: [`xlstm.md`](xlstm.md).
 
 ## Cell
 
@@ -21,7 +22,10 @@ follows Beck et al.
 - `mix='diag'`: `R` is `(4, d_h)`, channelwise. Jacobian is 4×4 per channel
   (`cell.jac_structure='block4'`). Scan is `scan_block4` (eager or Triton).
   `scan_backend='fused'` / `'auto'` on CUDA runs cell + analytic J + 4×4
-  scan in one Triton kernel. Head/dense are not fused (not 4×4 SRAM).
+  scan in one Triton kernel. Eq. 2.6 packs the cell VJP (elementwise + one
+  `W_x` GEMM; Triton on CUDA), same split as ParaGRU/LSTM. Head/dense are
+  not fused and keep Autograd on `step`. Speed, not quality: Dyck 50-step
+  CE matches Autograd VJP; bwd is cheaper (`scripts/bench_packed_vjp.py`).
 - `mix='head'`: `R` is `(4, n_heads, d_head, d_head)`. Dense mix inside a head,
   zeros across heads (Beck / xLSTM). Jacobian is `4 d_head × 4 d_head` per
   head; scan folds heads into the batch of `scan_dense`. `n_heads` must
@@ -238,6 +242,22 @@ fresh cell per T. Max |par − seq|:
 Fused P=3 tracks eager: T=256 ~3e-5, T=1024 ~1e-4, T=2048 **3.9e-4**
 (eager 4.8e-4). Fallback: raise P, not K. Cap 3 at this width.
 
+**P × K hybrid (2026-09-02).** Same fused path, B=8 \(d_h=256\) \(x_scale=1\),
+seed 0, smoke 10/50. Library is auto P from T + K=3. Agree 1e-3.
+
+| T | P=3 K=3 (library) | P=3 K=1 | P=5 K=1 | S4D-Real + K=1 |
+|---|---|---|---|---|
+| 256 | 3.5e-5 / 5.20 ms | **3.0e-5 / 3.82 ms (1.36×)** | 2.5e-5 / 5.26 ms | — |
+| 1024 | 1.6e-4 / 12.5 ms | 1.1e-3 (miss) / 7.19 ms | **1.5e-4 / 9.62 ms (1.30×)** | 52 (diverge) |
+| 2048 | 3.8e-4 / 24.2 ms | 0.15 (miss) / 15.0 ms | **4.1e-4 / 20.1 ms (1.20×)** | \(1.5\times10^{2}\) (diverge) |
+
+K=1 needs **more Picard** (P=5 at T=2048), not a linear SSM. That pair
+**is** faster: 24.2 → 20.1 ms fused fwd, same snap. Parked — library still
+auto-P + K=3 (one seed, init-scale; Dyck train T=64 not faster; GRU/LSTM
+stay App. A K=3). Untrained S4D-Real (Mamba Δ, A_n=n+1) + frozen-gate
+diverges. Do not add `mamba-ssm`. Script: `scripts/bench_hybrid_pk.py`.
+MLflow `newton-slstm-bench` / `hybrid-picard-k-then-ssm`.
+
 Once P=3 is in the basin, **native Newton is the corrector**. Same
 successive-`randn` probe as the log table below, K=3, P=3:
 
@@ -288,10 +308,162 @@ of a **linear** span. Prefer `picard_iters` when the solve must stay
 \(O(\log T)\). Default stays `coords="native"`, `chunk_len=None`. `picard_iters=None`
 auto-selects P from T (library default).
 
+## Quality (Z2 tagging)
+
+Not solver ms. Stacked `xLSTMBlock` `mix='diag'` (pre-norm + residual, 2
+layers, \(d_h=32\)) on running XOR. Merrill et al. 2024 §5 is
+**token-tagging** (label at \(t\) = prefix product). Group here is Z2, not
+A5. Sequential arm is the **same** cell (`backend="eager"`). SSM is ours:
+S4D-Real \(A=n+1\), Gu & Dao \(\Delta\in[10^{-3},10^{-1}]\), `scan_diag`
+eager (Triton scan has no Autograd). Not `mamba-ssm`. Not FlashRNN.
+Clip off (App. C “except parity”). 2080 Ti. MLflow `state-tracking`.
+
+`configs/train/parity.yaml` (T=32, 300 steps, App. C lr \(5\times10^{-4}\),
+Shallue fallback \(10^{-3}\) then \(10^{-4}\)): **all three arms stay at
+chance**. eval_tok ≈ 0.52 is the first-token copy (\(0.5 + 0.5/T\)), last
+token not split in that log. Budget, not a mix bug. Run
+`parity-xlstm-vs-ssm`.
+
+`configs/train/parity_t16.yaml` (T=16 train, eval also T=32, 2000 steps,
+lr \(10^{-3}\) from that grid). 2026-09-02, seed 0. Run `parity-t16-2k`.
+
+| arm | params | T=16 last / exact | T=32 last / exact | CE 0 → 2000 |
+|---|---|---|---|---|
+| Newton `mix='diag'` | 8962 | **1.00 / 1.00** | **1.00 / 1.00** | 0.704 → 0.0008 |
+| sequential same cell | 8962 | **1.00 / 1.00** | **1.00 / 1.00** | same CE as Newton |
+| S4D-Real SSM | 6722 | 0.56 / 0.27 | 0.53 / 0.00 | 0.848 → 0.229 |
+
+Newton last-token 1.0 at T=16 by **step 399**, held-out T=32 by **449**.
+Eager CE matches Newton at every logged step (solver does not change the
+cell). SSM learns t=0 (copy) and overall tok 0.88 at T=16 because early
+positions are short prefixes; **last token stays chance**, T=32 exact is
+0. Residual on logged Newton batches \(\sim10^{-6}\)–\(10^{-5}\). Picard
+adapt still fires on some post-solution train batches (~119 `picard_adapt`
+in 2000 steps); no `NewtonDivergenceError`. Do not raise K.
+
+Not Merrill L=100, not A5, not a compute-matched Mamba-2. Qualitatively
+the TC⁰ picture: nonlinear diag sLSTM tracks the bit; this linear SSM
+does not.
+
 ## Not yet
 
-Packed VJP, fused head mix, LM train. Mamba-2 predictor is not this Picard
-(no extra SSM weights). FlashRNN on this 2080 Ti is `triton_fused` 8×32
-(not diag mix): T=2048 **5.8 ms** vs fused auto-P **23.6 ms** (4× slower).
+Fused head mix, LM train. Head-mix **eager** train smoke is
+in (`dyck_vs_flashrnn_head.yaml`, K=4 P=3). Mamba-2 predictor is not this
+Picard (no extra SSM weights). FlashRNN on this 2080 Ti is `triton_fused`
+8×32 (not diag mix): T=2048 **5.8 ms** vs fused auto-P **23.6 ms** (4× slower).
 Longer T does **not** cross: both stay linear; fused/FR ≈ **0.19×** out
 to T=16384. `cuda_fused` needs `nvcc` + CC 8.0. See `docs/bottlenecks.md`.
+
+Train-time (fwd+bwd+AdamW), not the forward bench: Dyck-1 in
+[`examples/slstm_vs_flashrnn.py`](../examples/slstm_vs_flashrnn.py).
+Two configs:
+
+- [`configs/train/dyck_vs_flashrnn.yaml`](../configs/train/dyck_vs_flashrnn.yaml):
+  `mix='diag'` vs FlashRNN 1×32. **Not a matched cell.** 2080 Ti, B=32,
+  \(T=64\), \(d_h=32\), 50 AdamW, lr \(3\times10^{-3}\), K=3 fused.
+- [`configs/train/dyck_vs_flashrnn_head.yaml`](../configs/train/dyck_vs_flashrnn_head.yaml):
+  `mix='head'`, `n_heads=1`, \(d_h=32\), **K=4** (head table above; not
+  GRU K=3). Same FlashRNN arm. Scan is eager/triton `scan_dense` of
+  \(128\times128\) J, **not** fused. Auto P=1 at \(T\le 64\) **failed**
+  this smoke (step 20, max|F|=1.9). Config sets `picard_iters: 3`.
+  Fallback if that still residual_fail: P=5, then K=5.
+
+CUDA events after 5 warmup steps. MLflow `slstm-train-vs-flashrnn`.
+
+Diag run (mixing still does not match). Replay **2026-09-01** after
+`picard_adapt` (same yaml/seed/2080 Ti). MLflow `dyck1-newton-vs-flashrnn`.
+
+| arm | CE 0→50 | min step ms | mean step ms | peak MiB | params |
+|---|---|---|---|---|---|
+| Newton fused diag | 0.702 → 0.674 | 10.3 | 14.9 | 38 | 4482 |
+| FlashRNN `triton_fused` 1×32 | 0.692 → 0.662 | **3.64** | 4.87 | 24 | 8578 |
+
+FlashRNN is **2.8×** faster per train step here (ratio newton/FR min).
+Both CE drops. Do not read the loss gap as "their cell is better": R is
+dense inside the head (more params) and `n` uses `max(n,1)`, not our
+`eps`. First-step Triton compile is seconds (Newton **2.3 s**, FlashRNN
+**0.11 s** this run; cache-dependent). Not SlimPajama.
+
+**Packed VJP is speed, not CE.** 2080 Ti, 2026-09-02,
+`scripts/bench_packed_vjp.py` (smoke 10/50). Same cell and reverse scan;
+only `cell_vjp(packed=)` vs Autograd on `step`. Isolated VJP max
+\(\lvert\Delta x\rvert\sim 2\times10^{-6}\). Dyck 50-step CE is the same
+curve (max \(\lvert\Delta\mathrm{CE}\rvert=1.2\times10^{-7}\)).
+
+| | packed | Autograd | Autograd / packed |
+|---|---|---|---|
+| Isolated VJP Dyck (B=32 T=64 d_h=32) min ms | 0.75 | 2.37 | **3.2×** |
+| Isolated VJP (B=8 T=2048 d_h=256) min ms | 3.79 | 8.71 | **2.3×** |
+| Newton bwd Dyck min ms | 4.04 | 8.27 | **2.0×** |
+| Newton bwd T=2048 min ms | 21.6 | 26.8 | **1.24×** |
+| Dyck train bwd+AdamW mean ms (skip 5 warmup) | 8.1 | 10.7 | **1.32×** |
+| Dyck CE 0→50 | 0.7018→0.6754 | 0.7018→0.6754 | — |
+
+Forward is unchanged (Dyck **2.34 vs 2.33 ms**; T=2048 **24.11 vs 24.12 ms**).
+The ~11 ms bwd in the 2026-09-01 jitter replay is Autograd on `step`.
+
+**Step 5 is the old P=1 miss.** Log: `newton_residual_high` then
+`picard_adapt`; reported residual **7.6e-6** (was 0.557 without retry).
+One adapt in 50 steps; no `NewtonDivergenceError`. Step 5 wall **17.8 ms**
+(two fused solves: P=1 miss + P=3 snap), not a dt mystery. Other steps stay
+\(\max|F|\sim4\times10^{-6}\).
+
+Head-mix train (same script, `dyck_vs_flashrnn_head.yaml`). 2080 Ti,
+B=32, \(T=64\), \(d_h=32\), **1 head**, K=4, **P=3** (P=1 residual_fail
+at step 20). Scan is `scan_dense` of \(128\times128\), not fused.
+FlashRNN arm unchanged (`triton_fused` 1×32). Params now match (~8.5k).
+
+| arm | CE 0→50 | min step ms | mean step ms | peak MiB | params |
+|---|---|---|---|---|---|
+| Newton head K=4 P=3 | 0.712 → 0.670 | 34.5 | 54.6 | 600 | 8450 |
+| FlashRNN `triton_fused` 1×32 | 0.692 → 0.662 | **4.22** | 5.53 | 24 | 8578 |
+
+FlashRNN is **8.2×** faster per train step (min). Mixing is the same
+class as theirs; the gap is the **solver** (dense Newton scan vs one
+sequential kernel), not missing \(R\). First Newton step ~2.2 s (compile
++ `scan_dense`). Do not copy these ms as fused-head. MLflow run
+`dyck1-head-vs-flashrnn`.
+
+## Sequence parallel vs FlashRNN (not DDP)
+
+The claim “FlashRNN cannot train on many GPUs” is **false** for batch
+DDP. The actual gap is the *time* span of the recurrence: Newton scan is
+an associative monoid (two-tile carry); FlashRNN’s kernel is a chain.
+Note: [`docs/tex/seq-parallel-pararnn.tex`](tex/seq-parallel-pararnn.tex).
+One-GPU stream split: [`docs/seq-parallel-report.md`](seq-parallel-report.md).
+
+### Train jitter (replay, same seed)
+
+The original log mixed two different things.
+
+**Residual spike at step 5** (`max|F|=0.557`) is a real P=1 miss, not
+fused vs eager and not a slow kernel. Replay
+(`scripts/diag_newton_train_jitter.py`): fused and eager auto-P both
+land at 0.557 and disagree with sequential (~0.59). **P=3 fused snaps**
+(`7.6×10^{-6}`, vs seq \(2×10^{-5}\)). `|R|` was 0.25 (clip is 0.5);
+Dyck depth 19 is not an outlier. Auto P is calibrated on **init-scale**
+draws at \(d_h=256\) (table above). After a few Adam steps the cell
+leaves that basin on some batches. `residual_fail=1.0` does not fire;
+the CE/eq. 2.6 step still runs on a bad root, then the next batch snaps
+again. Next-token uses \(T=63\) (`tokens[:, :-1]`), still P=1 (`T≤64`).
+Library now **retries Picard** on auto-P when \(\max|F|>10^{-3}\)
+(`NewtonConfig.picard_adapt`, rungs \{1,3,5\}). Explicit `picard_iters`
+does not. Not Eisenstat–Walker; see [`next.md`](next.md). `residual_fail=1.0`
+still the hard cap at P=5. Fallback remains: raise P, not K. Library logs
+`newton_residual_high` above \(10^{-3}\) and `picard_adapt` on a retry.
+
+**Replay of the train smoke** (`dyck_vs_flashrnn.yaml`, seed 0, 2080 Ti,
+2026-09-01): step 5 still *starts* as a P=1 miss (`newton_residual_high`)
+then `picard_adapt` → residual **7.6e-6**. One retry in 50 steps. CE
+0.702→0.674. The silent-bad-root path is gone on this seed.
+
+**dt spikes (~20 ms vs ~16 ms median) are not that event.** Split
+CUDA events: steady fwd ~4.5 ms, bwd ~11 ms (Autograd cell VJP; packed
+VJP is ~8 ms mean on the same yaml, table above). Step 5 with the bad
+residual was **12 ms total** (fwd 4.3, bwd 8.0). Slow steps in the
+replay (13–14, 35–36, 41) all had residual \(4×10^{-6}\); the extra
+time was almost all **backward**, and they do not line up with the
+first-run steps 11/29/47. Many fused launches + eq. 2.6 VJP + fail-loud
+`cell.step` make the CUDA-event span sensitive to allocator/clock
+bubbles. FlashRNN is one sequential kernel, so its CV is lower. Do not
+treat 3–4 ms jitter on a 16 ms many-kernel step as Newton divergence.

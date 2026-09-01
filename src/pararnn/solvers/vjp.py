@@ -3,9 +3,10 @@
 The reverse scan already applied ``J^T``. This is ``∂L/∂(x, θ)`` from
 ``μ = ∇_H L`` through one batched ``f``, not autograd through Newton.
 
-ParaGRU / ParaLSTM: closed-form elementwise VJP + one ``W_x`` GEMM (same split
-as the fused forward). On CUDA the elementwise part is a Triton kernel.
-Custom cells use Autograd on ``step`` — that is the generic path.
+ParaGRU / ParaLSTM / ParaSLSTM ``mix='diag'``: closed-form elementwise VJP +
+one ``W_x`` GEMM (same split as the fused forward). On CUDA the elementwise
+part is a Triton kernel. Head/dense sLSTM and custom cells use Autograd on
+``step`` — that is the generic path.
 """
 
 from __future__ import annotations
@@ -15,7 +16,15 @@ from torch import Tensor, nn
 
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
-from pararnn.layout import LSTM_CELL, LSTM_HIDDEN
+from pararnn.cells.para_slstm import ParaSLSTM
+from pararnn.layout import (
+    LSTM_CELL,
+    LSTM_HIDDEN,
+    SLSTM_CELL,
+    SLSTM_HIDDEN,
+    SLSTM_NORMALIZER,
+    SLSTM_STABILIZER,
+)
 
 
 def cell_vjp(
@@ -31,7 +40,16 @@ def cell_vjp(
         return _gru_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaLSTM):
         return _lstm_vjp(cell, h_prev, x, mu)
+    if packed and isinstance(cell, ParaSLSTM) and cell.mix == "diag":
+        return _slstm_vjp(cell, h_prev, x, mu)
     return _autograd_vjp(cell, h_prev, x, mu)
+
+
+def uses_packed_vjp(cell: nn.Module) -> bool:
+    """True when eq. 2.6 can skip Autograd on ``step``."""
+    if isinstance(cell, (ParaGRU, ParaLSTM)):
+        return True
+    return isinstance(cell, ParaSLSTM) and cell.mix == "diag"
 
 
 def _autograd_vjp(
@@ -211,3 +229,85 @@ def _lstm_elementwise(
         (d_fpre * c_prev).sum(dim=dims),
         (d_opre * c).sum(dim=dims),
     )
+
+
+def _slstm_vjp(
+    cell: ParaSLSTM, state_prev: Tensor, x: Tensor, mu: Tensor
+) -> tuple[Tensor, tuple[Tensor | None, ...]]:
+    r = cell.clipped_r()
+    wx = cell.W_x(x)
+    if mu.is_cuda:
+        from pararnn.kernels.vjp_slstm import slstm_recurrence_vjp
+
+        g_wx, g_r = slstm_recurrence_vjp(state_prev, wx, r, mu, cell.eps)
+    else:
+        g_wx, g_r = _slstm_elementwise(state_prev, wx, r, mu, cell.eps)
+    g_r = g_r * _clip_mask(cell.R, cell.max_recurrent_norm)
+    grad_x, grad_w, grad_b = _linear_vjp(cell.W_x, x, g_wx)
+    return _align_grads(
+        cell,
+        grad_x,
+        {
+            "R": g_r,
+            "W_x.weight": grad_w,
+            "W_x.bias": grad_b,
+        },
+    )
+
+
+def _slstm_elementwise(
+    state_prev: Tensor,
+    wx: Tensor,
+    r: Tensor,
+    mu: Tensor,
+    eps: float,
+) -> tuple[Tensor, Tensor]:
+    c_prev = state_prev[..., SLSTM_CELL, :]
+    n_prev = state_prev[..., SLSTM_NORMALIZER, :]
+    m_prev = state_prev[..., SLSTM_STABILIZER, :]
+    h_prev = state_prev[..., SLSTM_HIDDEN, :]
+    mu_c = mu[..., SLSTM_CELL, :]
+    mu_n = mu[..., SLSTM_NORMALIZER, :]
+    mu_m = mu[..., SLSTM_STABILIZER, :]
+    mu_h = mu[..., SLSTM_HIDDEN, :]
+    wx_i, wx_f, wx_z, wx_o = wx.chunk(4, dim=-1)
+    r_i, r_f, r_z, r_o = r.unbind(0)
+    z_i = wx_i + r_i * h_prev
+    z_f = wx_f + r_f * h_prev
+    z_z = wx_z + r_z * h_prev
+    z_o = wx_o + r_o * h_prev
+    left = z_f + m_prev
+    m_new = torch.maximum(left, z_i)
+    gt = (left > z_i).to(dtype=left.dtype)
+    eq = (left == z_i).to(dtype=left.dtype)
+    alpha = gt + 0.5 * eq
+    i_t = torch.exp(z_i - m_new)
+    f_t = torch.exp(z_f + m_prev - m_new)
+    z = torch.tanh(z_z)
+    n_new = f_t * n_prev + i_t
+    c_new = f_t * c_prev + i_t * z
+    o = torch.sigmoid(z_o)
+    denom = n_new + eps
+    d_o = mu_h * (c_new / denom)
+    d_cnew = mu_c + mu_h * (o / denom)
+    d_nnew = mu_n + mu_h * (-o * c_new / denom.square())
+    d_f = d_cnew * c_prev + d_nnew * n_prev
+    d_i = d_cnew * z + d_nnew
+    d_z = d_cnew * i_t
+    d_zo = d_o * o * (1.0 - o)
+    d_zz = d_z * (1.0 - z.square())
+    d_mnew = mu_m - d_i * i_t - d_f * f_t
+    d_zi = d_i * i_t + d_mnew * (1.0 - alpha)
+    d_zf = d_f * f_t + d_mnew * alpha
+    g_wx = torch.cat((d_zi, d_zf, d_zz, d_zo), dim=-1)
+    dims = (0, 1)
+    g_r = torch.stack(
+        (
+            (d_zi * h_prev).sum(dim=dims),
+            (d_zf * h_prev).sum(dim=dims),
+            (d_zz * h_prev).sum(dim=dims),
+            (d_zo * h_prev).sum(dim=dims),
+        ),
+        dim=0,
+    )
+    return g_wx, g_r

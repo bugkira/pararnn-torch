@@ -1,0 +1,44 @@
+# Fallback after configs/train/parity.yaml (T=32, 300 steps, 3-lr grid):
+# all three arms stayed at chance (eval_tok ≈ 0.52 = copy of t=0).
+# Search method: more steps at shorter T, not a new K. lr=1e-3 was the
+# least-bad of the Shallue 3-point on that smoke. Still App. C knobs,
+# still mix=diag, still not Merrill L=100 / A5.
+#
+# 2026-09-02 2080 Ti seed 0: Newton/eager last-token 1.0 at T=16 by step
+# 399 and at held-out T=32 by 449. S4D-Real SSM last-token chance
+# (0.56 / 0.53). MLflow parity-t16-2k.
+#
+# GPU: 2080 Ti by name.
+
+task: running_parity
+seq_len: 16
+eval_seq_len: 32
+batch: 16
+d_h: 32
+num_layers: 2
+steps: 2000
+warmup_frac: 0.1
+
+newton_iters: 3
+scan_backend: auto
+max_recurrent_norm: null
+
+lr: 1.0e-3
+lr_fallback: []
+weight_decay: 1.0e-6
+adam_betas: [0.9, 0.999]
+dtype: float32
+seed: 0
+mix: diag
+arms:
+  - newton
+  - eager
+  - ssm
+
+mlflow_experiment: state-tracking
+mlflow_run_name: parity-t16-2k
+
+why: |
+  Fallback after T=32 / 300 steps stayed copy-only. Same stacked xLSTMBlock
+  mix=diag vs sequential vs S4D-Real SSM. T=16 (still P=1), 2000 steps,
+  lr 1e-3 from the T=32 grid. Not a width search. Not FlashRNN. 2080 Ti.

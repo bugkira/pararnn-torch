@@ -26,8 +26,11 @@ class ParaGRU(nn.Module):
     Gates: update z, reset r, candidate n (paper's c). Activations: sigmoid /
     sigmoid / tanh (Cho et al. 2014, as used in §3).
 
-    ``max_recurrent_norm=0.5``: paper C.1 clips ||a_*|| for long sequences
-    (LM). Synthetic tasks used 0.90 except parity (no clip).
+    ``max_recurrent_norm=0.5``: App. C.1 elementwise clamp of the recurrent
+    diagonals ``a_*`` to ``[-cap, cap]``. For ``A_* = diag(a_*)`` that is
+    ``||A_*||_2 = ||a_*||_∞ ≤ cap``, not the Euclidean ``||a_*||_2``. LM
+    recipe 0.5; synthetic tasks used 0.90 except parity (no clip). Hard clamp
+    (subgradient 0 outside the box) is the paper recipe, not a tanh reparam.
     """
 
     def __init__(
@@ -69,17 +72,20 @@ class ParaGRU(nn.Module):
             self.a_n.clamp(-cap, cap),
         )
 
-    def step(self, h_prev: Tensor, x: Tensor, *, wx: Tensor | None = None) -> Tensor:
-        """One step. ``h_prev, x`` any leading dims, last dim d_h / d_in.
+    def step(
+        self, h_prev: Tensor, x: Tensor | None = None, *, wx: Tensor | None = None
+    ) -> Tensor:
+        """One step. ``h_prev`` last dim ``d_h``; ``x`` last dim ``d_in``.
 
         Does not build the Jacobian (sequential unroll / decode).
         ``wx`` is optional ``W_x(x)`` (eq. 3.1, independent of ``h``) so Newton
-        can reuse one GEMM across init + ``K`` iterations.
+        can reuse one GEMM across init + ``K`` iterations. Pass ``x`` or
+        ``wx``; ``wx`` wins if both are set.
         """
         return self._recurrence(h_prev, x, wx=wx).h_new
 
     def step_with_jacobian(
-        self, h_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
+        self, h_prev: Tensor, x: Tensor | None = None, *, wx: Tensor | None = None
     ) -> tuple[Tensor, Tensor]:
         """Return ``(h_new, j_diag)`` with ``j_diag = ∂h_new/∂h_prev`` (diagonal).
 
@@ -97,16 +103,18 @@ class ParaGRU(nn.Module):
         return acts.h_new, j
 
     def _recurrence(
-        self, h_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
+        self, h_prev: Tensor, x: Tensor | None, *, wx: Tensor | None = None
     ) -> _GRUActs:
         a_z, a_r, a_n = self.clipped_a()
         if wx is None:
+            if x is None:
+                raise ValueError("ParaGRU.step needs x or wx (precomputed W_x(x))")
             wx = self.W_x(x)
         zx, rx, nx = wx.chunk(3, dim=-1)
         z = torch.sigmoid(a_z * h_prev + zx)
         r = torch.sigmoid(a_r * h_prev + rx)
         n = torch.tanh(a_n * (h_prev * r) + nx)
-        h_new = (1.0 - z) * h_prev + z * n
+        h_new = torch.lerp(h_prev, n, z)
         return _GRUActs(h_new=h_new, h_prev=h_prev, z=z, r=r, n=n, a_z=a_z, a_r=a_r, a_n=a_n)
 
 
