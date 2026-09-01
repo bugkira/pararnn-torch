@@ -1,6 +1,6 @@
 """Ablate serial tile scan and R mixing vs FlashRNN.
 
-  uv run python scripts/bench_slstm_hacks.py
+  uv run python scripts/bench_slstm_tiled.py
 
 2080 Ti by name. 10 warmup / 50 runs, min ms. MLflow newton-slstm-bench.
 mix='diag' is already the fused R (not a new kernel). Head mix is eager.
@@ -15,9 +15,9 @@ import torch
 from torch import Tensor
 
 from pararnn.cells import ParaSLSTM
-from pararnn.hw import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
-from pararnn.logconf import setup_logging
 from pararnn.solvers import NewtonConfig, newton_apply, sequential_apply
+
+from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, setup_logging, wait_until_free
 
 log = logging.getLogger("bench")
 
@@ -72,12 +72,12 @@ def main() -> None:
         raise RuntimeError("needs the 2080 Ti")
     torch.cuda.set_device(device)
     wait_until_free(device, min_free_gib=8.0, poll_s=30.0)
-    log.info("bench_slstm_hacks gpu=%s", torch.cuda.get_device_name(device))
+    log.info("bench_slstm_tiled gpu=%s", torch.cuda.get_device_name(device))
 
     import mlflow
 
     mlflow.set_experiment("newton-slstm-bench")
-    with mlflow.start_run(run_name="slstm-hacks-ablation"):
+    with mlflow.start_run(run_name="slstm-tiled-ablation"):
         mlflow.set_tags({"gpu": torch.cuda.get_device_name(device), "protocol": "smoke-10-50"})
         variants = (
             ("baseline", NewtonConfig(scan_backend="fused", residual_atol=None)),

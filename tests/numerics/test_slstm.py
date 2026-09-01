@@ -17,7 +17,6 @@ from pararnn import (
     NewtonStats,
     ParaGRU,
     ParaSLSTM,
-    device,
     newton_apply,
     sequential_apply,
 )
@@ -42,6 +41,7 @@ from pararnn.solvers.newton import slstm_auto_picard
 from pararnn.solvers.scan import reverse_scan_block4, scan_block4, scan_dense
 
 log = logging.getLogger(__name__)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _residual_vs_k(

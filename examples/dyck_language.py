@@ -1,15 +1,16 @@
 """Dyck-1 next-token smoke: ParaSLSTM + Newton grads.
 
-    uv run python -m pararnn.train.dyck --config configs/train/dyck.yaml
+    uv run python examples/dyck_language.py --config configs/train/dyck.yaml
 
 Library contract: K=3, Picard P from T (here P=1). Fail-loud if Newton
-diverges. ``pararnn.device`` is first CUDA or CPU, not a lab GPU name.
+diverges. Device is ``cuda`` if available, else CPU — not a lab GPU name.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 import torch
@@ -17,13 +18,22 @@ import yaml
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from pararnn import NewtonConfig, ParaRNN, ParaSLSTM, device, wait_until_free
-from pararnn.logconf import setup_logging
-from pararnn.train.toy import _git_commit, _lock_hash, _uv_export_hash
+_REPO = Path(__file__).resolve().parents[1]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
+from pararnn import NewtonConfig, ParaRNN, ParaSLSTM
+from scripts.utils.mlflow_helper import (
+    ROOT,
+    git_commit,
+    lock_hash,
+    setup_logging,
+    uv_export_hash,
+)
 
 log = logging.getLogger("dyck")
-ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG = ROOT / "configs" / "train" / "dyck.yaml"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 OPEN, CLOSE = 0, 1
 VOCAB = 2
 
@@ -79,7 +89,6 @@ def main(argv: list[str] | None = None) -> None:
 
     if device.type == "cuda":
         torch.cuda.set_device(device)
-        wait_until_free(device, min_free_gib=1.0, poll_s=30.0)
         gpu_name = torch.cuda.get_device_name(device)
     else:
         gpu_name = "cpu"
@@ -122,9 +131,9 @@ def main(argv: list[str] | None = None) -> None:
                 "dtype": spec["dtype"],
                 "scan_backend": scan_backend,
                 "seed": spec["seed"],
-                "git": _git_commit(),
-                "uv_lock": _lock_hash(),
-                "uv_export": _uv_export_hash(),
+                "git": git_commit(),
+                "uv_lock": lock_hash(),
+                "uv_export": uv_export_hash(),
                 "config": str(args.config),
             }
         )

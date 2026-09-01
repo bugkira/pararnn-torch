@@ -5,9 +5,11 @@ from __future__ import annotations
 import torch
 from torch.nn import functional as F
 
-from pararnn import NewtonConfig, ParaRNN, ParaSLSTM, device, sequential_apply
+from examples.dyck_language import VOCAB, sample_dyck1
+from pararnn import NewtonConfig, ParaRNN, ParaSLSTM, sequential_apply
 from pararnn.layout import SLSTM_HIDDEN
-from pararnn.train.dyck import VOCAB, sample_dyck1
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def test_sample_dyck1_is_balanced():

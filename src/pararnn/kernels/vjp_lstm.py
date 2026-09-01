@@ -11,7 +11,7 @@ import triton.language as tl
 from torch import Tensor
 from triton.language.extra.cuda.libdevice import tanh as _nv_tanh
 
-from pararnn.kernels.prec import check_cuda_real, load_acc, store_acc
+from pararnn.kernels.precision import check_cuda_real, load_acc, store_acc
 
 _BLOCK_T = 64
 _BLOCK_D = 32

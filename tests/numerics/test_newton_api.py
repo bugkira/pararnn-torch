@@ -10,11 +10,12 @@ from pararnn import (
     NewtonConfig,
     NewtonDivergenceError,
     NewtonStats,
-    device,
     newton_apply,
     sequential_apply,
 )
 from pararnn.cells import ParaGRU, ParaSLSTM
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class _DiagTanh(nn.Module):

@@ -12,7 +12,7 @@ batch: 32
 d_h: 32
 # Wrapper smoke. ParaRNN stacking is naive (no residual/LN in the module).
 num_layers: 1
-# torchification.md: 50–200 steps; 100 is the middle of that range.
+# pytorch_port.md: 50–200 steps; 100 is the middle of that range.
 steps: 100
 
 # Danieli et al. 2025 App. A: residual to machine precision in 3–4 Newton
@@ -34,8 +34,8 @@ weight_decay: 0.0
 # configs/bench/newton_fp16.yaml. Turing: not bf16.
 dtype: float32
 
-# CUDA 2080 Ti lab benches pin the GPU by name. This smoke uses
-# pararnn.device (first CUDA / CPU). scan_backend=auto → fused for ParaGRU.
+# This example uses cuda if available, else CPU (not a lab GPU name).
+# scan_backend=auto → fused for ParaGRU on CUDA.
 scan_backend: auto
 
 seed: 0

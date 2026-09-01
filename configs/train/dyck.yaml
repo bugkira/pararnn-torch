@@ -10,7 +10,7 @@ batch: 32
 # Same width as copy smoke (configs/train/toy.yaml). Not paper 125M.
 d_h: 32
 num_layers: 1
-# torchification.md 50–200; 50 is enough to see CE move on this alphabet.
+# pytorch_port.md 50–200; 50 is enough to see CE move on this alphabet.
 steps: 50
 
 # Library contract: K=3 (App. A). Do not raise K; P comes from T.

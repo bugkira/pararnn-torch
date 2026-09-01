@@ -33,4 +33,4 @@ why: >
   Honest sequential competitor is NX-AI FlashRNN sLSTM, not compiled PyTorch
   unroll. cuda_fused is Ampere+ (CC 8.0). On Turing: CUDA_HOME from the
   pip cuda_runtime wheel, backend=triton_fused, 8 heads × 32 (not diag).
-  Protocol 10/50. Not 20-50× from ADD_TASK until Ampere numbers exist.
+  Protocol 10/50. Not 20-50× vs FlashRNN until Ampere numbers exist.

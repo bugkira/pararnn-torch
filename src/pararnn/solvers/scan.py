@@ -46,7 +46,7 @@ def scan_block2(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Ten
     ``backend``: ``eager`` (default) or ``triton`` (CUDA float16/float32).
     """
     if backend == "triton":
-        from pararnn.kernels.scan_block2 import scan_block2_triton
+        from pararnn.kernels.scan_lstm_block import scan_block2_triton
 
         return scan_block2_triton(jac, residual)
     if backend != "eager":
@@ -62,7 +62,7 @@ def scan_block4(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Ten
     ``backend``: ``eager`` or ``triton`` (CUDA float16/float32).
     """
     if backend == "triton":
-        from pararnn.kernels.scan_block4 import scan_block4_triton
+        from pararnn.kernels.scan_slstm_block import scan_block4_triton
 
         return scan_block4_triton(jac, residual)
     if backend != "eager":

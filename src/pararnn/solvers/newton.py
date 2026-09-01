@@ -523,7 +523,7 @@ def _newton_fused(
             "scan_tile": config.scan_tile,
         },
     )
-    from pararnn.kernels.fused import fused_newton
+    from pararnn.kernels.fused_newton import fused_newton
 
     return fused_newton(
         cell,

@@ -48,8 +48,13 @@ module-name = "pararnn"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.ruff]
-src = ["src", "tests"]
+src = ["src", "tests", "examples", "scripts"]
 target-version = "py310"
+
+[tool.ruff.lint.isort]
+known-first-party = ["pararnn", "examples", "scripts"]
+known-local-folder = ["gpu"]
 

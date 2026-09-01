@@ -1,16 +1,16 @@
 """Toy copy smoke: ParaRNN + linear head + CE + AdamW, MLflow-logged.
 
-    uv run python -m pararnn.train.toy --config configs/train/toy.yaml
+    uv run python examples/toy_copy.py --config configs/train/toy.yaml
 
-``pararnn.device`` is first CUDA or CPU. Lab benches pin a GPU by name.
+Device is ``cuda`` if available, else CPU. Lab benches pin a GPU by name in
+``scripts/gpu.py``.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import logging
-import subprocess
+import sys
 from pathlib import Path
 
 import torch
@@ -18,12 +18,22 @@ import yaml
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from pararnn import NewtonConfig, ParaGRU, ParaRNN, device, wait_until_free
-from pararnn.logconf import setup_logging
+_REPO = Path(__file__).resolve().parents[1]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
+from pararnn import NewtonConfig, ParaGRU, ParaRNN
+from scripts.utils.mlflow_helper import (
+    ROOT,
+    git_commit,
+    lock_hash,
+    setup_logging,
+    uv_export_hash,
+)
 
 log = logging.getLogger("toy")
-ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG = ROOT / "configs" / "train" / "toy.yaml"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class _CopyLM(nn.Module):
@@ -47,7 +57,6 @@ def main(argv: list[str] | None = None) -> None:
 
     if device.type == "cuda":
         torch.cuda.set_device(device)
-        wait_until_free(device, min_free_gib=1.0, poll_s=30.0)
         gpu_name = torch.cuda.get_device_name(device)
     else:
         gpu_name = "cpu"
@@ -91,9 +100,9 @@ def main(argv: list[str] | None = None) -> None:
                 "dtype": spec["dtype"],
                 "scan_backend": scan_backend,
                 "seed": spec["seed"],
-                "git": _git_commit(),
-                "uv_lock": _lock_hash(),
-                "uv_export": _uv_export_hash(),
+                "git": git_commit(),
+                "uv_lock": lock_hash(),
+                "uv_export": uv_export_hash(),
                 "config": str(args.config),
             }
         )
@@ -229,38 +238,6 @@ def _validate_spec(spec: dict) -> None:
         raise ValueError("toy smoke uses ParaGRU")
     if int(spec.get("num_layers", 1)) != 1:
         raise ValueError("toy smoke is num_layers=1")
-
-
-def _git_commit() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "none"
-
-
-def _lock_hash() -> str:
-    lock = ROOT / "uv.lock"
-    if not lock.exists():
-        return "none"
-    return hashlib.sha256(lock.read_bytes()).hexdigest()[:16]
-
-
-def _uv_export_hash() -> str:
-    try:
-        out = subprocess.check_output(
-            ["uv", "export", "--frozen"],
-            cwd=ROOT,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "none"
-    return hashlib.sha256(out.encode()).hexdigest()[:16]
 
 
 if __name__ == "__main__":

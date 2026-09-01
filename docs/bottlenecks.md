@@ -22,7 +22,7 @@ Remaining items are **other science**, not package polish.
 | 4 | HF / SlimPajama / 125M | Empty `PreTrainedModel` is worse than none. | Paper-scale claim. | **Low** until a real train loop |
 
 Do **not** bake `torch.compile` into `src/` (Dynamo 4–113 s per new \(T\)).
-Do **not** pick `pararnn.device` inside `ParaRNN.forward`.
+Do **not** pick a GPU inside `ParaRNN.forward`. The module follows the tensor / `.to(device)`.
 Do **not** treat `fused` as “any \(f\)”.
 
 ## Done
@@ -224,10 +224,10 @@ atol \(10^{-3}\). Fused vs FlashRNN (`>1` = fused faster):
 
 T=2048 fused matches sequential to \(3.6\times10^{-4}\). FlashRNN is
 **~4×** faster (was ~13× while Picard was eager Blelloch). Do not quote
-ADD_TASK's 20–50× vs FlashRNN; that needs Ampere `cuda_fused`. The 34×
+a 20–50× vs FlashRNN; that needs Ampere `cuda_fused`. The 34×
 vs compiled PyTorch unroll is not vs FlashRNN.
 
-Gemini's four Flash-style hacks, measured:
+Four Flash-style kernel ideas, measured:
 
 1. **1D scans instead of 4×4** — true for **Picard** (this Triton
    kernel). False for Newton: `R h` couples the next gates, so Alg. 1
@@ -272,7 +272,7 @@ per-step slope (~15 µs fused vs ~2.8 µs FlashRNN), not more T.
 
 ## Shamanskii, tile scan, R mix (measured)
 
-`uv run python scripts/bench_slstm_hacks.py`. Same 10/50, 2080 Ti, B=8,
+`uv run python scripts/bench_slstm_tiled.py`. Same 10/50, 2080 Ti, B=8,
 \(d_h=256\), K=3, auto P, `residual_atol=None`. Defaults stay off.
 
 | variant | T=256 ms | T=2048 ms | vs baseline T=2048 | peak T=2048 |

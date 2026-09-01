@@ -1,4 +1,4 @@
-# Torchification (archive, v0.2)
+# PyTorch port (archive, v0.2)
 
 Shipped in `6ac89c3`. This file is **not** the live backlog — see
 [`bottlenecks.md`](bottlenecks.md) Next and the README roadmap.
@@ -79,7 +79,7 @@ A `@runtime_checkable` `Protocol` is enough; do not invent a base class people m
 
 ## 3. Training smoke
 
-**Status: done.** [`configs/train/toy.yaml`](../configs/train/toy.yaml) + [`src/pararnn/train/toy.py`](../src/pararnn/train/toy.py). Copy tokens=targets; MLflow `toy-copy`. Not SlimPajama.
+**Status: done.** [`configs/train/toy.yaml`](../configs/train/toy.yaml) + [`examples/toy_copy.py`](../examples/toy_copy.py). Copy tokens=targets; MLflow `toy-copy`. Not SlimPajama.
 
 **Why.** Numerics tests prove Newton ≈ sequential. They do not prove “an optimizer can move this module.”
 
@@ -97,11 +97,11 @@ This is the gate for the sentence “you can train with it.” It is not an LM r
 
 **Status: done.** Distribution `pararnn-torch` 0.2.0, import `pararnn`. `__all__`: `ParaRNN`, `ParaGRU`, `ParaLSTM`, `NewtonConfig`, `newton_apply`, `sequential_apply`. `experiment_device` / `sequential_apply_compiled` stay on submodules. No PyPI upload.
 
-**Why.** `pyproject.toml` name is `pararnn`; [`STRUCTURE.md`](STRUCTURE.md) says PyPI `pararnn-torch`. Quickstart starts with `experiment_device()`.
+**Why.** `pyproject.toml` name is `pararnn`; [`structure.md`](structure.md) says PyPI `pararnn-torch`. Quickstart starts with `experiment_device()`.
 
 - Decide and freeze: **distribution** `pararnn-torch`, **import** `pararnn` (Apple occupies the name conceptually; we do not claim their package).
 - `readme` + classifiers + `requires-python` already 3.10. Point the PyTorch extra at the cu128 index in the README, not at a pip-only `requirements.txt`.
-- `__all__` for humans: `ParaRNN`, `ParaGRU`, `ParaLSTM`, `NewtonConfig`, `newton_apply`, `sequential_apply`. Move `experiment_device` / `sequential_apply_compiled` to `pararnn.device` / bench notes — available, not the front door.
+- `__all__` for humans: `ParaRNN`, `ParaGRU`, `ParaLSTM`, `NewtonConfig`, `newton_apply`, `sequential_apply`. GPU picking lives in `scripts/gpu.py`, not the package.
 - Version stays `0.1.0` until the wrapper + toy train exist; then `0.2.0` is “library-shaped.”
 
 No PyPI upload is required to *say* we made a module. A clean `uv add --editable .` story is.

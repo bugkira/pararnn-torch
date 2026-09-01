@@ -18,7 +18,7 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
-from pararnn.kernels.prec import check_cuda_real, load_acc, store_acc
+from pararnn.kernels.precision import check_cuda_real, load_acc, store_acc
 
 log = logging.getLogger(__name__)
 

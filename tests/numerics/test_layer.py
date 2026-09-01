@@ -6,8 +6,10 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from pararnn import NewtonConfig, ParaRNN, device, newton_apply, sequential_apply
+from pararnn import NewtonConfig, ParaRNN, newton_apply, sequential_apply
 from pararnn.cells import ParaGRU, ParaLSTM
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 @torch.no_grad()

@@ -7,7 +7,7 @@ from typing import NamedTuple
 import torch
 from torch import Tensor, nn
 
-from pararnn.init import kaiming_uniform_linear_, xavier_gaussian_vec_
+from pararnn.weight_init import kaiming_uniform_linear_, xavier_gaussian_vec_
 
 
 def _sigmoid_prime_from_act(gate: Tensor) -> Tensor:
@@ -36,17 +36,20 @@ class ParaGRU(nn.Module):
         d_h: int,
         *,
         max_recurrent_norm: float | None = 0.5,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
+        factory_kwargs = {"device": device, "dtype": dtype}
         self.d_in = d_in
         self.d_h = d_h
         self.state_slots = 1
         self.max_recurrent_norm = max_recurrent_norm
 
-        self.a_z = nn.Parameter(torch.empty(d_h))
-        self.a_r = nn.Parameter(torch.empty(d_h))
-        self.a_n = nn.Parameter(torch.empty(d_h))
-        self.W_x = nn.Linear(d_in, 3 * d_h, bias=True)
+        self.a_z = nn.Parameter(torch.empty(d_h, **factory_kwargs))
+        self.a_r = nn.Parameter(torch.empty(d_h, **factory_kwargs))
+        self.a_n = nn.Parameter(torch.empty(d_h, **factory_kwargs))
+        self.W_x = nn.Linear(d_in, 3 * d_h, bias=True, **factory_kwargs)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:

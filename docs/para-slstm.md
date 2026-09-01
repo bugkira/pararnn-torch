@@ -12,7 +12,7 @@ normalizer `n`, mixing `R h`). FlashRNN keeps sLSTM sequential. ParaRNN fused
 GRU/LSTM does not implement this cell.
 
 This repo's earlier literature note had sLSTM/mLSTM swapped. The code
-follows Beck / `ADD_TASK.md`.
+follows Beck et al.
 
 ## Cell
 
@@ -74,8 +74,8 @@ head recipe: **K=4, omega=1, clip=0.5**. Scan cost is
 
 ## Analytic Jacobian
 
-`step_with_jacobian` is the Newton `auto` path. ADD_TASK §2.4 is the
-channelwise skeleton; the code also chains `tanh(z_z)`, `σ(z_o)`, and
+`step_with_jacobian` is the Newton `auto` path. The channelwise skeleton is
+`mix='diag'`; the code also chains `tanh(z_z)`, `σ(z_o)`, and
 `n+ε`. `torch.maximum` at ties splits 0.5/0.5 (PyTorch). Head/dense J is
 packed `(4 d × 4 d)` per head: columns `c,n,m` stay channelwise, columns
 `h` are dense through `R`.

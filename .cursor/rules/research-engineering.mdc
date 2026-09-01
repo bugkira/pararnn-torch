@@ -8,7 +8,7 @@ alwaysApply: true
 ## Reproducibility
 
 - Seed Python, NumPy, and PyTorch. Record `torch.cuda.get_device_name` and dtype.
-- Configs are files (YAML/TOML), not buried argparse defaults. A run is `uv run python -m pararnn.train --config ...`.
+- Configs are files (YAML/TOML), not buried argparse defaults. A run is `uv run python examples/toy_copy.py --config configs/train/toy.yaml`.
 - Tests first for numerics: parallel Newton+PCR must match sequential unroll within a documented tolerance (float32 vs bfloat16 separately).
 
 ## Sources of truth

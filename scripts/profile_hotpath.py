@@ -20,9 +20,9 @@ import yaml
 from torch.profiler import ProfilerActivity, profile, record_function
 
 from pararnn.cells import ParaGRU, ParaLSTM
-from pararnn.hw import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
-from pararnn.logconf import setup_logging
 from pararnn.solvers import NewtonConfig, newton_apply, sequential_apply
+
+from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, setup_logging, wait_until_free
 
 log = logging.getLogger("profile")
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,7 +91,7 @@ def main() -> None:
     spec = yaml.safe_load(CONFIG_PATH.read_text())
     device = select_device(DEFAULT_EXPERIMENT_GPU_NAME)
     if device.type != "cuda":
-        raise RuntimeError("profile needs the 2080 Ti (PARARNN_DEVICE to override)")
+        raise RuntimeError("profile needs the 2080 Ti (CUDA_VISIBLE_DEVICES to restrict)")
     torch.cuda.set_device(device)
     wait_until_free(device, min_free_gib=4.0, poll_s=30.0)
     newton_cfg = NewtonConfig(

@@ -6,7 +6,6 @@ import logging
 
 import torch
 
-from pararnn import device
 from pararnn.cells import ParaGRU, ParaLSTM
 from pararnn.solvers import (
     NewtonConfig,
@@ -20,6 +19,8 @@ from pararnn.solvers.scan import (
     scan_block2,
     scan_diag,
 )
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def test_scan_diag_matches_forward_substitution():

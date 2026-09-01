@@ -11,7 +11,7 @@ GPU: 2080 Ti by name. Config: --config (default configs/bench/cell_forward.yaml)
   uv run python scripts/bench_time.py --config configs/bench/newton_slstm_flashrnn.yaml
   uv run python scripts/bench_time.py --config configs/bench/newton_slstm_flashrnn_long.yaml
   uv run python scripts/bench_time.py --config configs/bench/newton_fp16.yaml
-  uv run python scripts/bench_slstm_hacks.py
+  uv run python scripts/bench_slstm_tiled.py
 """
 
 from __future__ import annotations
@@ -32,14 +32,14 @@ import yaml
 from torch import Tensor, nn
 
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
-from pararnn.hw import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
-from pararnn.logconf import setup_logging
 from pararnn.solvers import (
     NewtonConfig,
     newton_apply,
     sequential_apply,
     sequential_apply_compiled,
 )
+
+from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, setup_logging, wait_until_free
 
 log = logging.getLogger("bench")
 ROOT = Path(__file__).resolve().parents[1]
@@ -363,7 +363,7 @@ def main() -> None:
     spec = yaml.safe_load(config_path.read_text())
     device = select_device(DEFAULT_EXPERIMENT_GPU_NAME)
     if device.type != "cuda":
-        raise RuntimeError("App. B needs the 2080 Ti (PARARNN_DEVICE to override)")
+        raise RuntimeError("App. B needs the 2080 Ti (CUDA_VISIBLE_DEVICES to restrict)")
     torch.cuda.set_device(device)
     wait_until_free(device, min_free_gib=8.0, poll_s=30.0)
     newton_cfg = _newton_config_from_spec(spec, scan_backend="eager")

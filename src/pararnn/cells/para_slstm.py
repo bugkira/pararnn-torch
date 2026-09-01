@@ -1,6 +1,6 @@
 """sLSTM (Beck et al. 2024) as a Newton cell — not Apple's ParaLSTM.
 
-Equations: ADD_TASK / xLSTM §2. Stabilizer ``max``, exp input/forget, normalizer
+Equations: xLSTM §2 (Beck et al.). Stabilizer ``max``, exp input/forget, normalizer
 ``n``, memory mixing ``R h``. ``mix='diag'`` is channelwise (Newton prototype).
 ``mix='head'`` is the xLSTM compromise: dense ``R`` inside a head, block-
 diagonal across heads. ``mix='dense'`` mixes the full ``d_h``; scan is
@@ -25,7 +25,6 @@ from typing import NamedTuple
 import torch
 from torch import Tensor, nn
 
-from pararnn.init import kaiming_uniform_linear_, xavier_gaussian_vec_
 from pararnn.layout import (
     SLSTM_CELL,
     SLSTM_HIDDEN,
@@ -34,6 +33,7 @@ from pararnn.layout import (
     SLSTM_STABILIZER,
     prepend_state,
 )
+from pararnn.weight_init import kaiming_uniform_linear_, xavier_gaussian_vec_
 
 _MIX = ("diag", "dense", "head")
 _JAC = {"diag": "block4", "dense": "dense", "head": "head"}
@@ -61,10 +61,13 @@ class ParaSLSTM(nn.Module):
         n_heads: int | None = None,
         max_recurrent_norm: float | None = 0.5,
         eps: float = 1e-6,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
         if mix not in _MIX:
             raise ValueError(f"mix must be one of {_MIX}, got {mix!r}")
+        factory_kwargs = {"device": device, "dtype": dtype}
         self.d_in = d_in
         self.d_h = d_h
         self.state_slots = SLSTM_SLOTS
@@ -75,26 +78,28 @@ class ParaSLSTM(nn.Module):
         self.eps = eps
         self.n_heads = n_heads
         self.d_head = None
-        # Pre-activations: input, forget, candidate, output (ADD_TASK §2.1).
-        self.W_x = nn.Linear(d_in, 4 * d_h, bias=True)
+        # Pre-activations: input, forget, candidate, output (xLSTM §2).
+        self.W_x = nn.Linear(d_in, 4 * d_h, bias=True, **factory_kwargs)
         self.R = None
         self.R_dense = None
         self.R_head = None
         if mix == "diag":
             if n_heads is not None:
                 raise ValueError("n_heads is only for mix='head'")
-            self.R = nn.Parameter(torch.empty(4, d_h))
+            self.R = nn.Parameter(torch.empty(4, d_h, **factory_kwargs))
         elif mix == "dense":
             if n_heads is not None:
                 raise ValueError("n_heads is only for mix='head'")
-            self.R_dense = nn.Linear(d_h, 4 * d_h, bias=False)
+            self.R_dense = nn.Linear(d_h, 4 * d_h, bias=False, **factory_kwargs)
         else:
             if n_heads is None or n_heads < 1 or d_h % n_heads != 0:
                 raise ValueError(
                     f"mix='head' needs n_heads that divides d_h={d_h}, got {n_heads!r}"
                 )
             self.d_head = d_h // n_heads
-            self.R_head = nn.Parameter(torch.empty(4, n_heads, self.d_head, self.d_head))
+            self.R_head = nn.Parameter(
+                torch.empty(4, n_heads, self.d_head, self.d_head, **factory_kwargs)
+            )
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -137,7 +142,7 @@ class ParaSLSTM(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         """``(state_new, J)``. Layout follows ``jac_structure``.
 
-        ADD_TASK §2.4 is the channelwise skeleton. We also chain ``tanh`` of
+        The channelwise skeleton is ``mix='diag'``. We also chain ``tanh`` of
         the candidate, ``σ`` of the output gate, and ``n+ε`` (the forward
         uses ``eps``). ``torch.maximum`` at ties splits 0.5/0.5.
         """

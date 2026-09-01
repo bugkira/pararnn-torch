@@ -5,11 +5,13 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from pararnn import NewtonConfig, device, newton_apply, sequential_apply
+from pararnn import NewtonConfig, newton_apply, sequential_apply
 from pararnn.cells import ParaGRU, ParaLSTM
 from pararnn.solvers.jacobian import jacobian_autograd
 from pararnn.solvers.scan import scan_dense
 from pararnn.solvers.vjp import cell_vjp
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class DiagTanh(nn.Module):
