@@ -41,6 +41,24 @@ SLSTM_HIDDEN = 3
 SLSTM_SLOTS = 4
 
 
+def slstm_pack_heads(state: torch.Tensor, n_heads: int, d_head: int) -> torch.Tensor:
+    """``(..., 4, n_heads * d_head)`` → ``(..., n_heads, 4 * d_head)``.
+
+    Packed last dim is ``(c, n, m, h)`` for one head. Used by the per-head dense
+    Newton scan (xLSTM memory mixing is block-diagonal across heads).
+    """
+    heads = state.reshape(*state.shape[:-1], n_heads, d_head)
+    packed = heads.movedim(-3, -2)
+    return packed.reshape(*state.shape[:-2], n_heads, 4 * d_head)
+
+
+def slstm_unpack_heads(packed: torch.Tensor, n_heads: int, d_head: int) -> torch.Tensor:
+    """Inverse of ``slstm_pack_heads``."""
+    slots = packed.reshape(*packed.shape[:-1], SLSTM_SLOTS, d_head)
+    slots = slots.movedim(-2, -3)
+    return slots.reshape(*packed.shape[:-2], SLSTM_SLOTS, n_heads * d_head)
+
+
 def prepend_zero_state(states: torch.Tensor) -> torch.Tensor:
     """Shift the trajectory right by one step and put zeros at t=0."""
     return prepend_state(states, None)

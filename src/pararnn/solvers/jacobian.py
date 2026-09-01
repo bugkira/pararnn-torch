@@ -7,8 +7,10 @@ fast path for ParaGRU/ParaLSTM (paper §3), not a requirement.
 in ``h``; otherwise this is the diagonal quasi-Newton (Gonzalez et al. 2024).
 ``block2``: two JVPs for a 2-slot channelwise state (CIFG-like).
 ``block4``: four JVPs for a 4-slot channelwise state (sLSTM, diag mix).
+``head``: ``jacrev`` per sLSTM head (``4 d_head × 4 d_head``). Exact for
+xLSTM-style block-diagonal mixing.
 ``dense``: ``jacrev`` per ``(batch, time)`` — exact for any ``f``, ``O(d_h^3)``
-scan. Not a paper hyperparameter; use it when the cell mixes channels.
+scan. Not a paper hyperparameter; use it when the cell mixes all channels.
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 from torch.func import jacrev, jvp, vmap
+
+from pararnn.layout import slstm_pack_heads
 
 
 def infer_jac_structure(state: Tensor) -> str:
@@ -27,7 +31,7 @@ def infer_jac_structure(state: Tensor) -> str:
         return "block4"
     raise TypeError(
         f"cannot infer Jacobian structure from state {tuple(state.shape)}; "
-        "set NewtonConfig.jac_structure to 'diag', 'block2', 'block4', or 'dense'"
+        "set NewtonConfig.jac_structure to 'diag', 'block2', 'block4', 'head', or 'dense'"
     )
 
 
@@ -88,6 +92,8 @@ def jacobian_autograd(
         return _jac_blockn(f, h0, slots=2)
     if structure == "block4":
         return _jac_blockn(f, h0, slots=4)
+    if structure == "head":
+        return _jac_head(cell, h0, x0)
     if structure == "dense":
         return _jac_dense(cell, h0, x0)
     raise ValueError(f"unknown jac_structure {structure!r}")
@@ -107,6 +113,29 @@ def _jac_blockn(f, h0: Tensor, *, slots: int) -> tuple[Tensor, Tensor]:
         cols.append(col)
     # (..., out, in, d)
     jac = torch.stack(cols, dim=-2)
+    return pred, jac
+
+
+def _jac_head(cell: nn.Module, h0: Tensor, x0: Tensor) -> tuple[Tensor, Tensor]:
+    n_heads = getattr(cell, "n_heads", None)
+    d_head = getattr(cell, "d_head", None)
+    if n_heads is None or d_head is None:
+        raise ValueError("jac_structure='head' needs cell.n_heads and cell.d_head")
+    packed = slstm_pack_heads(h0, n_heads, d_head)
+    wx_slots = cell.W_x(x0).reshape(*x0.shape[:2], 4, n_heads * d_head)
+    wx_p = slstm_pack_heads(wx_slots, n_heads, d_head)
+    r_h = cell.clipped_r_head().permute(1, 0, 2, 3)
+
+    def f_one(h: Tensor, wxh: Tensor, rh: Tensor) -> Tensor:
+        s = h.reshape(4, d_head)
+        return cell.step_head(s, wxh.reshape(4, d_head), rh).reshape(4 * d_head)
+
+    inner = jacrev(f_one, argnums=0)
+    per_head = vmap(inner, in_dims=(0, 0, 0))
+    jac = vmap(vmap(per_head, in_dims=(0, 0, None)), in_dims=(0, 0, None))(
+        packed, wx_p, r_h
+    )
+    pred = cell.step(h0, x0)
     return pred, jac
 
 

@@ -26,7 +26,7 @@ from torch import Tensor, nn
 
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
-from pararnn.layout import prepend_state
+from pararnn.layout import prepend_state, slstm_pack_heads, slstm_unpack_heads
 from pararnn.solvers.jacobian import step_and_jacobian
 from pararnn.solvers.scan import (
     reverse_scan_block2,
@@ -69,9 +69,9 @@ class NewtonConfig:
     # analytic: require step_with_jacobian (paper §3 cells).
     # autograd: torch.func JVP/jacrev — any step(h, x).
     jacobian: str = "auto"
-    # None infers from state, or cell.jac_structure (sLSTM: block4 / dense).
+    # None infers from state, or cell.jac_structure (sLSTM: block4 / head / dense).
     # diag: (B,T,D); block2: (B,T,2,D); block4: (B,T,4,D) channelwise 4×4.
-    # dense: full d_h×d_h (exact mixing cells; O(d^3) scan).
+    # head: per-head dense (B,T,H,4 d_head, 4 d_head). dense: full d_h×d_h.
     jac_structure: str | None = None
     # None disables early-stop. Default: skip remaining Newton steps when
     # max|F| is already below sequential-agreement scale (see App. A / 1e-4 tests).
@@ -376,6 +376,11 @@ def _scan(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tensor:
         jac_f, res_f, shape = packed
         delta = scan_dense(jac_f, res_f, backend=backend)
         return delta.reshape(shape)
+    packed_h = _head_slot_pack(jac, residual)
+    if packed_h is not None:
+        jac_f, res_f, shape, n_heads, d_head = packed_h
+        delta = scan_dense(jac_f, res_f, backend=backend)
+        return _head_slot_unpack(delta, shape, n_heads, d_head)
     if jac.dim() == residual.dim():
         return scan_diag(jac, residual, backend=backend)
     if jac.dim() == 4:
@@ -391,6 +396,11 @@ def _reverse_scan(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Te
         jac_f, part_f, shape = packed
         mu = reverse_scan_dense(jac_f, part_f, backend=backend)
         return mu.reshape(shape)
+    packed_h = _head_slot_pack(jac, partial)
+    if packed_h is not None:
+        jac_f, part_f, shape, n_heads, d_head = packed_h
+        mu = reverse_scan_dense(jac_f, part_f, backend=backend)
+        return _head_slot_unpack(mu, shape, n_heads, d_head)
     if jac.dim() == partial.dim():
         return reverse_scan_diag(jac, partial, backend=backend)
     if jac.dim() == 4:
@@ -411,6 +421,41 @@ def _dense_slot_pack(
     if jac.shape[-1] != sd or jac.shape[-2] != sd:
         return None
     return jac, vec.reshape(*vec.shape[:2], sd), vec.shape
+
+
+def _head_slot_pack(
+    jac: Tensor, vec: Tensor
+) -> tuple[Tensor, Tensor, tuple[int, ...], int, int] | None:
+    """Per-head dense J: ``jac`` is (B, T, H, 4 d_head, 4 d_head), ``vec`` is (B, T, 4, d_h)."""
+    if jac.dim() != 5 or vec.dim() != 4:
+        return None
+    if jac.shape[-1] != jac.shape[-2]:
+        return None
+    slots, d_h = vec.shape[-2], vec.shape[-1]
+    n_heads = jac.shape[2]
+    sd = jac.shape[-1]
+    if slots != 4 or n_heads < 1 or d_h % n_heads != 0:
+        return None
+    d_head = d_h // n_heads
+    if sd != 4 * d_head:
+        return None
+    # block4 is (B, T, 4, 4, d_h); last dim is the feature, not 4 d_head.
+    if jac.shape[2] == 4 and jac.shape[3] == 4 and jac.shape[-1] == d_h:
+        return None
+    packed = slstm_pack_heads(vec, n_heads, d_head)
+    b, t = vec.shape[:2]
+    jac_f = jac.permute(0, 2, 1, 3, 4).reshape(b * n_heads, t, sd, sd)
+    vec_f = packed.permute(0, 2, 1, 3).reshape(b * n_heads, t, sd)
+    return jac_f, vec_f, vec.shape, n_heads, d_head
+
+
+def _head_slot_unpack(
+    folded: Tensor, shape: tuple[int, ...], n_heads: int, d_head: int
+) -> Tensor:
+    b, t = shape[:2]
+    sd = 4 * d_head
+    packed = folded.reshape(b, n_heads, t, sd).permute(0, 2, 1, 3)
+    return slstm_unpack_heads(packed, n_heads, d_head)
 
 
 def _zero_state_like_input(cell: nn.Module, x: Tensor) -> Tensor:

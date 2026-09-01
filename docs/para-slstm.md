@@ -18,6 +18,10 @@ follows Beck / `ADD_TASK.md`.
 
 - `mix='diag'`: `R` is `(4, d_h)`, channelwise. Jacobian is 4×4 per channel
   (`cell.jac_structure='block4'`). Scan is `scan_block4` (eager; no Triton).
+- `mix='head'`: `R` is `(4, n_heads, d_head, d_head)`. Dense mix inside a head,
+  zeros across heads (Beck / xLSTM). Jacobian is `4 d_head × 4 d_head` per
+  head; scan folds heads into the batch of `scan_dense`. `n_heads` must
+  divide `d_h`.
 - `mix='dense'`: `R` is `Linear(d_h, 4 d_h)`. Exact mixing; scan is
   `O(T (4d)^3)`. Tests use `d_h≤4`.
 
@@ -46,7 +50,23 @@ seed does not snap at K=4, raise K (measure residual vs K) before damping.
 
 Dense mix (seed 102, `d_h=3`): smoother; K=3 already ~1.7e-2, K=4 ~5e-7.
 
+Head mix (seed 105, `d_h=4`, `n_heads=2`, `T=8`): smoother than diag; snaps
+at K=4. Per-head J matches forced dense. `R h` is
+`einsum('...nd,gnde->...gne')` (matmul inside the head, not a sum over the
+output dim).
+
+| K | seq err |
+|---|---|
+| 1 | 1.51 |
+| 2 | 1.19 |
+| 3 | 3.6e-2 |
+| 4 | **9.5e-7** |
+| 5 | 4.8e-7 |
+
+Diag overshoot is the no-mixing cell, not a reason to drop heads. Prototype
+head recipe: **K=4, omega=1, clip=0.5**. Scan cost is
+`O(T n_heads (4 d_head)^3)`, not `O(T (4 d_h)^3)`.
+
 ## Not yet
 
-Head-block mixing (the real xLSTM head), analytic J, fused Triton, VJP
-packed kernel, FlashRNN bench, LM train.
+Analytic J, fused Triton, VJP packed kernel, FlashRNN bench, LM train.

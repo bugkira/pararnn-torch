@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+import pytest
 import torch
 
 from pararnn import (
@@ -18,7 +19,12 @@ from pararnn import (
     newton_apply,
     sequential_apply,
 )
-from pararnn.layout import SLSTM_HIDDEN, SLSTM_SLOTS
+from pararnn.layout import (
+    SLSTM_HIDDEN,
+    SLSTM_SLOTS,
+    slstm_pack_heads,
+    slstm_unpack_heads,
+)
 from pararnn.solvers.scan import reverse_scan_block4, scan_block4, scan_dense
 
 log = logging.getLogger(__name__)
@@ -51,7 +57,7 @@ def _residual_vs_k(
         )
         err = float((par - seq).abs().amax())
         log.info(
-            "slstm_newton_k k=%s omega=%.2f residual=%.3e seq_err=%.3e seq_len=%s d_h=%s mix=%s clip=%s",
+            "slstm_newton_k k=%s omega=%.2f residual=%.3e seq_err=%.3e seq_len=%s d_h=%s mix=%s n_heads=%s clip=%s",
             k,
             omega,
             st.max_residual,
@@ -59,6 +65,7 @@ def _residual_vs_k(
             x.shape[1],
             cell.d_h,
             cell.mix,
+            cell.n_heads,
             cell.max_recurrent_norm,
         )
         rows.append((k, st.max_residual, err))
@@ -222,6 +229,97 @@ def test_slstm_newton_bwd_matches_sequential_bptt():
     w = torch.randn(2, t, SLSTM_SLOTS, d_h, device=device)
     cell_s = ParaSLSTM(d_in, d_h, mix="diag").to(device)
     cell_n = ParaSLSTM(d_in, d_h, mix="diag").to(device)
+    cell_n.load_state_dict(cell_s.state_dict())
+    x_s = x.clone().requires_grad_(True)
+    x_n = x.clone().requires_grad_(True)
+    cfg = NewtonConfig(max_iters=5, scan_backend="eager", residual_atol=None)
+    loss_s = (sequential_apply(cell_s, x_s) * w).sum()
+    loss_s.backward()
+    loss_n = (newton_apply(cell_n, x_n, cfg) * w).sum()
+    loss_n.backward()
+    for (n, p_a), (_, p_b) in zip(cell_s.named_parameters(), cell_n.named_parameters()):
+        assert p_a.grad is not None, n
+        torch.testing.assert_close(p_a.grad, p_b.grad, atol=5e-4, rtol=1e-4)
+    torch.testing.assert_close(x_s.grad, x_n.grad, atol=5e-4, rtol=1e-4)
+
+
+def test_slstm_pack_heads_roundtrip():
+    torch.manual_seed(205)
+    state = torch.randn(2, 5, 4, 6, device=device)
+    packed = slstm_pack_heads(state, 3, 2)
+    assert packed.shape == (2, 5, 3, 8)
+    torch.testing.assert_close(slstm_unpack_heads(packed, 3, 2), state)
+
+
+def test_slstm_head_needs_dividing_n_heads():
+    with pytest.raises(ValueError, match="n_heads"):
+        ParaSLSTM(d_in=4, d_h=4, mix="head")
+    with pytest.raises(ValueError, match="n_heads"):
+        ParaSLSTM(d_in=4, d_h=4, mix="head", n_heads=3)
+
+
+@torch.no_grad()
+def test_slstm_head_newton_vs_sequential():
+    torch.manual_seed(105)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="head", n_heads=2).to(device)
+    assert cell.jac_structure == "head"
+    assert cell.d_head == 2
+    x = 0.3 * torch.randn(2, 8, 4, device=device)
+    rows = _residual_vs_k(cell, x)
+    err_k5 = rows[-1][2]
+    assert err_k5 < 5e-3, rows
+    assert min(err for _, _, err in rows) < 1e-4, rows
+
+
+@torch.no_grad()
+def test_slstm_head_matches_forced_dense():
+    torch.manual_seed(105)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="head", n_heads=2).to(device)
+    x = 0.3 * torch.randn(2, 8, 4, device=device)
+    cfg = {
+        "max_iters": 5,
+        "scan_backend": "eager",
+        "residual_atol": None,
+        "jacobian": "autograd",
+    }
+    hh = newton_apply(cell, x, NewtonConfig(**cfg))
+    hd = newton_apply(cell, x, NewtonConfig(**cfg, jac_structure="dense"))
+    torch.testing.assert_close(hh, hd, atol=2e-5, rtol=1e-5)
+
+
+@torch.no_grad()
+def test_slstm_step_head_matches_step():
+    torch.manual_seed(207)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="head", n_heads=2).to(device)
+    state = torch.randn(3, SLSTM_SLOTS, 4, device=device)
+    x = 0.3 * torch.randn(3, 4, device=device)
+    out = cell.step(state, x)
+    wx_slots = cell.W_x(x).reshape(3, 4, 4)
+    packed_s = slstm_pack_heads(state.unsqueeze(1), 2, 2)[:, 0]
+    packed_w = slstm_pack_heads(wx_slots.unsqueeze(1), 2, 2)[:, 0]
+    r = cell.clipped_r_head()
+    parts = []
+    for b in range(3):
+        heads = [
+            cell.step_head(
+                packed_s[b, hd].reshape(4, 2),
+                packed_w[b, hd].reshape(4, 2),
+                r[:, hd],
+            )
+            for hd in range(2)
+        ]
+        parts.append(torch.stack(heads).reshape(2, 8))
+    packed_out = torch.stack(parts, dim=0).unsqueeze(1)
+    torch.testing.assert_close(slstm_unpack_heads(packed_out, 2, 2)[:, 0], out)
+
+
+def test_slstm_head_newton_bwd_matches_sequential_bptt():
+    torch.manual_seed(206)
+    d_in, d_h, t = 4, 4, 8
+    x = 0.3 * torch.randn(2, t, d_in, device=device)
+    w = torch.randn(2, t, SLSTM_SLOTS, d_h, device=device)
+    cell_s = ParaSLSTM(d_in, d_h, mix="head", n_heads=2).to(device)
+    cell_n = ParaSLSTM(d_in, d_h, mix="head", n_heads=2).to(device)
     cell_n.load_state_dict(cell_s.state_dict())
     x_s = x.clone().requires_grad_(True)
     x_n = x.clone().requires_grad_(True)

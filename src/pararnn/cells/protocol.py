@@ -3,7 +3,8 @@
 A cell is any ``nn.Module`` with ``d_h`` and ``step(h_prev, x)``. No base class.
 Ones-JVP (default Autograd Jacobian) is exact Newton iff ``f`` is channelwise
 in ``h``. Four-slot channelwise cells (sLSTM diag mix) set
-``cell.jac_structure='block4'``. Mixing channels needs ``'dense'``.
+``cell.jac_structure='block4'``. Head-block mixing uses ``'head'``; mixing
+all channels needs ``'dense'``.
 Fused Newton remains a handwritten Triton kernel for ParaGRU / ParaLSTM only,
 not a generic ``f``. ``scan_backend='auto'`` picks fused on CUDA ParaGRU/LSTM
 fp16/fp32, else Triton scan + ``step``, else eager.

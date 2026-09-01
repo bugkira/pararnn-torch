@@ -125,7 +125,7 @@ def _extra_layers(cell: nn.Module, n_extra: int) -> list[nn.Module]:
 def _stack_kwargs(cell: nn.Module) -> dict:
     sig = inspect.signature(type(cell).__init__)
     kw: dict = {}
-    for name in ("max_recurrent_norm", "mix", "eps"):
+    for name in ("max_recurrent_norm", "mix", "eps", "n_heads"):
         if name in sig.parameters and hasattr(cell, name):
             kw[name] = getattr(cell, name)
     return kw
