@@ -1,0 +1,37 @@
+# ParaSLSTM mix='diag' fused Newton vs sequential / eager Newton.
+# Same shapes as newton_fused.yaml (B=8, d_h=256, K=3 App. A / library default).
+# Fused 4×4 tiles: BLOCK_T=32, CHUNK_PAD=64 → T cap 2048 (not 4096).
+#
+# Protocol: 10 warmup / 50 runs — smoke, not App. B.
+# require_agreement: false — K=3 does not snap at this width (smoke: T=64
+# ~1e-2; T=256 ~17; T=2048 diverges). Log max|par-seq|, do not fail.
+# x_scale=1: same input as GRU/LSTM fused table (not the 0.3 numerics seed).
+# GPU: 2080 Ti by name. MLflow newton-slstm-bench.
+
+newton_iters: 3
+batch: 8
+d_in: 256
+d_h: 256
+dtype: float32
+x_scale: 1.0
+warmup: 10
+n_runs: 50
+seq_lens: [64, 256, 512, 1024, 2048]
+seq_lens_sequential_max: 2048
+sequential_compile_mode: reduce-overhead
+modes: [sequential_eager, sequential_compiled, newton, newton_fused]
+newton_max_t:
+  ParaSLSTM: 2048
+cells:
+  - name: ParaSLSTM
+    mix: diag
+require_agreement: false
+agree_tol: 1.0e-4
+mlflow_experiment: newton-slstm-bench
+mlflow_run_name: slstm-fused-vs-naive
+csv: outputs/bench_newton_slstm.csv
+why: >
+  ParaSLSTM mix=diag on 2080 Ti. Zero-hidden Newton init (not App. A f(0,x_t)).
+  K=3 is the library default, same as GRU/LSTM fused table — not a promise that
+  sequential agreement holds at d_h=256. Fused is mix=diag only (4×4 SRAM).
+  Protocol 10/50 smoke. T≤2048 (fused chunk pad). Not FlashRNN. Not TinyStories.

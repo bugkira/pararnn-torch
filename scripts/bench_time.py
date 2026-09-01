@@ -6,6 +6,7 @@ GPU: 2080 Ti by name. Config: --config (default configs/bench/cell_forward.yaml)
   uv run python scripts/bench_time.py
   uv run python scripts/bench_time.py --config configs/bench/newton_compile.yaml
   uv run python scripts/bench_time.py --config configs/bench/newton_fused.yaml
+  uv run python scripts/bench_time.py --config configs/bench/newton_slstm.yaml
   uv run python scripts/bench_time.py --config configs/bench/newton_fp16.yaml
 """
 
@@ -25,7 +26,7 @@ import yaml
 from torch import Tensor, nn
 
 from pararnn import device, wait_until_free
-from pararnn.cells import ParaGRU, ParaLSTM
+from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
 from pararnn.logconf import setup_logging
 from pararnn.solvers import (
     NewtonConfig,
@@ -99,9 +100,38 @@ def _torch_dtype(name: str) -> torch.dtype:
     raise ValueError(f"unsupported dtype {name!r}")
 
 
-def _agree_tol(dtype: torch.dtype) -> float:
+def _agree_tol(dtype: torch.dtype, spec: dict) -> float:
+    if "agree_tol" in spec:
+        return float(spec["agree_tol"])
     # fp16 vs sequential fp16: residual ~1e-3 (docs/bottlenecks.md). Not 1e-4 vs fp32.
     return 2e-3 if dtype is torch.float16 else 1e-4
+
+
+def _build_cells(spec: dict, d_in: int, d_h: int, *, device, dtype: torch.dtype) -> dict[str, nn.Module]:
+    """Default: ParaGRU + ParaLSTM. YAML ``cells`` can pin a subset (sLSTM)."""
+    raw = spec.get("cells")
+    if not raw:
+        raw = [{"name": "ParaGRU"}, {"name": "ParaLSTM"}]
+    out: dict[str, nn.Module] = {}
+    for item in raw:
+        if isinstance(item, str):
+            item = {"name": item}
+        name = str(item["name"])
+        if name == "ParaGRU":
+            out[name] = ParaGRU(d_in, d_h).to(device=device, dtype=dtype).eval()
+        elif name == "ParaLSTM":
+            out[name] = ParaLSTM(d_in, d_h).to(device=device, dtype=dtype).eval()
+        elif name == "ParaSLSTM":
+            mix = str(item.get("mix", "diag"))
+            n_heads = item.get("n_heads")
+            key = name if mix == "diag" else f"{name}_{mix}"
+            kw = {"mix": mix}
+            if n_heads is not None:
+                kw["n_heads"] = int(n_heads)
+            out[key] = ParaSLSTM(d_in, d_h, **kw).to(device=device, dtype=dtype).eval()
+        else:
+            raise ValueError(f"unknown bench cell {name!r}")
+    return out
 
 
 @torch.no_grad()
@@ -290,6 +320,12 @@ def main() -> None:
                 "newton_compile_mode": newton_compile_mode,
                 "modes": ",".join(modes),
                 "dtypes": ",".join(dtype_names),
+                "require_agreement": str(spec.get("require_agreement", True)),
+                "x_scale": spec.get("x_scale", 1.0),
+                "cells": ",".join(
+                    i if isinstance(i, str) else i.get("name", "?")
+                    for i in spec.get("cells", ["ParaGRU", "ParaLSTM"])
+                ),
             }
         )
         mlflow.log_artifact(str(config_path))
@@ -305,18 +341,25 @@ def main() -> None:
         try:
             for dtype_name in dtype_names:
                 dt = _torch_dtype(dtype_name)
-                agree_tol = _agree_tol(dt)
-                log.info("bench_dtype=%s agree_tol=%g", dtype_name, agree_tol)
+                agree_tol = _agree_tol(dt, spec)
+                require_agreement = bool(spec.get("require_agreement", True))
+                x_scale = float(spec.get("x_scale", 1.0))
+                log.info(
+                    "bench_dtype=%s agree_tol=%g require_agreement=%s x_scale=%g",
+                    dtype_name,
+                    agree_tol,
+                    require_agreement,
+                    x_scale,
+                )
 
                 def mkey(cell: str, rest: str, d=dtype_name) -> str:
                     return f"{cell}_{d}_{rest}" if multi_dtype else f"{cell}_{rest}"
-                cells = {
-                    "ParaGRU": ParaGRU(d_in, d_h).to(device=device, dtype=dt).eval(),
-                    "ParaLSTM": ParaLSTM(d_in, d_h).to(device=device, dtype=dt).eval(),
-                }
+                cells = _build_cells(spec, d_in, d_h, device=device, dtype=dt)
                 for cell_name, cell in cells.items():
                     for T in spec["seq_lens"]:
-                        x = torch.randn(batch, int(T), d_in, device=device, dtype=dt)
+                        x = x_scale * torch.randn(
+                            batch, int(T), d_in, device=device, dtype=dt
+                        )
                         seq_stats = None
                         seq_eager_stats = None
                         if T <= seq_max_seq:
@@ -324,9 +367,10 @@ def main() -> None:
                                 err = _agree(cell, x, newton_cfg)
                                 log.info("%s T=%d max|par-naive|=%.3e", cell_name, T, err)
                                 if err > agree_tol:
-                                    raise RuntimeError(
-                                        f"agreement failed {cell_name} T={T}: {err}"
-                                    )
+                                    msg = f"agreement failed {cell_name} T={T}: {err}"
+                                    if require_agreement:
+                                        raise RuntimeError(msg)
+                                    log.warning("%s (logged, not fatal)", msg)
                                 mlflow.log_metric(
                                     mkey(cell_name, "max_abs_err"), err, step=int(T)
                                 )
@@ -343,9 +387,10 @@ def main() -> None:
                                     "%s T=%d max|fused-naive|=%.3e", cell_name, T, err_f
                                 )
                                 if err_f > agree_tol:
-                                    raise RuntimeError(
-                                        f"fused agreement failed {cell_name} T={T}: {err_f}"
-                                    )
+                                    msg = f"fused agreement failed {cell_name} T={T}: {err_f}"
+                                    if require_agreement:
+                                        raise RuntimeError(msg)
+                                    log.warning("%s (logged, not fatal)", msg)
                                 mlflow.log_metric(
                                     mkey(cell_name, "fused_max_abs_err"), err_f, step=int(T)
                                 )

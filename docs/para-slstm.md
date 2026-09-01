@@ -115,6 +115,85 @@ App. A residual vs K (same draw, for the record — not the current code):
 Quadratic basin is small (noise 0.1 around sequential diverges). `omega<1`
 still kills the snap. Do not copy ELK as the default.
 
+## Timing (2080 Ti smoke, not App. B)
+
+`uv run python scripts/bench_time.py --config configs/bench/newton_slstm.yaml`.
+MLflow `newton-slstm-bench`. CSV: `outputs/bench_newton_slstm.csv` (gitignored).
+**10 warmup / 50 runs, min ms.** Same shapes as the GRU/LSTM fused table:
+B=8, \(d_{\mathrm{in}}=d_h=256\), float32, \(K=3\), `x_scale=1`. Fused T cap
+is 2048 (`BLOCK_D=8`, `_CHUNK_PAD=64`). Not FlashRNN. Not fig. 2/5.
+
+**These times at \(T\ge 256\) are kernel throughput of a Newton that has not
+matched sequential.** Do not quote the vs-RNN column as sequential-equivalent
+work. GRU/LSTM at the same shapes stay \(\sim 10^{-7}\) at \(K=3\); sLSTM
+does not. See the agreement table below.
+
+Baselines: naive RNN = `sequential_apply`; naive ParaRNN = eager Newton +
+Blelloch; fused = `scan_backend="fused"` (diag only). Compiled sequential is
+`sequential_apply_compiled` (`reduce-overhead`).
+
+| T | Naive RNN | Compiled seq | Naive ParaRNN | Fused | vs RNN | vs compiled | vs eager N |
+|---|---|---|---|---|---|---|---|
+| 64 | 43.5 | 23.9 | 28.3 | **8.81** | 4.9× | 2.7× | 3.2× |
+| 256 | 169 | 101 | 39.1 | **13.7** | 12× | 7.4× | 2.9× |
+| 512 | 348 | 206 | 51.8 | **16.3** | 21× | 13× | 3.2× |
+| 1024 | 727 | 404 | 77.4 | **21.7** | 34× | 19× | 3.6× |
+| 2048 | 1411 | 826 | 140 | **30.3** | 47× | 27× | 4.6× |
+
+Times in ms (min). Peak allocated MiB, same smoke:
+
+| T | Naive RNN | Compiled seq | Naive ParaRNN | Fused | vs eager N |
+|---|---|---|---|---|---|
+| 64 | 23 | 16 | 71 | **27** | 2.6× |
+| 256 | 61 | 33 | 252 | **78** | 3.2× |
+| 512 | 112 | 37 | 494 | **145** | 3.4× |
+| 1024 | 214 | 73 | 978 | **280** | 3.5× |
+| 2048 | 418 | 145 | 1946 | **550** | 3.5× |
+
+Fused vs eager Newton is **~3–5×**, same class as GRU/LSTM's memory win
+(4×4 \(J\) stays in SRAM). Wall time vs GRU fused at \(T=2048\) is **30 ms
+vs 2.4 ms** (~13× slower): 20-lane 4×4 tiles vs diag 1-lane, and four slots.
+Do not paste GRU's 11×/400× onto this cell.
+
+## Agreement at width 256
+
+Smoke above (B=8, `x_scale=1`, unseeded weights, \(K=3\)), max |par − seq|:
+
+| T | eager | fused |
+|---|---|---|
+| 64 | 9.8e-3 | 9.8e-3 |
+| 256 | 17 | 17 |
+| 512 | 2.6e4 | 2.6e4 |
+| 1024 | 5.3e3 | 3.7e5 |
+| 2048 | 1.5e14 | 4.4e11 |
+
+Tol in the YAML is \(10^{-4}\). Only \(T=64\) is even close, and it is **not**
+a snap. At \(T=1024/2048\) fused and eager Newton diverge to **different**
+garbage — both wrong. `require_agreement: false` so the timing run still
+finishes.
+
+K-curve, **seed 0**, B=2, same width, `residual_atol=None` (K means K).
+`x_scale=1` is the bench input; `0.3` is the numerics-test scale.
+
+| T | scale | K=3 | K=5 | K=8 |
+|---|---|---|---|---|
+| 64 | 1.0 | **7e-6** | 8e-6 | 8e-6 |
+| 256 | 1.0 | 2.0 | **5e-5** | 2e-5 |
+| 512 | 1.0 | 31 | 13 | **8e-5** |
+| 1024 | 1.0 | 5.8e6 | 3.5e3 | 7.8e5 |
+| 2048 | 1.0 | 1.8e5 | 6.8e5 | 1.3e5 |
+| 64 | 0.3 | **1e-5** | 8e-6 | 1e-5 |
+| 256 | 0.3 | 0.20 | **5e-5** | 4e-5 |
+| 512 | 0.3 | 0.24 | **8e-5** | 9e-5 |
+| 1024 | 0.3 | 29 | 0.70 | **2e-4** |
+| 2048 | 0.3 | 94 | 110 | — |
+
+Fused tracks eager while both are in the basin (T≤512). Zero-hidden init
+fixes toy \(T=48\), \(d_h=4\). At GRU-table width it is **not** enough for
+library \(K=3\) past a few hundred tokens. Raising K at \(T=2048\),
+`x_scale=1` does not snap; it stays ~\(10^5\). Do not raise global
+`NewtonConfig.max_iters` for GRU/LSTM to paper over this.
+
 ## Not yet
 
 Packed VJP, fused head mix, FlashRNN bench, LM train.

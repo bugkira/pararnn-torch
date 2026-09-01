@@ -18,7 +18,7 @@ Remaining items are **other science**, not package polish.
 |---|---|---|---|---|
 | 1 | Hybrid Mamba-2 predictor + **one** Newton (ours, not Apple) | DEER: Newton wants a good guess. After residual early-stop. | **Up to ~3×** if the guess is close. | **Low** until ablation |
 | 2 | IFT adjoint (Bai / DEQ) | Eq. 2.6 is in. IFT is extra. | \(O(1)\) in solver depth. | **Low** until 2.6 is the bottleneck |
-| 3 | Para-sLSTM (mixing + exp gates) | Not diag/2×2; new cell, not wrapping GRU. | New Jacobian structure. | **Low** until sequential tests |
+| 3 | Para-sLSTM **head fused / LM** | Diag cell + 4×4 fused is on `para-slstm`. \(K=3\) does **not** match sequential at \(d_h=256\), \(T\ge 256\). Head mix and FlashRNN are still out. | New cell exists; training-length Newton does not. | **High** that \(K=3\) is wrong at width; **low** on the next solver |
 | 4 | HF / SlimPajama / 125M | Empty `PreTrainedModel` is worse than none. | Paper-scale claim. | **Low** until a real train loop |
 
 Do **not** bake `torch.compile` into `src/` (Dynamo 4–113 s per new \(T\)).
@@ -33,7 +33,7 @@ Do **not** treat `fused` as “any \(f\)”.
 | 1 | Any ``step(h, x)`` via Autograd Jacobian (DEER / Lim et al.). ``jacobian="auto"``: analytic if the cell has ``step_with_jacobian``, else ``torch.func``. | Two hardcoded cells is not a library. | Custom channelwise cell and dense mix (``jac_structure="dense"``) match sequential. Ones-JVP is exact iff ``f`` is channelwise; otherwise set ``dense``. Fused Newton stays ParaGRU/LSTM (not any ``f``). |
 | 2 | Eq. 2.6 cell VJP packed on CUDA for ParaGRU/ParaLSTM (Triton elementwise + ``W_x`` GEMM). Reverse scan already Triton when ``scan_backend`` is ``triton``/``fused``. | Backward was ``autograd.grad(cell.step)``. | Packed VJP matches Autograd VJP. Existing BPTT tests still pass. Custom cells keep Autograd on ``step`` (their ops are already CUDA). |
 | 3 | fp16 DRAM / fp32 Newton accumulators on Turing. Agreement tests **separately** (atol \(2\times10^{-3}\)). **Not bf16**. | Halves scan DRAM. TC help `W_x` only. | Smoke 10/50, same process as fp32 fused: at \(T=2048\) GRU **1.80 vs 2.61 ms** (**1.45×**), **66 vs 123 MiB** (**1.86×**); LSTM **5.45 vs 6.41 ms** (**1.18×**), **107 vs 205 MiB** (**1.91×**). Short \(T\) is slower. Residual \(\sim10^{-3}\). See [fp16](#fp16). |
-| 4 | Triton **fused Newton** (cell + J + scan per Alg. 1 iter). Opt-in `scan_backend="fused"`. GEMM `W_x` stays in PyTorch. Not Apple's kernel. Backward still eq. 2.6. | Newton still launched the eager cell \(K+1\) times after the scans landed. Paper 665× is fused CUDA, not this. | Smoke 10/50, \(T=2048\): GRU fused **2.4 ms** vs naive ParaRNN 27 ms (**11×**) vs naive RNN 959 ms (**400×**); LSTM **6.5 ms** vs 62 ms (**9.6×**) vs 1338 ms (**207×**). Peak mem vs naive ParaRNN **~3–4×** lower. See [Fused Newton](#fused-newton). |
+| 4 | Triton **fused Newton** (cell + J + scan per Alg. 1 iter). Opt-in `scan_backend="fused"`. GEMM `W_x` stays in PyTorch. Not Apple's kernel. Backward still eq. 2.6. | Newton still launched the eager cell \(K+1\) times after the scans landed. Paper 665× is fused CUDA, not this. | Smoke 10/50, \(T=2048\): GRU fused **2.4 ms** vs naive ParaRNN 27 ms (**11×**) vs naive RNN 959 ms (**400×**); LSTM **6.5 ms** vs 62 ms (**9.6×**) vs 1338 ms (**207×**). Peak mem vs naive ParaRNN **~3–4×** lower. ParaSLSTM diag fused **30 ms** vs 140 ms eager (**4.6×**) vs 1411 ms naive RNN (**47×**) — **not** sequential-matched at this width. See [Fused Newton](#fused-newton) and [Fused sLSTM](#fused-slstm). |
 | 5 | LSTM 2×2 as four muls, not `einsum`→`bmm`; Blelloch scan (not Hillis–Steele). No `torch.associative_scan` (CUDA/compile prototype, no CPU, no autograd). | **86% of LSTM CUDA** was tiny GEMVs. HS was \(O(T\log T)\) traffic. | Smoke: LSTM \(T=512\) 113→**46 ms**; \(T=2048\) 537→**82 ms**, 7.5 GiB→**719 MiB**; \(T=4096\) **fits, 1.4 GiB** (was OOM). GRU \(T=2048\) 29→**36 ms** (gather tax). |
 | 6 | Call-site `torch.compile(newton_apply)` (`reduce-overhead`). **Not** in `src/`. App. B `min_ms` is after warmup and **hides** Dynamo. | Launch tax on small \(T\). | Steady-state GRU \(T\le 256\) **~20–40×**; LSTM \(T=64\) **~16×**. Compile itself is **4–113 s** per new \(T\). LSTM at LM length needs **~2k forwards** to break even. See [Compile Newton](#compile-newton). |
 | 7 | Triton **diag** + **2×2** scan (`tl.associative_scan`, two-level tiles). Opt-in `scan_backend="triton"`. Not Apple's kernel. | Eager Blelloch gather tax. | Scan-only smoke (B=8, \(d_h=256\), 10/50, not App. B): diag **~16–34×**; 2×2 \(T=64\ldots4096\) eager 13→33 ms vs Triton 0.18→3.5 ms (**~10–74×**). Newton still pays the eager cell. |
@@ -166,6 +166,30 @@ Peak allocated MiB (`torch.cuda.max_memory_allocated`, same smoke). Ratio is nai
 Fused drops **~3–4×** vs eager Newton at LM length because \(J\) never becomes a full PyTorch tensor. It still uses **more** than compiled sequential (scan tiles + \(K\) residuals): GRU \(T=4096\) 98→235 MiB, LSTM 162→399. Compiled LSTM \(T=64\) at 59 MiB is the CUDA-graph capture, not the unroll.
 
 Short \(T\) is launch-bound. At training length: **~10× vs naive ParaRNN**, **~130–340× vs compiled sequential**, **~200–400× vs the Python loop**. None of these is 665×. Agreement vs sequential stayed \(\sim 10^{-7}\).
+
+## Fused sLSTM
+
+Diag mix only (`newton_slstm.py`, 4×4 SRAM). Head/dense raise. Zero-hidden
+init, not App. A. Same smoke protocol as the GRU table:
+[`configs/bench/newton_slstm.yaml`](../configs/bench/newton_slstm.yaml),
+2080 Ti, B=8, \(d_h=256\), \(K=3\), 10/50, min ms. Details and the K-curve:
+[`para-slstm.md`](para-slstm.md).
+
+Do **not** quote GRU's 11×/400× here. Fused sLSTM at \(T=2048\) is **30.3 ms**
+vs GRU fused **2.40 ms**. Speedups vs the Python loop at \(T\ge 256\) time a
+**diverged** Newton (max |par − seq| is 17 … \(10^{14}\)). At \(T=64\) the
+same smoke is 9.8e-3, not \(10^{-7}\).
+
+| T | Naive RNN | Compiled seq | Naive ParaRNN | Fused | vs RNN | vs compiled | vs eager N |
+|---|---|---|---|---|---|---|---|
+| 64 | 43.5 | 23.9 | 28.3 | **8.81** | 4.9× | 2.7× | 3.2× |
+| 256 | 169 | 101 | 39.1 | **13.7** | 12× | 7.4× | 2.9× |
+| 512 | 348 | 206 | 51.8 | **16.3** | 21× | 13× | 3.2× |
+| 1024 | 727 | 404 | 77.4 | **21.7** | 34× | 19× | 3.6× |
+| 2048 | 1411 | 826 | 140 | **30.3** | 47× | 27× | 4.6× |
+
+Peak MiB: fused **27 → 550** vs eager Newton **71 → 1946** (~3.5×). Compiled
+sequential is still smaller (16 → 145).
 
 ## fp16
 

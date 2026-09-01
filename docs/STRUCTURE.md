@@ -29,7 +29,7 @@ ParaRNN/
 │   └── numerics/               # sequential vs parallel agreement, residual vs K
 ├── configs/                    # YAML/TOML; no buried argparse defaults
 ├── scripts/
-│   ├── bench_time.py           # App. B; --config newton_compile.yaml for Dynamo
+│   ├── bench_time.py           # App. B; newton_fused / newton_slstm / compile YAML
 │   ├── profile_hotpath.py      # CUPTI: GRU T=64/2048, LSTM T=512
 │   └── fetch_papers.sh
 ├── pyproject.toml              # uv; package name pararnn-torch
