@@ -23,7 +23,7 @@ VJP **3.2×** (`scripts/bench_packed_vjp.py`, 2080 Ti). CE unchanged.
 ```python
 from pararnn import NewtonConfig, xLSTMBlock
 
-block = xLSTMBlock(d_model, mix="diag", backend="newton", config=NewtonConfig())
+block = xLSTMBlock(d_model, mix="diag", solver="newton", config=NewtonConfig())
 # .train() → fused Newton + packed VJP; .eval() → sequential step
 ```
 

@@ -14,7 +14,7 @@ Three layers, mapped to **existing** dirs (not a rename of working imports):
    A cell is not a sequence layer: Autograd-generic `step(h, x)` has to live
    somewhere, and `ParaGRU.forward` vs `ParaGRU.step` would collide.
    3. **Integrations** — `examples/` (copy, Dyck-1, Z2 parity), `scripts/` (timing + this-box GPU).
-   `models/xLSTMBlock`: pre-norm + residual around ParaSLSTM, `backend="newton"|"eager"`.
+   `models/xLSTMBlock`: pre-norm + residual around ParaSLSTM, `solver="auto"|"newton"|"sequential"`.
    FlashRNN stays in `scripts/` and `examples/slstm_vs_flashrnn.py`. HF LM later.
 
 ```
@@ -25,8 +25,6 @@ ParaRNN/
 │   ├── apple-ml-pararnn.md     # notes on the official repo
 │   ├── bottlenecks.md          # eager Newton+scan: measured bottlenecks, ranked fixes
 │   ├── accelerator-review.md   # GPU/Triton review checklist (memory, sync, numerics)
-│   ├── pytorch_port.md         # archive: v0.2 solver → nn.Module (not the live backlog)
-│   ├── next.md                 # diag-only backlog; train Picard adapt (not EW)
 │   ├── para-slstm.md           # sLSTM Newton (diag fused; head/dense eager)
 │   ├── xlstm.md                # if NX-AI xlstm took our sLSTM Newton (not our mLSTM)
 │   ├── seq-parallel-report.md  # two-stream virtual ranks vs FlashRNN DDP claim
@@ -47,8 +45,8 @@ ParaRNN/
 │   │   ├── scan_lstm_block.py  # 2×2 LSTM jac; API still scan_block2
 │   │   ├── scan_slstm_block.py # 4×4 sLSTM jac; API still scan_block4
 │   │   └── …                   # newton_*.py, scan_diag, VJP, Picard
-│   ├── hybrid/                 # later: linear SSM predictor + 1-step Newton
-│   └── models/                 # xLSTMBlock (prenorm + residual; newton|eager)
+│   ├── layout.py               # sLSTM slot order, LSTM ch swap, prepend_state
+│   └── models/                 # xLSTMBlock (prenorm + residual; solver auto|newton|sequential)
 ├── examples/                   # toy_copy.py, dyck_language.py, parity.py, slstm_vs_flashrnn.py; not a package
 ├── tests/
 │   ├── unit/                   # shapes, configs, inits
@@ -68,7 +66,7 @@ ParaRNN/
 
 ## v0.3 (implemented)
 
-v0.2 plus: `NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` + residual early-stop + **fail-loud** (`NewtonDivergenceError` if max|F|>1 after K); `ParaRNN` list-of-cells, `return_hidden`, LSTM `output_hidden`; **ParaSLSTM** `mix='diag'` (fused 4×4) and **`mix='head'`** (eager `scan_dense`, K=4, train smoke vs FlashRNN); **xLSTMBlock** (pre-norm + residual, `backend="newton"|"eager"`). Examples: toy copy + Dyck-1 + Z2 parity (`examples/parity.py`). Sequence-parallel two-tile scan: `scan_diag_two_ranks` (one GPU, two streams).
+v0.2 plus: `NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` + residual early-stop + **fail-loud** (`NewtonDivergenceError` if max|F|>1 after K); `ParaRNN` list-of-cells, `return_hidden`, LSTM `output_hidden`; **ParaSLSTM** `mix='diag'` (fused 4×4) and **`mix='head'`** (eager `scan_dense`, K=4, train smoke vs FlashRNN); **xLSTMBlock** (pre-norm + residual, `solver="auto"|"newton"|"sequential"`). Examples: toy copy + Dyck-1 + Z2 parity (`examples/parity.py`). Sequence-parallel two-tile scan: `scan_diag_two_ranks` (one GPU, two streams).
 
 Not in v0.3: Mamba predictor, IFT adjoint, HF LM, sLSTM head-fused, pretrained weights. We do not ship mLSTM (xLSTM already has it).
 

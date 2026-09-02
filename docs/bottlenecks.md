@@ -168,8 +168,9 @@ Short \(T\) is launch-bound. At training length: **~10× vs naive ParaRNN**, **~
 
 ## Fused sLSTM
 
-Diag mix only (`newton_slstm.py`, 4×4 SRAM). Head/dense raise. Zero-hidden
-init, not App. A. Same smoke protocol as the GRU table, 2080 Ti, B=8,
+Diag mix only (`newton_slstm.py`, 4×4 SRAM). Head/dense raise. Library
+default is auto-Picard (`picard_iters=None`); explicit `0` is zero-hidden
+only. Not App. A. Same smoke protocol as the GRU table, 2080 Ti, B=8,
 \(d_h=256\), \(K=3\), 10/50, min ms. Details and the K-curve:
 [`para-slstm.md`](para-slstm.md).
 

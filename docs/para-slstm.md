@@ -38,8 +38,9 @@ they could take is this Newton sLSTM: [`xlstm.md`](xlstm.md).
 
 ## Measured (2080 Ti, seed 101, diag mix, `T=12`, `d_h=4`)
 
-These rows are **App. A** `f(0, x_t)` (old init). Current Newton uses
-`zero_hidden_init` and snaps at **K=3** on this seed (and at T=48).
+These rows are **App. A** `f(0, x_t)` (old init). Library default is
+auto-Picard (`picard_iters=None` → P from T via `slstm_auto_picard`). With
+`picard_iters=0` (zero-hidden only), K=3 snaps on this seed (and at T=48).
 
 Sequential max-abs error. Same seed as `test_slstm_diag_newton_vs_sequential`.
 block4 vs forced `jac_structure='dense'` agrees — the overshoot was the
@@ -93,10 +94,16 @@ inside the kernel; DRAM may be fp16. Reverse scan is the same kernel on
 
 Fused Newton inlines the diag cell, `_jac_channelwise`, and the 4×4 scan
 (same pattern as `newton_lstm.py`). `W_x(x)` stays a PyTorch GEMM. Fused
-always runs `max_iters` (no residual early-stop). The guess is
-`zero_hidden_init` (below), not App. A.
+always runs `max_iters` (no residual early-stop). Init matches eager:
+auto-Picard by default (`slstm_picard_init`); explicit `picard_iters=0` is
+`slstm_zero_hidden_init` only. Not App. A.
 
-## Newton init: zero-hidden unroll, not App. A
+## Newton init: auto-Picard, not App. A
+
+Library default `picard_iters=None` picks P ∈ {1, 3, 5} from T
+(`slstm_auto_picard` in `solvers/newton.py`). Explicit `0` skips Picard and
+uses zero-hidden only. Picard always starts from one zero-hidden frozen-gate
+scan, then P passes with `R h` frozen from the previous trajectory.
 
 App. A \(h_t^0 = f(0, x_t)\) zeros `(c,n,m)` independently. GRU/LSTM at
 T=48, K=3: seq err ~5e-8. sLSTM's `n` accumulates, so that guess is ~30
@@ -313,7 +320,7 @@ auto-selects P from T (library default).
 Not solver ms. Stacked `xLSTMBlock` `mix='diag'` (pre-norm + residual, 2
 layers, \(d_h=32\)) on running XOR. Merrill et al. 2024 §5 is
 **token-tagging** (label at \(t\) = prefix product). Group here is Z2, not
-A5. Sequential arm is the **same** cell (`backend="eager"`). SSM is ours:
+A5. Sequential arm is the **same** cell (`solver="sequential"`). SSM is ours:
 S4D-Real \(A=n+1\), Gu & Dao \(\Delta\in[10^{-3},10^{-1}]\), `scan_diag`
 eager (Triton scan has no Autograd). Not `mamba-ssm`. Not FlashRNN.
 Clip off (App. C “except parity”). 2080 Ti. MLflow `state-tracking`.

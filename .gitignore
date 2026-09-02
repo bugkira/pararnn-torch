@@ -30,6 +30,11 @@ outputs/
 docs/papers/*.pdf
 third_party/ml-pararnn/
 
+# local lab notes (keep on disk, not in clones)
+docs/next.md
+docs/pytorch_port.md
+.cursor/rules/git-unsigned.mdc
+
 # editor
 .idea/
 .vscode/

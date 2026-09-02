@@ -28,9 +28,8 @@ uv run pytest
 
 - This is a git repo. Create/use branches for work. Never leave generated artifacts unignored.
 - Do **not** commit unless the user asks. Do not force-push or skip hooks (`--no-verify`).
-- **Do not sign.** Global `commit.gpgsign` is a work x509 key. This repo is unsigned:
-  `git config --local commit.gpgsign false` (and `tag.gpgsign false`). Never
-  `git config --global`. See `.cursor/rules/git-unsigned.mdc`.
+- **Do not sign.** This repo is unsigned: `git config --local commit.gpgsign false`
+  (and `tag.gpgsign false`). Never `git config --global`.
 - Ignore: `.venv/`, `__pycache__/`, `*.pt`, `mlruns/`, `.mlflow/`, `wandb/`, `.pytest_cache/`.
 - Track: source, tests, `pyproject.toml`, `uv.lock`, configs, rules, README.
 
