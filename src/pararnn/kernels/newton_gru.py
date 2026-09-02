@@ -1,8 +1,8 @@
 """Fused ParaGRU Newton: cell + diagonal J + scan (paper Alg. 1 / eq. 3.1a, 3.2a).
 
 ``W_x(x)`` stays a cuBLAS GEMM. This kernel is the rest of one Newton step.
-Not Apple's fused CUDA. CUDA float16/float32, and bf16 on compute
-capability ≥ 8.0; cell+scan algebra in fp32. DRAM is the tensor dtype.
+CUDA float16/float32, and bf16 on compute capability ≥ 8.0; cell+scan
+algebra in fp32. DRAM is the tensor dtype.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ _CHUNK_PAD = 64  # 64 * 128 = 8192.
 
 @triton.jit
 def _tanh(x):
-    """CUDA libdevice tanh — same family as torch.tanh, not the sigmoid identity."""
+    """CUDA libdevice tanh — same family as torch.tanh."""
     return _nv_tanh(x)
 
 
@@ -372,7 +372,7 @@ def newton_gru_fused(
     if n_chunks > _CHUNK_PAD:
         raise ValueError(
             f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD}. "
-            "Increase BLOCK_T rather than copying a longer Apple kernel."
+            "Increase BLOCK_T or CHUNK_PAD."
         )
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
     h = wx.new_empty(batch, time, d_h)

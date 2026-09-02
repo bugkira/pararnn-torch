@@ -7,6 +7,7 @@ from typing import NamedTuple
 import torch
 from torch import Tensor, nn
 
+from pararnn.cells.protocol import resolve_layer_sizes
 from pararnn.weight_init import kaiming_uniform_linear_, xavier_gaussian_vec_
 
 
@@ -26,33 +27,37 @@ class ParaGRU(nn.Module):
     Gates: update z, reset r, candidate n (paper's c). Activations: sigmoid /
     sigmoid / tanh (Cho et al. 2014, as used in §3).
 
-    ``max_recurrent_norm=0.5``: App. C.1 elementwise clamp of the recurrent
-    diagonals ``a_*`` to ``[-cap, cap]``. For ``A_* = diag(a_*)`` that is
-    ``||A_*||_2 = ||a_*||_∞ ≤ cap``, not the Euclidean ``||a_*||_2``. LM
-    recipe 0.5; synthetic tasks used 0.90 except parity (no clip). Hard clamp
-    (subgradient 0 outside the box) is the paper recipe, not a tanh reparam.
+    ``max_recurrent_norm`` is an App. C.1 elementwise clamp of ``a_*`` to
+    ``[-cap, cap]``.
     """
 
     def __init__(
         self,
-        d_in: int,
-        d_h: int,
+        input_size: int | None = None,
+        hidden_size: int | None = None,
         *,
+        d_in: int | None = None,
+        d_h: int | None = None,
         max_recurrent_norm: float | None = 0.5,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
+        input_size, hidden_size = resolve_layer_sizes(
+            input_size, hidden_size, d_in=d_in, d_h=d_h
+        )
         factory_kwargs = {"device": device, "dtype": dtype}
-        self.d_in = d_in
-        self.d_h = d_h
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.d_in = input_size
+        self.d_h = hidden_size
         self.state_slots = 1
         self.max_recurrent_norm = max_recurrent_norm
 
-        self.a_z = nn.Parameter(torch.empty(d_h, **factory_kwargs))
-        self.a_r = nn.Parameter(torch.empty(d_h, **factory_kwargs))
-        self.a_n = nn.Parameter(torch.empty(d_h, **factory_kwargs))
-        self.W_x = nn.Linear(d_in, 3 * d_h, bias=True, **factory_kwargs)
+        self.a_z = nn.Parameter(torch.empty(hidden_size, **factory_kwargs))
+        self.a_r = nn.Parameter(torch.empty(hidden_size, **factory_kwargs))
+        self.a_n = nn.Parameter(torch.empty(hidden_size, **factory_kwargs))
+        self.W_x = nn.Linear(input_size, 3 * hidden_size, bias=True, **factory_kwargs)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -77,10 +82,9 @@ class ParaGRU(nn.Module):
     ) -> Tensor:
         """One step. ``h_prev`` last dim ``d_h``; ``x`` last dim ``d_in``.
 
-        Does not build the Jacobian (sequential unroll / decode).
-        ``wx`` is optional ``W_x(x)`` (eq. 3.1, independent of ``h``) so Newton
-        can reuse one GEMM across init + ``K`` iterations. Pass ``x`` or
-        ``wx``; ``wx`` wins if both are set.
+        Sequential unroll / decode. ``wx`` is optional ``W_x(x)`` (eq. 3.1,
+        independent of ``h``) so Newton can reuse one GEMM across init + ``K``
+        iterations. Pass ``x`` or ``wx``; ``wx`` wins if both are set.
         """
         return self._recurrence(h_prev, x, wx=wx).h_new
 

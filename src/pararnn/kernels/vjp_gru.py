@@ -1,12 +1,11 @@
 """Triton VJP of the ParaGRU recurrence w.r.t. ``wx`` and ``a_*`` (eq. 3.1a).
 
 ``h_prev`` detached (eq. 2.6 already scanned ``J^T``). ``W_x`` GEMM stays
-in PyTorch. Not a translation of anyone else's kernel.
-Dtype gate is ``validate_cuda_tensors`` (bf16 if CC ≥ 8.0).
+in PyTorch. Dtype gate is ``validate_cuda_tensors`` (bf16 if CC ≥ 8.0).
 
 ``∇a_*`` is reduced in-kernel (tile ``tl.sum`` + fp32 ``atomic_add`` into
-``(d_h,)``). ``∇wx`` stays ``(B, T, 3 d_h)`` for the GEMM. Atomics are not
-bitwise deterministic; packed-VJP tests use atol, not bit equality.
+``(d_h,)``). ``∇wx`` stays ``(B, T, 3 d_h)`` for the GEMM. Packed-VJP
+tests use atol.
 """
 
 from __future__ import annotations

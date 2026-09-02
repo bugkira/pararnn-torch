@@ -33,12 +33,8 @@ from torch import Tensor, nn
 
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
 from pararnn.kernels.precision import is_fused_dtype_supported
-from pararnn.solvers import (
-    NewtonConfig,
-    newton_apply,
-    sequential_apply,
-    sequential_apply_compiled,
-)
+from pararnn.solvers import NewtonConfig, newton_apply, sequential_apply
+from pararnn.solvers.sequential import sequential_apply_compiled
 
 from gpu import (
     DEFAULT_EXPERIMENT_GPU_NAME,

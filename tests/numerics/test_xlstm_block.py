@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from pararnn import NewtonConfig, sequential_apply, xLSTMBlock
+from pararnn import NewtonConfig, xLSTMBlock
 from pararnn.layout import SLSTM_HIDDEN
-from pararnn.solvers import newton_apply
+from pararnn.solvers import newton_apply, sequential_apply
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -16,7 +16,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def test_xlstm_block_shape_and_residual():
     torch.manual_seed(81)
     d, t = 8, 12
-    block = xLSTMBlock(d, backend="eager", device=device)
+    block = xLSTMBlock(d, solver="sequential", device=device)
     x = torch.randn(2, t, d, device=device)
     y = block(x)
     assert y.shape == x.shape
@@ -30,17 +30,17 @@ def test_xlstm_block_newton_matches_eager_eval():
     torch.manual_seed(82)
     d, t = 8, 12
     cfg = NewtonConfig(max_iters=3, scan_backend="eager")
-    newton = xLSTMBlock(d, backend="newton", config=cfg, device=device)
-    eager = xLSTMBlock(d, backend="eager", device=device)
+    newton = xLSTMBlock(d, solver="auto", config=cfg, device=device)
+    eager = xLSTMBlock(d, solver="sequential", device=device)
     eager.load_state_dict(newton.state_dict())
     x = 0.3 * torch.randn(2, t, d, device=device)
     newton.eval()
     torch.testing.assert_close(newton(x), eager(x), atol=2e-4, rtol=1e-4)
 
 
-def test_xlstm_block_rejects_flashrnn_stub():
-    with pytest.raises(ValueError, match="FlashRNN"):
-        xLSTMBlock(8, backend="flashrnn")
+def test_xlstm_block_rejects_unknown_solver():
+    with pytest.raises(ValueError, match="solver"):
+        xLSTMBlock(8, solver="flashrnn")
 
 
 @torch.no_grad()
@@ -49,7 +49,7 @@ def test_xlstm_block_head_mix_shape():
     d, t = 8, 10
     cfg = NewtonConfig(max_iters=4, scan_backend="eager")
     block = xLSTMBlock(
-        d, backend="newton", mix="head", n_heads=2, config=cfg, device=device
+        d, solver="auto", mix="head", n_heads=2, config=cfg, device=device
     )
     x = 0.3 * torch.randn(2, t, d, device=device)
     y = block(x)
@@ -64,7 +64,7 @@ def test_xlstm_block_head_newton_matches_eval():
     d, t = 8, 8
     cfg = NewtonConfig(max_iters=4, scan_backend="eager")
     block = xLSTMBlock(
-        d, backend="newton", mix="head", n_heads=2, config=cfg, device=device
+        d, solver="auto", mix="head", n_heads=2, config=cfg, device=device
     )
     x = 0.3 * torch.randn(2, t, d, device=device)
     block.train()
@@ -79,7 +79,7 @@ def test_xlstm_block_solver_newton_in_eval():
     torch.manual_seed(85)
     d, t = 8, 10
     cfg = NewtonConfig(max_iters=3, scan_backend="eager")
-    block = xLSTMBlock(d, backend="newton", solver="newton", config=cfg, device=device)
+    block = xLSTMBlock(d, solver="newton", config=cfg, device=device)
     block.eval()
     x = 0.3 * torch.randn(2, t, d, device=device)
     z = block.norm(x)

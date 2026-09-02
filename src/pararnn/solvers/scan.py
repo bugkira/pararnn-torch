@@ -3,13 +3,10 @@
 Work-efficient Blelloch scan on the monoid
 ``(J_r, r_r) ⊕ (J_l, r_l) = (J_r J_l, J_r r_l + r_r)``.
 Pad time to the next power of two with the identity ``(I, 0)``.
-Do not use the HTML ``l - 2^i + 1`` index; see ``pararnn.layout``.
+Indices: ``pararnn.layout`` (0-based ``t``).
 
-2×2 / 4×4 blocks are elementwise muls (not ``einsum`` → tiny ``bmm``).
-Reverse scan is paper eq. 2.6 (Jacobian transpose, unroll backwards).
-
-``torch.associative_scan`` is a CUDA/compile prototype without autograd and
-without CPU — we do not use it.
+2×2 / 4×4: elementwise mul. Reverse scan is paper eq. 2.6
+(Jacobian transpose, unroll backwards).
 """
 
 from __future__ import annotations
@@ -74,8 +71,8 @@ def scan_dense(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tens
     """Exact Newton scan for a full ``d_h × d_h`` Jacobian (DEER).
 
     ``jac``: (batch, time, d, d) with ``[..., out, in]``. ``residual``: (batch, time, d).
-    Compose is ``bmm`` — ``O(T d^3)`` after the log-depth scan. Triton is not
-    this path; ``backend='triton'`` still runs the eager Blelloch.
+    Compose is ``bmm`` — ``O(T d^3)`` after the log-depth scan.
+    ``backend='triton'`` still runs the eager Blelloch.
     """
     if backend not in ("eager", "triton"):
         raise ValueError(f"unknown scan backend {backend!r}")
@@ -88,7 +85,7 @@ def reverse_scan_diag(
     """Total adjoint ``∇_{h_t} L`` from direct ``∂_{h_t} L`` (eq. 2.6, diagonal).
 
     ``∇_{h_{t-1}} L = J_t ∇_{h_t} L + ∂_{h_{t-1}} L``, ``∇_{h_{T-1}} L = ∂_{h_{T-1}} L``.
-    Diagonal ``J`` is symmetric. ``jac[:, 0]`` is unused (no ``h_{-1}`` in the trajectory).
+    Diagonal ``J`` is symmetric. Reverse scan starts at t=0 (eq. 2.6).
     """
     j_rev = jac.new_zeros(jac.shape)
     j_rev[:, 1:] = jac.flip(1)[:, :-1]
@@ -221,8 +218,8 @@ def _compose_dense(
 
 
 def _is_dense(jac: Tensor, residual: Tensor) -> bool:
-    """Full-matrix J is ``(B, T, d, d)``. Do not treat ``(B, T, S, S, d)`` as dense
-    when ``d == S`` (sLSTM tests use ``d_h=4`` with 4×4 blocks).
+    """Full-matrix J is ``(B, T, d, d)``. ``(B, T, S, S, d)`` is a block Jacobian
+    (sLSTM tests use ``d_h=4`` with 4×4 blocks).
     """
     return (
         jac.dim() == 4
@@ -275,7 +272,7 @@ def _mv4(jac: Tensor, vec: Tensor) -> Tensor:
 
 
 def _mm4(j_right: Tensor, j_left: Tensor) -> Tensor:
-    """``J_right @ J_left`` per feature. Reduce over the inner 4, not ``bmm``."""
+    """``J_right @ J_left`` per feature. Reduce over the inner 4."""
     return (j_right.unsqueeze(-2) * j_left.unsqueeze(-4)).sum(dim=-3)
 
 

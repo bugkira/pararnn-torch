@@ -5,9 +5,8 @@ Algebra is fp32 inside Triton (`load_acc` / `store_acc`). Activations, J
 tiles, and residuals stay in the tensor dtype in DRAM. ``W_x`` is a PyTorch
 GEMM.
 
-bf16 fused/Triton is **compute capability ≥ 8.0** (Ampere+ tensor cores),
-not a GPU name. CC 7.x has no bf16 TC: ``auto`` falls back; explicit
-``fused`` raises.
+bf16 fused/Triton is **compute capability ≥ 8.0** (Ampere+ tensor cores).
+CC 7.x has no bf16 TC: ``auto`` falls back; explicit ``fused`` raises.
 """
 
 from __future__ import annotations
@@ -26,8 +25,8 @@ def is_fused_dtype_supported(
 ) -> bool:
     """Whether fused/Triton scan may run this dtype on this **tensor** device.
 
-    fp32 and fp16: any CUDA. bf16: SM 8.0+. Query ``device``, not the current
-    CUDA context (multi-GPU boxes).
+    fp32 and fp16: any CUDA. bf16: SM 8.0+. Query the tensor's ``device``
+    (multi-GPU boxes).
     """
     dev = torch.device(device)
     if dev.type != "cuda":
@@ -66,11 +65,6 @@ def validate_cuda_tensors(*tensors: Tensor, name: str) -> bool:
             )
         raise TypeError(f"{name} supports float16/float32/bfloat16, got {dtype}")
     return dtype in _NARROW_DTYPES
-
-
-# Back-compat names from the capability gate; prefer the two above.
-fused_dtype_ok = is_fused_dtype_supported
-check_cuda_real = validate_cuda_tensors
 
 
 @triton.jit

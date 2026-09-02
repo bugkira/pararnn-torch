@@ -39,11 +39,12 @@ sys.path.insert(0, str(_REPO / "scripts"))
 
 from examples.dyck_language import VOCAB, sample_dyck1
 from examples.slstm_vs_flashrnn import _NewtonDyckLM
-from pararnn import NewtonConfig, NewtonStats, ParaSLSTM, newton_apply, sequential_apply
-from pararnn.cells.para_slstm import slstm_frozen_gate_scan
+from pararnn import NewtonConfig, ParaSLSTM
 from pararnn.kernels.newton_slstm import newton_slstm_fused
 from pararnn.layout import SLSTM_HIDDEN, prepend_state
+from pararnn.solvers import NewtonStats, newton_apply, sequential_apply
 from pararnn.solvers.scan import scan_diag
+from pararnn.solvers.slstm_picard import slstm_frozen_gate_scan
 from scripts.utils.mlflow_helper import git_commit, lock_hash, uv_export_hash
 
 from gpu import (

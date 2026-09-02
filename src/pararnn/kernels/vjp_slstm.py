@@ -1,8 +1,8 @@
 """Triton VJP of the channelwise ParaSLSTM recurrence (Beck et al. 2024).
 
 ``state_prev`` detached (eq. 2.6 already scanned ``J^T``). ``W_x`` GEMM stays
-in PyTorch. ``mix='diag'`` only. Not a translation of anyone else's kernel.
-Dtype gate is ``validate_cuda_tensors`` (bf16 if CC ≥ 8.0).
+in PyTorch. ``mix='diag'`` only. Dtype gate is ``validate_cuda_tensors``
+(bf16 if CC ≥ 8.0).
 """
 
 from __future__ import annotations

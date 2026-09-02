@@ -1,11 +1,11 @@
 """Triton 4×4 block-diagonal monoid scan (sLSTM channelwise).
 
 Optional CUDA backend for ``scan_block4``. Same monoid as eager ``_mm4``/``_mv4``.
-Not Apple's PCR. CUDA float16/float32, and bf16 on compute capability ≥ 8.0;
-algebra in fp32. DRAM is the tensor dtype.
+CUDA float16/float32, and bf16 on compute capability ≥ 8.0; algebra in fp32.
+DRAM is the tensor dtype.
 
 20 scan lanes need smaller tiles than 2×2: 20 × 32 × 16 × 4 B = 40 KiB
-before scan temps (2080 Ti ~64 KiB). Chunk scan uses BLOCK_D=8.
+before scan temps (~64 KiB shared). Chunk scan uses BLOCK_D=8.
 """
 
 from __future__ import annotations
@@ -341,7 +341,7 @@ def scan_block4_triton(jac: Tensor, residual: Tensor) -> Tensor:
     if n_chunks > _CHUNK_PAD:
         raise ValueError(
             f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD}. "
-            "Increase BLOCK_T rather than copying a longer Apple kernel."
+            "Increase BLOCK_T or CHUNK_PAD."
         )
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
     n_dtiles_chunk = (d_h + _CHUNK_D - 1) // _CHUNK_D

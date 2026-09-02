@@ -44,9 +44,11 @@ def test_two_rank_rejects_rank_mismatch():
         scan_diag_two_ranks(jac, residual)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA streams")
-def test_two_rank_cuda_streams_match_eager():
-    jac, residual = _rand_system(2, 32, 8, seed=7)
+@pytest.mark.cuda
+def test_two_rank_cuda_streams_match_eager(cuda_device: torch.device) -> None:
+    torch.manual_seed(7)
+    jac = torch.randn(2, 32, 8, device=cuda_device) * 0.3
+    residual = torch.randn(2, 32, 8, device=cuda_device)
     ref = scan_diag(jac, residual)
     s0 = torch.cuda.Stream()
     s1 = torch.cuda.Stream()

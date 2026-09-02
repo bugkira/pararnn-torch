@@ -1,12 +1,11 @@
-"""Fused frozen-gate sLSTM scan (Picard). Not Newton, not 4x4.
+"""Fused frozen-gate sLSTM scan (Picard guess).
 
 Gates are frozen in ``pre``: ``m`` is max-plus, ``n``/``c`` are two 1D
-``a x + b`` scans, ``h`` is the readout. Same contract as
-``slstm_frozen_gate_scan`` (eager Blelloch). Span is two-level prefix
-scans (tile + chunk), not a serial ``chunk_len`` loop.
+``ax+b`` scans, ``h`` is the readout. Same contract as
+``slstm_frozen_gate_scan``. Span is two-level prefix scans (tile + chunk).
 
-Newton still needs the 4x4 ``J`` of ``(c, n, m, h)`` because ``R h``
-couples the next gates. This kernel is the Picard *guess*.
+Newton still needs the 4×4 ``J`` of ``(c, n, m, h)`` because ``R h``
+couples the next gates.
 
 After the max-plus apply, phase-m temps ``a_loc``/``b_loc``/``agg_*``/
 ``incl_m`` are dead and alias the ``n``/``c`` scan lanes. ``m`` stays live.
@@ -462,7 +461,7 @@ def frozen_gate_scan_triton(
     if n_chunks > _CHUNK_PAD:
         raise ValueError(
             f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD} "
-            f"(T≤{_BLOCK_T * _CHUNK_PAD}). Not serial chunk_len."
+            f"(T≤{_BLOCK_T * _CHUNK_PAD}). Tile count cap for this kernel."
         )
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
     grid = (batch, n_chunks, n_dtiles)
@@ -531,8 +530,8 @@ def frozen_gate_scan_triton(
         NEG_INF=_NEG_INF,
     )
 
-    # Phase-m temps are dead after apply. Reuse as nc scan lanes (not ``m``:
-    # that is the stabilizer and is copied into ``out``).
+    # Phase-m temps are dead after apply. Reuse as nc scan lanes;
+    # ``m`` is the stabilizer copied into ``out``.
     j_loc = a_loc
     n_loc = b_loc
     c_loc = pre.new_empty(batch, time, d_h)

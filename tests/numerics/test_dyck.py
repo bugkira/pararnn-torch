@@ -6,8 +6,9 @@ import torch
 from torch.nn import functional as F
 
 from examples.dyck_language import VOCAB, sample_dyck1
-from pararnn import NewtonConfig, ParaRNN, ParaSLSTM, sequential_apply
+from pararnn import NewtonConfig, ParaRNN, ParaSLSTM
 from pararnn.layout import SLSTM_HIDDEN
+from pararnn.solvers import sequential_apply
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

@@ -1,8 +1,7 @@
 """Triton diagonal monoid scan (paper eq. 2.4).
 
-Optional CUDA backend for ``scan_diag``. Eager PyTorch remains the default.
-Not Apple's PCR: same monoid as ``pararnn.solvers.scan``, via
-``tl.associative_scan`` (Triton 3.6, bundled with this PyTorch).
+Optional CUDA backend for ``scan_diag``. Same monoid as
+``pararnn.solvers.scan``, via ``tl.associative_scan``.
 
 ``(J_r, r_r) ⊕ (J_l, r_l) = (J_r J_l, J_r r_l + r_r)``.
 Tile time; pad with identity ``(1, 0)``. CUDA float16/float32, and bf16 on
@@ -22,7 +21,7 @@ from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
 
 log = logging.getLogger(__name__)
 
-# 2080 Ti default shared mem ~64 KiB. 128 × 32 × 2 × 4 B = 32 KiB plus scan temps.
+# Tile SRAM: 128 × 32 × 2 × 4 B = 32 KiB plus scan temps (~64 KiB shared).
 _BLOCK_T = 128
 _BLOCK_D = 32
 _CHUNK_PAD = 64  # 64 * 128 = 8192. Raise BLOCK_T before lengthening the pad.
@@ -245,7 +244,7 @@ def scan_diag_triton(jac: Tensor, residual: Tensor) -> Tensor:
     if n_chunks > _CHUNK_PAD:
         raise ValueError(
             f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD}. "
-            "Increase BLOCK_T rather than copying a longer Apple kernel."
+            "Increase BLOCK_T or CHUNK_PAD."
         )
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
 

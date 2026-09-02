@@ -16,8 +16,9 @@ sys.path.insert(0, str(_REPO / "scripts"))
 
 from examples.dyck_language import VOCAB, sample_dyck1
 from examples.slstm_vs_flashrnn import _NewtonDyckLM
-from pararnn import NewtonConfig, NewtonStats, sequential_apply
+from pararnn import NewtonConfig
 from pararnn.layout import SLSTM_HIDDEN
+from pararnn.solvers import NewtonStats, sequential_apply
 from pararnn.solvers.newton import newton_apply
 
 from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device

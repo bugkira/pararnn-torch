@@ -108,11 +108,11 @@ class _ParityNet(nn.Module):
         if arm == "ssm":
             self.blocks = nn.ModuleList(_S6Block(d_h) for _ in range(num_layers))
         else:
-            backend = "newton" if arm == "newton" else "eager"
+            solver = "auto" if arm == "newton" else "sequential"
             self.blocks = nn.ModuleList(
                 xLSTMBlock(
                     d_h,
-                    backend=backend,
+                    solver=solver,
                     mix="diag",
                     max_recurrent_norm=max_recurrent_norm,
                     config=newton_cfg,

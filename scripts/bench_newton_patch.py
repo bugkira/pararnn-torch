@@ -20,7 +20,12 @@ from pathlib import Path
 import torch
 from torch import Tensor, nn
 
-from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, setup_logging, wait_until_free
+from gpu import (
+    DEFAULT_EXPERIMENT_GPU_NAME,
+    select_device,
+    setup_logging,
+    wait_until_free,
+)
 
 log = logging.getLogger("bench")
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,7 +80,7 @@ def _cfg(*, backend: str, library_default: bool):
 
 
 def _time_forward(cell: nn.Module, x: Tensor, cfg, name: str) -> dict:
-    from pararnn import NewtonStats, newton_apply
+    from pararnn.solvers import NewtonStats, newton_apply
 
     def fn() -> None:
         with torch.no_grad():
@@ -114,7 +119,7 @@ def _time_forward(cell: nn.Module, x: Tensor, cfg, name: str) -> dict:
 
 
 def _time_backward(cell: nn.Module, x: Tensor, cfg, h0: Tensor | None, name: str) -> dict:
-    from pararnn import newton_apply
+    from pararnn.solvers import newton_apply
 
     x_in = x.detach().requires_grad_(True)
     h0_in = None if h0 is None else h0.detach().requires_grad_(True)

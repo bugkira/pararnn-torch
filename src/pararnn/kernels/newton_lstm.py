@@ -1,8 +1,7 @@
 """Fused ParaLSTM Newton: CIFG cell + 2×2 J + scan (paper Alg. 1 / eq. 3.1b, 3.2b).
 
-``W_x(x)`` stays a cuBLAS GEMM. Not Apple's fused CUDA.
-CUDA float16/float32, and bf16 on compute capability ≥ 8.0; cell+scan
-algebra in fp32. DRAM is the tensor dtype.
+``W_x(x)`` stays a cuBLAS GEMM. CUDA float16/float32, and bf16 on compute
+capability ≥ 8.0; cell+scan algebra in fp32. DRAM is the tensor dtype.
 """
 
 from __future__ import annotations
@@ -456,7 +455,7 @@ def newton_lstm_fused(
     if n_chunks > _CHUNK_PAD:
         raise ValueError(
             f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD}. "
-            "Increase BLOCK_T rather than copying a longer Apple kernel."
+            "Increase BLOCK_T or CHUNK_PAD."
         )
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
     states = wx.new_empty(batch, time, 2, d_h)

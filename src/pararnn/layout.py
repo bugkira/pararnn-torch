@@ -1,35 +1,27 @@
 """Index and layout conventions.
 
-The paper is 1-indexed. HTML/PDF conversions of Alg. 2 disagree on the scan
-offset (``l - 2^i`` vs ``l - 2^i + 1``). Eq. 2.3 and eq. 2.4 also disagree on
-whether ``J_f`` at step ``l`` is evaluated at ``h_l`` or ``h_{l-1}``.
+Paper is 1-based: ``l = 1..L``, ``h_0 = 0``, ``h_l = f(h_{l-1}, x_l)``.
+Code is 0-based: ``t = 0..T-1`` is paper ``l = t+1``. Batch-first inside
+cells, solvers, and kernels.
 
-This module is the code's source of truth. Derived from eq. 2.1–2.3, not from
-the OCR'd Algorithm 2 and not from Apple's source.
+    x: (B, T, input_size)
+    GRU h: (B, T, hidden_size)
+    LSTM: (B, T, 2, hidden_size) slots [c, h]
+        # nn.LSTM hidden tuple is (h, c)
+    sLSTM: (B, T, 4, hidden_size) slots [c, n, m, h]
+        # Beck et al. 2024
 
-Paper (1-based)
-    l = 1..L, h_0 = 0, x_l, h_l = f(h_{l-1}, x_l)
     F_l = h_l - f(h_{l-1}, x_l)
-    J_l := ∂f/∂h_prev at (h_{l-1}, x_l)     # footnote: J_SSM |_{h_{l-1}} ≡ A_l
-    δh_l = J_l δh_{l-1} + (f(h_{l-1}, x_l) - h_l),  δh_0 = 0
+    J_t = ∂f/∂h_prev at (h_{t-1}, x_t)   # eq. 2.1–2.3
+    δh_t = J_t δh_{t-1} + (f(h_{t-1}, x_t) - h_t),  δh_{<0} = 0
 
-Code (0-based, batch-first **inside** cells/solvers/kernels)
-    t = 0..T-1  corresponds to paper l = t+1
-    x: (batch, time, d_in)
-    GRU state h: (batch, time, d_h)
-    LSTM state: (batch, time, 2, d_h) with index 0 = cell c, 1 = hidden h
-        (paper concatenates [c, h]; nn.LSTM's hidden tuple is (h, c) — inverted)
-    sLSTM state: (batch, time, 4, d_h) = (c, n, m, h) — Beck et al. 2024, not ParaRNN.
+Work-efficient Blelloch exclusive scan on 0-based ``t``, pad to ``2^k``
+with identity ``(I, 0)``.
 
-``ParaRNN`` boundary only (not kernels): ``batch_first=False`` permutes ``x``
-and the output like ``nn.LSTM``; ``h0`` stays batch-leading. ``hidden_layout=
-'pytorch'`` swaps LSTM slots 0/1 on ``h0`` and on ``return_hidden``'s last
-state via ``swap_lstm_ch``. Internal Newton/scan layout is always paper
-``[c, h]``.
-
-Scan
-    Work-efficient Blelloch on 0-based time (pad to ``2^k`` with identity).
-    Never ``t - 2^i + 1``. The ``+1`` in some renderings of Alg. 2 is a 1-based artefact.
+``ParaRNN`` only: ``batch_first=False`` permutes ``x`` and the output like
+``nn.LSTM``; ``h0`` stays batch-leading. ``hidden_layout='pytorch'`` swaps
+LSTM slots 0/1 on ``h0`` and on ``return_hidden``'s last state via
+``swap_lstm_ch``. Kernels stay paper ``[c, h]``.
 """
 
 from __future__ import annotations
@@ -43,8 +35,7 @@ LSTM_HIDDEN = 1
 def swap_lstm_ch(state: torch.Tensor) -> torch.Tensor:
     """Swap LSTM slots 0/1. Paper ``(c, h)`` ↔ ``nn.LSTM`` ``(h, c)``.
 
-    Kernels and VJP never see this. ``state`` is ``(..., 2, d_h)`` — ``h0``
-    or last-step, not a time major that would flip the sequence.
+    ``state`` is ``(..., 2, hidden_size)`` — ``h0`` or last step.
     """
     if state.ndim < 2 or state.shape[-2] != 2:
         raise ValueError(
@@ -53,7 +44,7 @@ def swap_lstm_ch(state: torch.Tensor) -> torch.Tensor:
     return state.flip(-2)
 
 
-# sLSTM (Beck et al. 2024): four-slot state, not Apple's CIFG pair.
+# sLSTM (Beck et al. 2024): four-slot state (c, n, m, h).
 SLSTM_CELL = 0
 SLSTM_NORMALIZER = 1
 SLSTM_STABILIZER = 2

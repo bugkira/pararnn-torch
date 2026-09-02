@@ -62,7 +62,7 @@ def test_s6_block_residual_shape_and_grad():
 
 
 def test_xlstm_block_forwards_parity_no_clip():
-    block = xLSTMBlock(8, backend="eager", max_recurrent_norm=None, device=device)
+    block = xLSTMBlock(8, solver="sequential", max_recurrent_norm=None, device=device)
     assert block.cell.max_recurrent_norm is None
 
 

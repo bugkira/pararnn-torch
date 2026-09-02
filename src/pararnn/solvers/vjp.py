@@ -1,7 +1,7 @@
 """Packed cell VJP for eq. 2.6 (``h_prev`` detached).
 
 The reverse scan already applied ``J^T``. This is ``∂L/∂(x, θ)`` from
-``μ = ∇_H L`` through one batched ``f``, not autograd through Newton.
+``μ = ∇_H L`` through one batched ``f`` (eq. 2.6).
 
 ParaGRU / ParaLSTM / ParaSLSTM ``mix='diag'``: closed-form elementwise VJP +
 one ``W_x`` GEMM (same split as the fused forward). On CUDA the elementwise

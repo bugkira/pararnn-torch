@@ -7,6 +7,7 @@ from typing import NamedTuple
 import torch
 from torch import Tensor, nn
 
+from pararnn.cells.protocol import resolve_layer_sizes
 from pararnn.layout import LSTM_CELL, LSTM_HIDDEN
 from pararnn.weight_init import kaiming_uniform_linear_, xavier_gaussian_vec_
 
@@ -22,34 +23,43 @@ def _tanh_prime_from_act(act: Tensor) -> Tensor:
 class ParaLSTM(nn.Module):
     """Coupled input-forget LSTM with peepholes (Greff et al. 2017), diagonal A/C.
 
-    State layout ``(..., 2, d_h)``: index 0 = cell ``c``, 1 = hidden ``h``.
+    State layout ``(..., 2, hidden_size)``: index 0 = cell ``c``, 1 = hidden ``h``.
     Candidate ``z`` uses tanh (σ_z in the paper). Forget/output: sigmoid.
+    ``max_recurrent_norm`` is an App. C.1 elementwise clamp of ``a_*`` / ``c_*``
+    to ``[-cap, cap]``.
     """
 
     def __init__(
         self,
-        d_in: int,
-        d_h: int,
+        input_size: int | None = None,
+        hidden_size: int | None = None,
         *,
+        d_in: int | None = None,
+        d_h: int | None = None,
         max_recurrent_norm: float | None = 0.5,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
+        input_size, hidden_size = resolve_layer_sizes(
+            input_size, hidden_size, d_in=d_in, d_h=d_h
+        )
         factory_kwargs = {"device": device, "dtype": dtype}
-        self.d_in = d_in
-        self.d_h = d_h
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.d_in = input_size
+        self.d_h = hidden_size
         self.state_slots = 2
         self.hidden_slot = LSTM_HIDDEN
         self.max_recurrent_norm = max_recurrent_norm
 
         # a_f, a_z, a_o and peepholes c_f, c_o (paper eq. 3.3).
-        self.a_f = nn.Parameter(torch.empty(d_h, **factory_kwargs))
-        self.a_z = nn.Parameter(torch.empty(d_h, **factory_kwargs))
-        self.a_o = nn.Parameter(torch.empty(d_h, **factory_kwargs))
-        self.c_f = nn.Parameter(torch.empty(d_h, **factory_kwargs))
-        self.c_o = nn.Parameter(torch.empty(d_h, **factory_kwargs))
-        self.W_x = nn.Linear(d_in, 3 * d_h, bias=True, **factory_kwargs)
+        self.a_f = nn.Parameter(torch.empty(hidden_size, **factory_kwargs))
+        self.a_z = nn.Parameter(torch.empty(hidden_size, **factory_kwargs))
+        self.a_o = nn.Parameter(torch.empty(hidden_size, **factory_kwargs))
+        self.c_f = nn.Parameter(torch.empty(hidden_size, **factory_kwargs))
+        self.c_o = nn.Parameter(torch.empty(hidden_size, **factory_kwargs))
+        self.W_x = nn.Linear(input_size, 3 * hidden_size, bias=True, **factory_kwargs)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -76,7 +86,7 @@ class ParaLSTM(nn.Module):
     def step(
         self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
     ) -> Tensor:
-        """One step. Does not build the 2×2 Jacobian (sequential unroll / decode).
+        """One step (sequential unroll / decode).
 
         ``wx`` is optional ``W_x(x)`` (eq. 3.1, independent of state).
         """

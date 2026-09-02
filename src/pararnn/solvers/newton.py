@@ -1,24 +1,10 @@
 """Newton iterations wrapping a parallel scan (Danieli et al. 2025 Alg. 1).
 
-K=3: App. A — residual to machine precision in 3–4 steps for ParaGRU/ParaLSTM.
-Init: eq. A.1, only t=0 sees ``h0``; later t still ``f(0, x_t)``. ParaSLSTM
-instead starts from the zero-hidden unroll (running ``m``/``n``, no ``R h``).
-``picard_iters`` None is auto P from T for ParaSLSTM (still prefix scans).
-
-Any cell with ``step(h, x)`` parallelizes: Autograd supplies ``J = ∂f/∂h``
-(DEER / Lim et al.). ParaGRU/ParaLSTM keep analytic J (paper §3) as the default.
+K=3 (App. A) for ParaGRU/ParaLSTM. Init is eq. A.1 except ParaSLSTM, which
+starts from the zero-hidden unroll. Backward is eq. 2.6 (one reverse scan).
 
 ``scan_backend='fused'`` is a handwritten Triton kernel for ParaGRU, ParaLSTM,
-and ParaSLSTM ``mix='diag'``, not a generic ``f``. ``'auto'`` picks fused
-(CUDA, those cells, fp16/fp32, and bf16 on compute capability ≥ 8.0), else
-Triton scan + ``cell.step``, else eager.
-ParaSLSTM ``coords='log'`` uses the LSE fused kernel when ``scan_backend`` is
-``fused`` / ``auto`` on CUDA diag mix.
-
-Backward is **not** autograd through the K iterates. Paper eq. 2.6: one reverse
-scan of J^T, then a VJP of the batched cell. ParaGRU/ParaLSTM and ParaSLSTM
-``mix='diag'`` pack that VJP in Triton on CUDA (``W_x`` GEMM still PyTorch).
-Head/dense sLSTM and custom cells use Autograd on ``step``. IFT is not this.
+and ParaSLSTM ``mix='diag'``. ``'auto'`` picks fused on CUDA for those cells.
 """
 
 from __future__ import annotations
@@ -32,15 +18,7 @@ from torch import Tensor, nn
 
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
-from pararnn.cells.para_slstm import (
-    ParaSLSTM,
-    SLSTMLogCoords,
-    slstm_clamp_log_coords,
-    slstm_decode_log,
-    slstm_encode_log,
-    slstm_picard_init,
-    slstm_zero_hidden_init,
-)
+from pararnn.cells.para_slstm import ParaSLSTM
 from pararnn.kernels.precision import is_fused_dtype_supported
 from pararnn.layout import prepend_state, slstm_pack_heads, slstm_unpack_heads
 from pararnn.solvers.jacobian import step_and_jacobian
@@ -54,6 +32,13 @@ from pararnn.solvers.scan import (
     scan_dense,
     scan_diag,
 )
+from pararnn.solvers.slstm_log import (
+    SLSTMLogCoords,
+    slstm_clamp_log_coords,
+    slstm_decode_log,
+    slstm_encode_log,
+)
+from pararnn.solvers.slstm_picard import slstm_picard_init, slstm_zero_hidden_init
 from pararnn.solvers.vjp import cell_vjp, uses_packed_vjp
 
 log = logging.getLogger(__name__)
@@ -61,23 +46,21 @@ log = logging.getLogger(__name__)
 # App. A: K=3 reaches machine precision on these cells. Sequential agreement
 # tests use 1e-4. Stop a wasted extra iter below that and above fp32 noise.
 _DEFAULT_RESIDUAL_ATOL = 1e-5
-# Library contract (not a search): K=3 (App. A). Do not raise K when sLSTM
-# misses the basin — raise Picard P instead (para-slstm.md).
+# Library contract: K=3 (App. A). sLSTM basin: raise picard_iters (para-slstm.md).
 LIBRARY_NEWTON_ITERS = 3
-# After K steps, max|F| above this is divergence, not "needs one more Newton".
+# After K steps, max|F| above this is divergence.
 # Sequential agreement is 1e-4…2e-3; diverged sLSTM is 1e2…1e14 (para-slstm.md).
 # 1.0 sits between. None disables (K-curves, P=0 timing benches).
 _DEFAULT_RESIDUAL_FAIL = 1.0
-# Warn (do not raise) when max|F| is past sequential-agreement but under
-# residual_fail. Train can miss the P=1 basin on one batch after Adam
-# (para-slstm.md / docs/next.md); 1.0 would stay silent.
+# Warn when max|F| is past sequential-agreement but under residual_fail.
+# Train can miss the P=1 basin on one batch after Adam (para-slstm.md).
 _RESIDUAL_WARN = 1e-3
-# Auto Picard rungs (slstm_auto_picard). Train adapt climbs this, not K.
+# Auto Picard rungs (slstm_auto_picard). Train adapt climbs picard_iters.
 _PICARD_RUNGS = (1, 3, 5)
 
 
 class NewtonDivergenceError(RuntimeError):
-    """Newton did not land in the sequential basin. Raise P for sLSTM, not K."""
+    """Newton residual exceeded residual_fail. For ParaSLSTM raise picard_iters."""
 
 
 @dataclass
@@ -86,8 +69,7 @@ class NewtonStats:
 
     max_residual: float = float("nan")
     # Residual evaluations in the Newton loop (≤ max_iters), including the
-    # eval that triggered early-stop. 0 if max_iters=0. Fused has no
-    # early-stop: this is max_iters.
+    # eval that triggered early-stop. 0 if max_iters=0. Fused: this is max_iters.
     iters: int = 0
     scan_backend: str = ""
     picard_iters: int = 0
@@ -96,53 +78,30 @@ class NewtonStats:
 
 @dataclass
 class NewtonConfig:
-    # App. A / library contract. ParaSLSTM at long T needs Picard, not more K.
+    # App. A: K=3. ParaSLSTM at long T uses Picard (picard_iters).
     max_iters: int = LIBRARY_NEWTON_ITERS
-    omega: float = 1.0  # 1 = vanilla Newton; <1 damps (cf. Gonzalez et al. ELK)
-    # auto: fused on CUDA GRU/LSTM/sLSTM-diag fp16/fp32, else Triton scan + step, else eager.
-    # eager: vectorized Blelloch (CPU+CUDA). Any f.
-    # triton: CUDA scan only (fp16 DRAM / fp32 algebra, or fp32). Cell stays PyTorch.
-    # fused: handwritten CUDA cell+J+scan for GRU/LSTM/sLSTM-diag. Not any f.
+    omega: float = 1.0  # 1 = vanilla Newton; <1 damps (Gonzalez et al. ELK)
+    # auto: fused CUDA GRU/LSTM/sLSTM-diag; else Triton scan + step; else eager Blelloch.
     scan_backend: str = "auto"
-    # auto: analytic J if the cell has step_with_jacobian, else Autograd.
-    # analytic: require step_with_jacobian (paper §3 cells).
-    # autograd: torch.func JVP/jacrev — any step(h, x).
+    # auto: analytic J if step_with_jacobian else Autograd. analytic: require it.
     jacobian: str = "auto"
-    # None infers from state, or cell.jac_structure (sLSTM: block4 / head / dense).
-    # diag: (B,T,D); block2: (B,T,2,D); block4: (B,T,4,D) channelwise 4×4.
-    # head: per-head dense (B,T,H,4 d_head, 4 d_head). dense: full d_h×d_h.
+    # None infers from state / cell.jac_structure. diag | block2 | block4 | head | dense.
     jac_structure: str | None = None
-    # None disables early-stop. Default: skip remaining Newton steps when
-    # max|F| is already below sequential-agreement scale (see App. A / 1e-4 tests).
+    # None: run all K. Default 1e-5 skips leftover K when max|F| is already small (App. A).
     residual_atol: float | None = _DEFAULT_RESIDUAL_ATOL
-    # After the last Newton step, raise NewtonDivergenceError if max|F| exceeds
-    # this. Default 1.0 (see module comment). None: K-curves / diverged benches.
+    # After last K, raise if max|F| exceeds this. Default 1.0. None: K-curves / benches.
     residual_fail: float | None = _DEFAULT_RESIDUAL_FAIL
-    # log: ParaSLSTM only — LSE cell in (u, log n, m, h). Not a paper default.
-    # Not the snap path once picard_iters is in the basin (native is as good
-    # or better; para-slstm.md). Fused diag has an LSE kernel. Fallback: native.
+    # native | log. log: ParaSLSTM LSE cell in (u, log n, m, h).
     coords: str = "native"
-    # None = one Newton over the full T. int: sequential chunks of this length,
-    # each with its own K Newton steps; carry the last state as h0. 64 because
-    # T=64 K=3 snaps at d_h=256 seed 0 in this repo (para-slstm.md). Gemini /
-    # Mamba-2 SRAM tile. Fallback: 32 if a seed fails at 64. Sequential span.
+    # None = one Newton over T. int: sequential chunks; 64 from T=64 K=3 at d_h=256.
     chunk_len: int | None = None
-    # None = auto for ParaSLSTM: library contract P ∈ {1, 3, 5} from T
-    # (slstm_auto_picard). Other cells: 0. Explicit 0 is zero-hidden.
-    # Fallback if residual_fail fires: raise P, not K.
+    # None = auto P ∈ {1, 3, 5} from T for ParaSLSTM. Explicit 0 is zero-hidden.
     picard_iters: int | None = None
-    # None: retry P on ParaSLSTM only when picard_iters was auto (None at
-    # the call). Explicit P (benches, head-smoke) stays put. True/False force.
-    # Not Eisenstat–Walker (docs/next.md): we exact-solve Jδ=-F; this is a
-    # better guess when K=3 misses the basin after Adam.
+    # None: retry P when picard_iters was auto. True/False force. Better initial guess.
     picard_adapt: bool | None = None
-    # Retry the solve at the next P rung if max|F| exceeds this.
-    # 1e-3 = newton_residual_high / sequential-agreement band (para-slstm.md).
-    # Dyck P=1 miss was 0.557, under residual_fail=1.0. None: only retry
-    # when residual_fail would raise.
+    # Retry next P if max|F| exceeds this (1e-3 = sequential-agreement band). None: only residual_fail.
     picard_retry_atol: float | None = _RESIDUAL_WARN
-    # assoc: tl.associative_scan.
-    # seq: serial tl.range prefix in the tile — ablation only.
+    # assoc: tl.associative_scan. seq: serial prefix in the tile (ablation).
     scan_tile: str = "assoc"
 
 
@@ -156,10 +115,9 @@ def newton_apply(
 ) -> Tensor:
     """Parallel forward: Newton on F(H)=0, inner solve via associative scan.
 
-    ``h0`` is the paper's ``h_0`` (default 0). Fused kernels prepend it (not zeros).
+    ``h0`` is the paper's ``h_0`` (default 0). Fused kernels prepend ``h0``.
 
-    If gradients are enabled, the backward uses eq. 2.6 (reverse scan) instead
-    of differentiating the Newton loop.
+    If gradients are enabled, the backward is eq. 2.6 (one reverse scan).
     """
     config = config or NewtonConfig()
     if config.scan_backend not in ("auto", "eager", "triton", "fused"):
@@ -195,10 +153,10 @@ def newton_apply(
     if not needs_grad:
         return _newton_forward(cell, x, config, h0=h0, stats=stats)
 
-    # Nested: cell/config/stats are not tensors. Autograd.Function.apply
-    # cannot take them; a module-level class storing them as attributes is
-    # racy under concurrent newton_apply. h0 must be an apply() input or
-    # its gradient is dropped (eq. 2.6: J_0^T μ_0).
+    # Nested Autograd.Function.apply takes tensors. cell/config/stats close
+    # over this frame; a module-level class storing them is racy under
+    # concurrent newton_apply. h0 is an apply() input so ∇_{h0} L = J_0^T μ_0
+    # (eq. 2.6).
     h0_leaf = h0 if has_h0 else x.new_zeros(())
 
     class _NewtonFixedPoint(torch.autograd.Function):
@@ -265,10 +223,8 @@ def _pick_auto(cell: nn.Module, x: Tensor) -> str:
 def slstm_auto_picard(seq_len: int) -> int:
     """Library Picard P for ParaSLSTM: 1 if T≤64, 3 if T≤2048, else 5.
 
-    Contract is this triple, not a search over K. Measured at ``d_h=256``,
-    ``x_scale=1``, K=3 (para-slstm.md). Finer seed-0 cutovers (P=2 at T=1024,
-    P=4 at T=4096) failed unseeded B=8. Explicit 0 is zero-hidden only.
-    Fallback if ``residual_fail`` fires: raise P, not K.
+    Measured at ``d_h=256``, ``x_scale=1``, K=3 (para-slstm.md). Explicit 0 is
+    zero-hidden only. Fallback if ``residual_fail`` fires: raise ``picard_iters``.
     """
     t = int(seq_len)
     if t <= 64:
@@ -281,7 +237,7 @@ def slstm_auto_picard(seq_len: int) -> int:
 def slstm_picard_next(picard_iters: int) -> int | None:
     """Next auto Picard rung after ``picard_iters``, or None at the cap (5).
 
-    Ladder is ``{1, 3, 5}`` (slstm_auto_picard / para-slstm.md), not EW η.
+    Ladder is ``{1, 3, 5}`` (slstm_auto_picard / para-slstm.md).
     """
     p = int(picard_iters)
     for rung in _PICARD_RUNGS:
@@ -576,7 +532,7 @@ def _newton_chunked(
     """Newton on windows of ``chunk_len``; last state of a chunk is the next ``h0``.
 
     Span is linear in the number of chunks. Each window is the usual Alg. 1
-    (eager / triton / fused). T=64 K=3 snaps at bench width in this repo.
+    (eager / triton / fused). ``chunk_len=64`` from T=64 K=3 at ``d_h=256``.
     """
     length = int(config.chunk_len)
     inner = replace(config, chunk_len=None)
@@ -642,7 +598,7 @@ def _fill_stats(
         raise NewtonDivergenceError(
             f"Newton residual {res:.3e} after {iters} iters exceeds residual_fail="
             f"{cap:g} (seq_len={x.shape[1]}, picard={int(config.picard_iters or 0)}, "
-            f"history={hist[-8:]!r}). For ParaSLSTM raise P, not K."
+            f"history={hist[-8:]!r}). For ParaSLSTM raise picard_iters."
         )
     if (
         res > _RESIDUAL_WARN
@@ -704,8 +660,8 @@ def _eq26_vjp(
 ) -> tuple[Tensor | None, tuple[Tensor | None, ...], Tensor | None]:
     """``∇_x L``, per-parameter grads, and ``∇_{h0} L`` (eq. 2.6 + cell VJP).
 
-    ``∇_{h0} L = J_0^T μ_0``. Reverse scan over ``H`` does not use ``J_0``
-    (no ``h_{-1}`` in the trajectory); that factor is the h0 adjoint.
+    ``∇_{h0} L = J_0^T μ_0``. Reverse scan over ``H`` starts at t=0; ``J_0``
+    is the h0 adjoint.
     """
     h_prev = prepend_state(states, h0)
     wx = _wx_if_analytic(cell, x, jacobian)
@@ -962,7 +918,7 @@ def _head_slot_pack(
     d_head = d_h // n_heads
     if sd != 4 * d_head:
         return None
-    # block4 is (B, T, 4, 4, d_h); last dim is the feature, not 4 d_head.
+    # block4 is (B, T, 4, 4, d_h); last dim is the channel.
     if jac.shape[2] == 4 and jac.shape[3] == 4 and jac.shape[-1] == d_h:
         return None
     packed = slstm_pack_heads(vec, n_heads, d_head)

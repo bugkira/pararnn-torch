@@ -1,14 +1,8 @@
-"""Pre-norm residual sLSTM block. Ours — not NX-AI's ``xlstm`` package.
+"""Pre-norm residual sLSTM block (Beck et al. 2024).
 
-Beck et al. 2024 put LayerNorm + residual around sLSTM in the backbone.
-``ParaRNN`` does not: stacking there is naive. This module is that missing
-block so an xLSTM-style stack can swap the recurrence backend.
-
-``backend="newton"``: ``ParaRNN`` ``solver="auto"`` (Newton while
-``self.training``, sequential ``step`` in ``eval()``).
-``backend="eager"``: ``solver="sequential"`` always. Pass ``solver=`` to
-override. FlashRNN is a bench in ``scripts/``, not a switch here —
-``cuda_fused`` needs compute capability ≥ 8.0, and we do not stub it.
+LayerNorm + residual around sLSTM. This is the sLSTM half of an xLSTM
+stack. ``solver`` matches ``ParaRNN``: Newton while
+``self.training`` when ``solver='auto'``.
 """
 
 from __future__ import annotations
@@ -22,52 +16,44 @@ from pararnn.cells.para_slstm import ParaSLSTM
 from pararnn.layers.para_rnn import ParaRNN
 from pararnn.solvers.newton import NewtonConfig
 
-_BACKENDS = ("newton", "eager")
+_SOLVERS = ("auto", "newton", "sequential")
 
 
 class xLSTMBlock(nn.Module):
     """``(B, T, d_model) → (B, T, d_model)``: LN → sLSTM → residual add.
 
-    ``mix='diag'`` is the fused Newton cell. Head mix is the xLSTM compromise
-    and stays on ``step``. ``max_recurrent_norm`` is App. C.1 (0.5 LM; ``None``
-    on parity). This block is the sLSTM half an xLSTM stack could swap in
-    for parallel *training*; mLSTM stays theirs. Not NX-AI. Not xLSTM-7B.
+    ``mix='diag'`` is the fused Newton cell. Head mix is the xLSTM-style
+    block-diagonal ``R`` and stays on ``step``. ``d_model`` is both input
+    and hidden size (no projection).
     """
 
     def __init__(
         self,
         d_model: int,
         *,
-        backend: str = "newton",
         mix: str = "diag",
         n_heads: int | None = None,
         max_recurrent_norm: float | None = 0.5,
         config: NewtonConfig | None = None,
-        solver: Literal["auto", "newton", "sequential"] | None = None,
+        solver: Literal["auto", "newton", "sequential"] = "auto",
         batch_first: bool = True,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
-        if backend not in _BACKENDS:
-            raise ValueError(
-                f"backend must be one of {_BACKENDS}, got {backend!r}. "
-                "FlashRNN is scripts/ only."
-            )
+        if solver not in _SOLVERS:
+            raise ValueError(f"solver must be one of {_SOLVERS}, got {solver!r}")
         factory_kwargs = {"device": device, "dtype": dtype}
         self.d_model = d_model
-        self.backend = backend
         self.norm = nn.LayerNorm(d_model, **factory_kwargs)
         cell = ParaSLSTM(
-            d_in=d_model,
-            d_h=d_model,
+            input_size=d_model,
+            hidden_size=d_model,
             mix=mix,
             n_heads=n_heads,
             max_recurrent_norm=max_recurrent_norm,
             **factory_kwargs,
         )
-        if solver is None:
-            solver = "sequential" if backend == "eager" else "auto"
         self.rnn = ParaRNN(
             cell,
             config=config or NewtonConfig(),

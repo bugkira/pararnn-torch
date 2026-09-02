@@ -1,10 +1,8 @@
-"""Dispatch handwritten fused Newton. Not any ``f``.
+"""Dispatch fused Newton for ParaGRU, ParaLSTM, and ParaSLSTM ``mix='diag'``.
 
-ParaGRU / ParaLSTM, and ParaSLSTM with ``mix='diag'`` (4x4 SRAM). Head/dense
-sLSTM stay on the PyTorch cell + scan_dense path. ParaSLSTM ``log_coords``
-uses the LSE cell inside the same kernel; ``picard_iters`` is the
-frozen-gate 1D scan (Triton on CUDA) before the fused 4x4 Newton. Still
-O(log T). Serial ``chunk_len`` stays a Python loop.
+Head/dense sLSTM stay on the PyTorch cell + scan path. ``log_coords`` uses
+the LSE cell in the same kernel; ``picard_iters`` is the frozen-gate scan
+before 4×4 Newton. ``chunk_len`` stays a Python loop.
 """
 
 from __future__ import annotations
@@ -59,8 +57,11 @@ def fused_newton(
                 "fused Newton is mix='diag' only (4x4 SRAM); "
                 f"got mix={cell.mix!r}"
             )
-        from pararnn.cells.para_slstm import slstm_picard_init, slstm_zero_hidden_init
         from pararnn.kernels.newton_slstm import newton_slstm_fused
+        from pararnn.solvers.slstm_picard import (
+            slstm_picard_init,
+            slstm_zero_hidden_init,
+        )
 
         if picard_iters:
             states = slstm_picard_init(
@@ -80,6 +81,6 @@ def fused_newton(
             scan_tile=scan_tile,
         )
     raise TypeError(
-        f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM(diag) only, not any f; "
+        f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM(diag) only; "
         f"got {type(cell).__name__}"
     )

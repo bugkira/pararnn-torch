@@ -1,7 +1,4 @@
-"""Initialization from Danieli et al. 2025 Appendix C.1 (language-model recipe).
-
-Not Apple's library defaults (those used xLSTM / linspace bias).
-"""
+"""Initialization from Danieli et al. 2025 Appendix C.1 (language-model recipe)."""
 
 from __future__ import annotations
 

@@ -1,14 +1,11 @@
-"""Fused ParaSLSTM Newton: diag mix, 4x4 J + scan (Beck sLSTM + paper Alg. 1).
+"""Fused ParaSLSTM Newton: diag mix, 4×4 J + scan (Beck sLSTM + paper Alg. 1).
 
-``W_x(x)`` stays a cuBLAS GEMM. Not Apple's fused CUDA. Not FlashRNN.
-``mix='head'`` / ``'dense'`` are not this kernel (not 4x4 SRAM).
+``W_x(x)`` stays a cuBLAS GEMM. This kernel is diag mix, 4×4 SRAM.
 CUDA float16/float32, and bf16 on compute capability ≥ 8.0; cell+scan
 algebra in fp32. DRAM is the tensor dtype.
 
-The 4x4 is the Newton linearization of ``R h`` feedback into the next
-gates. Picard (frozen ``R h``) is the 1D max-plus + two ``ax+b`` scans
-in ``picard_slstm.py``. Do not drop this 4x4 and expect sequential
-agreement. ``h`` is not a pure epilogue while mixing is live.
+The 4×4 linearizes ``R h`` into the next gates. Picard (frozen ``R h``)
+is the 1D max-plus + two ``ax+b`` scans in ``picard_slstm.py``.
 """
 
 from __future__ import annotations
@@ -36,7 +33,7 @@ log = logging.getLogger(__name__)
 _BLOCK_T = 32
 _BLOCK_D = 16
 # Chunk scan: 20 × CHUNK_PAD × CHUNK_D × 4 B ≤ 64 KiB. 512 × 1 → 40 KiB.
-# T cap = 32 × 512 = 16384 (crossover smoke vs FlashRNN). Not Apple PCR.
+# T cap = 32 × 512 = 16384.
 _CHUNK_D = 1
 _CHUNK_PAD = 512
 
@@ -86,7 +83,7 @@ def _seq_scan_block4(
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
-    """Inclusive serial prefix along time. Not a warp shuffle; ablation only."""
+    """Inclusive serial prefix along time. Ablation vs ``tl.associative_scan``."""
     a00 = tl.full((BLOCK_D,), 1.0, tl.float32)
     a01 = tl.zeros((BLOCK_D,), dtype=tl.float32)
     a02 = tl.zeros((BLOCK_D,), dtype=tl.float32)
@@ -183,72 +180,6 @@ def _seq_scan_block4(
         o00, o01, o02, o03, o10, o11, o12, o13, o20, o21, o22, o23, o30, o31, o32, o33,
         u0, u1, u2, u3,
     )
-
-
-@triton.jit
-def _slstm_pred(
-    c_prev,
-    n_prev,
-    m_prev,
-    h_prev,
-    zi_x,
-    zf_x,
-    zz_x,
-    zo_x,
-    r_i,
-    r_f,
-    r_z,
-    r_o,
-    eps,
-):
-    """sLSTM step without J. Shamanskii residual."""
-    z_i = r_i * h_prev + zi_x
-    z_f = r_f * h_prev + zf_x
-    z_z = r_z * h_prev + zz_x
-    z_o = r_o * h_prev + zo_x
-    left = z_f + m_prev
-    m_new = tl.where(left > z_i, left, z_i)
-    i_t = tl.exp(z_i - m_new)
-    f_t = tl.exp(z_f + m_prev - m_new)
-    z = _tanh(z_z)
-    n_new = f_t * n_prev + i_t
-    c_new = f_t * c_prev + i_t * z
-    o = tl.sigmoid(z_o)
-    h_new = o * (c_new / (n_new + eps))
-    return c_new, n_new, m_new, h_new
-
-
-@triton.jit
-def _slstm_log_pred(
-    u_prev,
-    ln_prev,
-    m_prev,
-    h_prev,
-    zi_x,
-    zf_x,
-    zz_x,
-    zo_x,
-    r_i,
-    r_f,
-    r_z,
-    r_o,
-):
-    z_i = r_i * h_prev + zi_x
-    z_f = r_f * h_prev + zf_x
-    z_z = r_z * h_prev + zz_x
-    z_o = r_o * h_prev + zo_x
-    left = z_f + m_prev
-    m_new = tl.where(left > z_i, left, z_i)
-    a = z_f + m_prev - m_new + ln_prev
-    b = z_i - m_new
-    mx = tl.maximum(a, b)
-    ln_new = mx + tl.log(tl.exp(a - mx) + tl.exp(b - mx))
-    gamma = tl.exp(b - ln_new)
-    z = _tanh(z_z)
-    u_new = (1.0 - gamma) * u_prev + gamma * z
-    o = tl.sigmoid(z_o)
-    h_new = o * u_new
-    return u_new, ln_new, m_new, h_new
 
 
 @triton.jit
@@ -827,7 +758,7 @@ def newton_slstm_fused(
     ``(u, log n, m, h)`` and returns native ``(c, n, m, h)``.
     ``scan_tile='seq'`` is a serial ``tl.range`` prefix (ablation).
     """
-    from pararnn.cells.para_slstm import (
+    from pararnn.solvers.slstm_log import (
         slstm_clamp_log_coords,
         slstm_decode_log,
         slstm_encode_log,
@@ -856,7 +787,7 @@ def newton_slstm_fused(
     if n_chunks > _CHUNK_PAD:
         raise ValueError(
             f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD} "
-            f"(T≤{_BLOCK_T * _CHUNK_PAD}). Shrink CHUNK_D before copying a longer Apple kernel."
+            f"(T≤{_BLOCK_T * _CHUNK_PAD}). Shrink CHUNK_D or raise CHUNK_PAD."
         )
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
     n_dtiles_chunk = (d_h + _CHUNK_D - 1) // _CHUNK_D

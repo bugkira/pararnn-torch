@@ -1,7 +1,7 @@
 """Jacobian of ``f(h_{t-1}, x_t)`` from Autograd (DEER / Lim et al.).
 
 Any cell with ``step(h, x)`` is enough. Analytic ``step_with_jacobian`` is the
-fast path for ParaGRU/ParaLSTM (paper §3), not a requirement.
+fast path for ParaGRU/ParaLSTM (paper §3).
 
 ``diag``: one JVP with a ones tangent. Exact Newton iff ``f`` is channelwise
 in ``h``; otherwise this is the diagonal quasi-Newton (Gonzalez et al. 2024).
@@ -10,7 +10,7 @@ in ``h``; otherwise this is the diagonal quasi-Newton (Gonzalez et al. 2024).
 ``head``: ``jacrev`` per sLSTM head (``4 d_head × 4 d_head``). Exact for
 xLSTM-style block-diagonal mixing.
 ``dense``: ``jacrev`` per ``(batch, time)`` — exact for any ``f``, ``O(d_h^3)``
-scan. Not a paper hyperparameter; use it when the cell mixes all channels.
+scan. Use it when the cell mixes all channels.
 """
 
 from __future__ import annotations

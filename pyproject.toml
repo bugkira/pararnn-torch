@@ -5,7 +5,19 @@ description = "PyTorch sequence module for parallel RNN training (ParaRNN / Newt
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
-    { name = "Daniil Sereda", email = "dsereda@ptsecurity.com" }
+    { name = "Daniil Sereda", email = "128284937+bugkira@users.noreply.github.com" }
+]
+keywords = [
+    "rnn",
+    "lstm",
+    "gru",
+    "slstm",
+    "xlstm",
+    "sequence-modeling",
+    "newton",
+    "parallel-scan",
+    "triton",
+    "pytorch",
 ]
 requires-python = ">=3.10"
 classifiers = [
@@ -21,6 +33,12 @@ dependencies = [
     "numpy>=2.2.6",
     "torch>=2.11.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/bugkira/pararnn-torch"
+Repository = "https://github.com/bugkira/pararnn-torch"
+Issues = "https://github.com/bugkira/pararnn-torch/issues"
+Documentation = "https://github.com/bugkira/pararnn-torch"
 
 [project.optional-dependencies]
 train = ["mlflow"]
@@ -49,6 +67,8 @@ module-name = "pararnn"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["cuda: requires a CUDA device"]
+addopts = "--strict-markers"
 
 [tool.ruff]
 src = ["src", "tests", "examples", "scripts"]

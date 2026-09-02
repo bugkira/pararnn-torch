@@ -6,14 +6,14 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from pararnn import (
-    NewtonConfig,
+from pararnn import NewtonConfig
+from pararnn.cells import ParaGRU, ParaSLSTM
+from pararnn.solvers import (
     NewtonDivergenceError,
     NewtonStats,
     newton_apply,
     sequential_apply,
 )
-from pararnn.cells import ParaGRU, ParaSLSTM
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -30,33 +30,55 @@ class _DiagTanh(nn.Module):
 
 
 @torch.no_grad()
-def test_auto_picks_fused_or_eager():
+def test_auto_picks_eager_on_cpu():
     torch.manual_seed(90)
-    cell = ParaGRU(d_in=4, d_h=6).to(device)
-    x = torch.randn(2, 16, 4, device=device)
+    cpu = torch.device("cpu")
+    cell = ParaGRU(d_in=4, d_h=6).to(cpu)
+    x = torch.randn(2, 16, 4, device=cpu)
     st = NewtonStats()
     par = newton_apply(cell, x, NewtonConfig(max_iters=3), stats=st)
     seq = sequential_apply(cell, x)
     assert (par - seq).abs().amax() < 1e-4
-    if device.type == "cuda":
-        assert st.scan_backend == "fused"
-    else:
-        assert st.scan_backend == "eager"
+    assert st.scan_backend == "eager"
+    assert st.max_residual < 1e-4
+    assert st.iters >= 0
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_auto_picks_fused(cuda_device: torch.device) -> None:
+    torch.manual_seed(90)
+    cell = ParaGRU(d_in=4, d_h=6).to(cuda_device)
+    x = torch.randn(2, 16, 4, device=cuda_device)
+    st = NewtonStats()
+    par = newton_apply(cell, x, NewtonConfig(max_iters=3), stats=st)
+    seq = sequential_apply(cell, x)
+    assert (par - seq).abs().amax() < 1e-4
+    assert st.scan_backend == "fused"
     assert st.max_residual < 1e-4
     assert st.iters >= 0
 
 
 @torch.no_grad()
-def test_auto_custom_cell_is_not_fused():
+def test_auto_custom_cell_picks_eager_on_cpu():
     torch.manual_seed(91)
-    cell = _DiagTanh(d_in=4, d_h=5).to(device)
-    x = torch.randn(2, 12, 4, device=device)
+    cpu = torch.device("cpu")
+    cell = _DiagTanh(d_in=4, d_h=5).to(cpu)
+    x = torch.randn(2, 12, 4, device=cpu)
     st = NewtonStats()
     newton_apply(cell, x, NewtonConfig(max_iters=3, jacobian="autograd"), stats=st)
-    if device.type == "cuda":
-        assert st.scan_backend == "triton"
-    else:
-        assert st.scan_backend == "eager"
+    assert st.scan_backend == "eager"
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_auto_custom_cell_picks_triton(cuda_device: torch.device) -> None:
+    torch.manual_seed(91)
+    cell = _DiagTanh(d_in=4, d_h=5).to(cuda_device)
+    x = torch.randn(2, 12, 4, device=cuda_device)
+    st = NewtonStats()
+    newton_apply(cell, x, NewtonConfig(max_iters=3, jacobian="autograd"), stats=st)
+    assert st.scan_backend == "triton"
 
 
 @torch.no_grad()

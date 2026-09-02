@@ -5,8 +5,9 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from pararnn import NewtonConfig, newton_apply, sequential_apply
+from pararnn import NewtonConfig
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
+from pararnn.solvers import newton_apply, sequential_apply
 from pararnn.solvers.jacobian import jacobian_autograd
 from pararnn.solvers.scan import scan_dense
 from pararnn.solvers.vjp import cell_vjp

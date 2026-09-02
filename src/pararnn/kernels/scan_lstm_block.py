@@ -1,8 +1,8 @@
 """Triton 2×2 block-diagonal monoid scan (paper eq. 2.4 / 3.2b).
 
 Optional CUDA backend for ``scan_block2``. Same monoid as eager four-mul
-``_mm2``/``_mv2`` — not Apple's PCR. CUDA float16/float32, and bf16 on
-compute capability ≥ 8.0; algebra in fp32. DRAM is the tensor dtype.
+``_mm2``/``_mv2``. CUDA float16/float32, and bf16 on compute capability
+≥ 8.0; algebra in fp32. DRAM is the tensor dtype.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
 
 log = logging.getLogger(__name__)
 
-# 6 scan lanes × 64 × 16 × 4 B = 24 KiB before scan temps (2080 Ti ~64 KiB).
+# 6 scan lanes × 64 × 16 × 4 B = 24 KiB before scan temps (~64 KiB shared).
 _BLOCK_T = 64
 _BLOCK_D = 16
 _CHUNK_PAD = 64  # 64 * 64 = 4096. Raise BLOCK_T before lengthening the pad.
@@ -297,7 +297,7 @@ def scan_block2_triton(jac: Tensor, residual: Tensor) -> Tensor:
     if n_chunks > _CHUNK_PAD:
         raise ValueError(
             f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD}. "
-            "Increase BLOCK_T rather than copying a longer Apple kernel."
+            "Increase BLOCK_T or CHUNK_PAD."
         )
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
     j_flat = jac.view(batch, time, 4, d_h)

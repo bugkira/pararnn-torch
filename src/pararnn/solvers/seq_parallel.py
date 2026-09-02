@@ -1,11 +1,10 @@
 """Sequence-parallel Newton scan: tile locally, then apply a carry.
 
 Same monoid as ``scan_diag`` (``docs/tex/seq-parallel-pararnn.tex``).
-Not a multi-GPU runtime. Two CUDA streams on one device are virtual ranks.
+Two CUDA streams on one device are virtual ranks.
 
-Rank 1's local scan does not wait on rank 0. The carry is an axpy with the
-inclusive Jacobian prefix of the right tile — not a second full scan of the
-right tile, and not FlashRNN's ``h_{mid}`` data dependence.
+Rank 1's local scan runs concurrently with rank 0. The carry is an axpy
+with the inclusive Jacobian prefix of the right tile.
 """
 
 from __future__ import annotations
@@ -24,8 +23,8 @@ def scan_diag_two_ranks(
 ) -> Tensor:
     """Inclusive diag scan by splitting time in half, then a carry.
 
-    Rank 1's *local* scan does not wait on rank 0. Only the carry apply does.
-    ``streams``: virtual ranks on one GPU. ``None`` runs sequentially in one
+    Rank 1's local scan runs concurrently with rank 0. The carry apply waits.
+    ``streams``: virtual ranks on one GPU. ``None`` runs both tiles in one
     stream (correctness path / CPU).
     """
     _check_diag(jac, residual)
@@ -58,11 +57,11 @@ def scan_diag_two_ranks(
 
 
 def sequential_prefix_two_ranks(jac: Tensor, residual: Tensor) -> Tensor:
-    """FlashRNN-style split: rank 1 cannot start until rank 0's last state exists.
+    """Naive prefix split: rank 1 starts after rank 0's last state exists.
 
-    Same numeric result as ``scan_diag``. The right tile is scanned *from the
-    carry* (dummy identity step), not from a zero-init local scan. That is the
-    data dependence two CUDA streams cannot hide.
+    Same numeric result as ``scan_diag``. The right tile is scanned from the
+    carry (dummy identity step). That data dependence serializes the two
+    CUDA streams.
     """
     _check_diag(jac, residual)
     time = residual.shape[1]
@@ -75,7 +74,7 @@ def sequential_prefix_two_ranks(jac: Tensor, residual: Tensor) -> Tensor:
 
 
 def _scan_diag_from_carry(jac: Tensor, residual: Tensor, carry: Tensor) -> Tensor:
-    """Scan a tile whose ``δ`` before the first step is ``carry`` (not 0).
+    """Scan a tile whose ``δ`` before the first step is ``carry``.
 
     Dummy identity step: ``δ = 1·0 + carry``, then the real tile.
     """

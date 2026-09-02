@@ -26,9 +26,10 @@ sys.path.insert(0, str(_REPO / "scripts"))
 
 from examples.dyck_language import VOCAB, sample_dyck1
 from examples.slstm_vs_flashrnn import _NewtonDyckLM
-from pararnn import NewtonConfig, ParaSLSTM, newton_apply
+from pararnn import NewtonConfig, ParaSLSTM
 from pararnn.layout import prepend_state
 from pararnn.solvers import newton as newton_mod
+from pararnn.solvers import newton_apply
 from pararnn.solvers.newton import _eq26_vjp
 from pararnn.solvers.vjp import cell_vjp
 from pararnn.solvers.vjp import uses_packed_vjp as _uses_packed_vjp

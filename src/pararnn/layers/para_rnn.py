@@ -25,11 +25,9 @@ _HIDDEN_LAYOUTS = ("paper", "pytorch")
 class ParaRNN(nn.Module):
     """Stack of RNN cells as a sequence module.
 
-    ``solver='auto'`` (default) follows ``self.training``: Newton+scan (Alg. 1)
-    while training, sequential ``step`` in ``eval()``. ``solver='newton'`` /
-    ``'sequential'`` force that path (benches, decode without ``eval()``).
-    Gating is **not** ``torch.is_grad_enabled()`` — ``@torch.no_grad()`` plus
-    ``train()`` is how numerics tests compare to ``newton_apply``.
+    ``solver='auto'`` (default) follows ``self.training``: Newton+scan while
+    training, sequential ``step`` in ``eval()``. ``solver='newton'`` /
+    ``'sequential'`` force that path. The switch is ``self.training``.
 
     Default ``x`` is ``(batch, time, d_in)``. ``batch_first=False`` takes
     ``nn.LSTM`` ``(time, batch, …)`` and permutes at this wrapper only.
@@ -43,7 +41,7 @@ class ParaRNN(nn.Module):
 
     ``hidden_layout='pytorch'`` swaps LSTM slots on ``h0`` and on
     ``return_hidden``'s last state (nn.LSTM tuple is ``(h, c)``). Kernels
-    stay paper ``[c, h]``. Not valid on GRU/sLSTM.
+    stay paper ``[c, h]``. LSTM only.
     """
 
     def __init__(
@@ -167,20 +165,25 @@ def _build_layers(
 
 
 def _extra_layers(cell: nn.Module, n_extra: int) -> list[nn.Module]:
-    """Further layers: ``type(cell)(d_in=cell.d_h, d_h=cell.d_h, ...)``."""
+    """Further layers: same class, ``hidden_size`` → ``input_size``."""
     cls = type(cell)
     kw = _stack_kwargs(cell)
     extras: list[nn.Module] = []
     device, dtype = _param_device_dtype(cell)
+    hid = getattr(cell, "hidden_size", cell.d_h)
     for _ in range(n_extra):
         try:
-            extra = cls(d_in=cell.d_h, d_h=cell.d_h, **kw)
-        except TypeError as exc:
-            raise TypeError(
-                f"{cls.__name__} cannot be stacked (num_layers>1): need "
-                "type(cell)(d_in=cell.d_h, d_h=cell.d_h, ...) or pass a list of cells. "
-                "Use num_layers=1 for custom cells without that constructor."
-            ) from exc
+            extra = cls(input_size=hid, hidden_size=hid, **kw)
+        except TypeError:
+            try:
+                extra = cls(d_in=cell.d_h, d_h=cell.d_h, **kw)
+            except TypeError as exc:
+                raise TypeError(
+                    f"{cls.__name__} cannot be stacked (num_layers>1): need "
+                    "type(cell)(input_size=hidden_size, hidden_size=hidden_size) "
+                    "or pass a list of cells. Use num_layers=1 for custom cells "
+                    "without that constructor."
+                ) from exc
         extras.append(extra.to(device=device, dtype=dtype))
     return extras
 

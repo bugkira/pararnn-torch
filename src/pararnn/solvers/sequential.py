@@ -25,8 +25,7 @@ def sequential_apply(
     ``h0`` is the paper's ``h_0`` (default 0). Output ``[:, t]`` is ``h_{t+1}``.
     Eager Python loop: correctness oracle. For a timing baseline see
     ``sequential_apply_compiled``. When ``cell`` has ``W_x``, compute it once
-    over ``(B, T)`` (eq. 3.1) instead of ``T`` GEMVs. Custom ``step`` is
-    unchanged (no ``wx=``).
+    over ``(B, T)`` (eq. 3.1). Custom ``step`` is unchanged.
     """
     batch, time, _ = x.shape
     if time < 1:
@@ -61,9 +60,8 @@ def sequential_apply_compiled(
     """Same unroll with ``torch.compile`` on ``cell.step``.
 
     Honest sequential baseline (bottlenecks.md #12). ``cell.step`` shapes are
-    static across time, so ``reduce-overhead`` can CUDA-graph the cell. Does
-    not compile Newton. Mode: PyTorch 2 compile tutorial (graphs for repeated
-    small ops), not a paper hyperparameter.
+    static across time, so ``reduce-overhead`` can CUDA-graph the cell.
+    Mode: PyTorch 2 compile tutorial (graphs for repeated small ops).
     """
     batch, time, _ = x.shape
     if time < 1:
