@@ -23,7 +23,7 @@ uv sync --group dev
 uv run pytest -q
 ```
 
-Place the module on a device like any `nn.Module` (`.to(device)` or `device=` / `dtype=` on the cell). Timing tables: [`docs/bottlenecks.md`](docs/bottlenecks.md).
+Place the module on a device like any `nn.Module` (`.to(device)`, or `device=` / `dtype=` on the cell, `ParaRNN`, and `xLSTMBlock`). Timing tables: [`docs/bottlenecks.md`](docs/bottlenecks.md).
 
 **Hardware.** Fused/Triton bf16 requires CUDA compute capability ≥ 8.0; on lower capability (e.g. Turing, CC 7.5) the fused bf16 path refuses and `scan_backend="auto"` falls back. CI runs CPU on Python 3.10–3.12 plus two self-hosted GPU jobs: Ampere (RTX 3060, CC 8.6) and Turing (RTX 2080 Ti, CC 7.5).
 
@@ -54,7 +54,7 @@ y = block(torch.randn(4, 128, 64, device=device))
 
 `d_in` / `d_h` are aliases for `input_size` / `hidden_size`. `solver='newton'` / `'sequential'` force that path regardless of `train()` / `eval()`.
 
-LSTM / sLSTM default output is the **hidden slot** `(B, T, hidden_size)`. Full state: `output_hidden=False`. Paper slot order is `(c, h)`; `hidden_layout="pytorch"` swaps LSTM `h0` and last state to `nn.LSTM` `(h, c)`. `ParaRNN` stacking has no residual or LayerNorm; `xLSTMBlock` is the pre-norm residual for sLSTM (`mix='diag'` fused, `mix='head'` on `step`). mLSTM is not here.
+LSTM / sLSTM default output is the **hidden slot** `(B, T, hidden_size)`. Full state: `output_hidden=False`. Paper slot order is `(c, h)`; `return_hidden` last state is the last layer only (`(B, 2, hidden_size)` for LSTM). `hidden_layout="pytorch"` (ParaLSTM only) returns `(output, (h_n, c_n))` like `nn.LSTM`: `h_n` / `c_n` are `(num_layers, B, H)` regardless of `batch_first`, and `h0` slots are `(h, c)`. `dropout` is between layers, same as `nn.LSTM` (warns and is a no-op at `num_layers==1`). Not supported: `bidirectional`, `proj_size`, packed sequences — reverse-direction Newton would double the Triton kernel surface; packed/ragged batches do not fit the rectangular scan. `ParaRNN` stacking has no residual or LayerNorm; `xLSTMBlock` is the pre-norm residual for sLSTM (`mix='diag'` fused, `mix='head'` on `step`). mLSTM is not here.
 
 Low-level solvers:
 

@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import inspect
 import logging
+import warnings
 from collections.abc import Sequence
 from typing import Literal
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from pararnn.cells.para_lstm import ParaLSTM
 from pararnn.cells.protocol import check_cell
-from pararnn.layout import swap_lstm_ch
+from pararnn.layout import LSTM_CELL, LSTM_HIDDEN, swap_lstm_ch
 from pararnn.solvers.newton import NewtonConfig, NewtonStats, newton_apply
 from pararnn.solvers.sequential import sequential_apply
 
@@ -39,9 +41,15 @@ class ParaRNN(nn.Module):
     (LSTM ``(B, T, 2, d_h)``, sLSTM ``(B, T, 4, d_h)``). Intermediate
     multi-slot layers still feed only the hidden slot into the next layer.
 
-    ``hidden_layout='pytorch'`` swaps LSTM slots on ``h0`` and on
-    ``return_hidden``'s last state (nn.LSTM tuple is ``(h, c)``). Kernels
-    stay paper ``[c, h]``. LSTM only.
+    ``dropout`` is between layers, same as ``nn.LSTM`` (a no-op at
+    ``num_layers==1`` besides the warning). Not supported: bidirectional,
+    ``proj_size``, packed sequences.
+
+    ``hidden_layout='pytorch'`` swaps LSTM ``h0`` slots and returns
+    ``(output, (h_n, c_n))`` with ``h_n``/``c_n`` shaped ``(num_layers, B, H)``
+    like ``nn.LSTM`` (independent of ``batch_first``). Paper
+    ``return_hidden`` last state is the last layer only. Kernels stay paper
+    ``[c, h]``. LSTM only.
     """
 
     def __init__(
@@ -55,6 +63,9 @@ class ParaRNN(nn.Module):
         solver: Literal["auto", "newton", "sequential"] = "auto",
         batch_first: bool = True,
         hidden_layout: Literal["paper", "pytorch"] = "paper",
+        dropout: float = 0.0,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
         if solver not in _SOLVERS:
@@ -63,13 +74,27 @@ class ParaRNN(nn.Module):
             raise ValueError(
                 f"hidden_layout must be one of {_HIDDEN_LAYOUTS}, got {hidden_layout!r}"
             )
+        if not 0 <= dropout <= 1:
+            raise ValueError(
+                "dropout should be a number in range [0, 1] "
+                f"inclusive, but got a ratio of {dropout}"
+            )
         self.config = config or NewtonConfig()
         self.return_hidden = return_hidden
         self.solver = solver
         self.batch_first = batch_first
         self.hidden_layout = hidden_layout
+        self.dropout = dropout
         self.last_stats: list[NewtonStats] = []
-        self.layers = nn.ModuleList(_build_layers(cell, num_layers))
+        self.layers = nn.ModuleList(_build_layers(cell, num_layers, device=device, dtype=dtype))
+        if dropout > 0 and len(self.layers) == 1:
+            warnings.warn(
+                "dropout option adds dropout after all but last "
+                "recurrent layer, so non-zero dropout expects "
+                "num_layers greater than 1, but got dropout="
+                f"{dropout} and num_layers={len(self.layers)}",
+                stacklevel=2,
+            )
         if hidden_layout == "pytorch":
             _require_lstm_layout(self.layers)
         if output_hidden is None:
@@ -84,10 +109,17 @@ class ParaRNN(nn.Module):
             return False
         return self.training
 
+    def reset_parameters(self) -> None:
+        for cell in self.layers:
+            reset = getattr(cell, "reset_parameters", None)
+            if callable(reset):
+                reset()
+
     def extra_repr(self) -> str:
         return (
             f"solver={self.solver!r}, effective={self._effective_solver()}, "
-            f"batch_first={self.batch_first}, output_hidden={self.output_hidden}, "
+            f"batch_first={self.batch_first}, dropout={self.dropout}, "
+            f"output_hidden={self.output_hidden}, "
             f"hidden_layout={self.hidden_layout!r}"
         )
 
@@ -96,16 +128,20 @@ class ParaRNN(nn.Module):
 
     def forward(
         self, x: Tensor, h0: Tensor | Sequence[Tensor] | None = None
-    ) -> Tensor | tuple[Tensor, Tensor]:
+    ) -> Tensor | tuple[Tensor, Tensor] | tuple[Tensor, tuple[Tensor, Tensor]]:
+        _validate_input(x, self.layers[0], batch_first=self.batch_first)
         if not self.batch_first:
             x = x.transpose(0, 1)
         h0s = _split_h0(h0, len(self.layers))
+        _validate_h0s(h0s, self.layers, batch=x.shape[0])
         if self.hidden_layout == "pytorch":
             h0s = [None if h is None else swap_lstm_ch(h) for h in h0s]
         h = x
         n = len(self.layers)
         self.last_stats = []
         use_newton = self._use_newton()
+        collect_lasts = self.hidden_layout == "pytorch"
+        lasts: list[Tensor] = []
         if log.isEnabledFor(logging.DEBUG):
             log.debug(
                 "para_rnn_forward",
@@ -125,23 +161,33 @@ class ParaRNN(nn.Module):
                 self.last_stats.append(st)
             else:
                 h = sequential_apply(cell, h, h0s[i])
+            if collect_lasts:
+                lasts.append(h[:, -1])
             if i + 1 < n:
                 h = _next_layer_input(h, cell)
+                if self.dropout > 0.0 and self.training:
+                    h = F.dropout(h, p=self.dropout, training=True)
         y = h
         last = h[:, -1]
         slot = _hidden_slot(self.layers[-1])
         if self.output_hidden and slot is not None:
             y = h[:, :, slot, :]
-        if self.hidden_layout == "pytorch":
-            last = swap_lstm_ch(last)
         if not self.batch_first:
             y = y.transpose(0, 1)
+        if self.hidden_layout == "pytorch":
+            return y, _lstm_hn_cn(lasts)
         if self.return_hidden:
             return y, last
         return y
 
 
-def _build_layers(cell: nn.Module | Sequence[nn.Module], num_layers: int) -> list[nn.Module]:
+def _build_layers(
+    cell: nn.Module | Sequence[nn.Module],
+    num_layers: int,
+    *,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype | None = None,
+) -> list[nn.Module]:
     if isinstance(cell, (list, tuple)):
         if not cell:
             raise ValueError("cell list must be non-empty")
@@ -150,23 +196,39 @@ def _build_layers(cell: nn.Module | Sequence[nn.Module], num_layers: int) -> lis
         layers = list(cell)
         for c in layers:
             check_cell(c)
-        return layers
+        return [_maybe_to(c, device, dtype) for c in layers]
     check_cell(cell)
     if num_layers < 1:
         raise ValueError(f"num_layers must be >= 1, got {num_layers}")
-    layers = [cell]
+    layers = [_maybe_to(cell, device, dtype)]
     if num_layers > 1:
-        layers.extend(_extra_layers(cell, num_layers - 1))
+        layers.extend(_extra_layers(layers[0], num_layers - 1, device=device, dtype=dtype))
     return layers
 
 
-def _extra_layers(cell: nn.Module, n_extra: int) -> list[nn.Module]:
+def _extra_layers(
+    cell: nn.Module,
+    n_extra: int,
+    *,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype | None = None,
+) -> list[nn.Module]:
     """Further layers: same class, ``hidden_size`` → ``input_size``."""
     cls = type(cell)
     kw = _stack_kwargs(cell)
     extras: list[nn.Module] = []
-    device, dtype = _param_device_dtype(cell)
+    if device is None or dtype is None:
+        inferred_device, inferred_dtype = _param_device_dtype(cell)
+        if device is None:
+            device = inferred_device
+        if dtype is None:
+            dtype = inferred_dtype
     hid = getattr(cell, "hidden_size", cell.d_h)
+    sig = inspect.signature(cls.__init__)
+    if "device" in sig.parameters:
+        kw["device"] = device
+    if "dtype" in sig.parameters:
+        kw["dtype"] = dtype
     for _ in range(n_extra):
         try:
             extra = cls(input_size=hid, hidden_size=hid, **kw)
@@ -180,7 +242,7 @@ def _extra_layers(cell: nn.Module, n_extra: int) -> list[nn.Module]:
                     "or pass a list of cells. Use num_layers=1 for custom cells "
                     "without that constructor."
                 ) from exc
-        extras.append(extra.to(device=device, dtype=dtype))
+        extras.append(_maybe_to(extra, device, dtype))
     return extras
 
 
@@ -201,6 +263,21 @@ def _param_device_dtype(module: nn.Module) -> tuple[torch.device, torch.dtype]:
     if buf is not None:
         return buf.device, buf.dtype
     return torch.device("cpu"), torch.float32
+
+
+def _maybe_to(
+    module: nn.Module,
+    device: torch.device | str | None,
+    dtype: torch.dtype | None,
+) -> nn.Module:
+    if device is None and dtype is None:
+        return module
+    kw: dict = {}
+    if device is not None:
+        kw["device"] = device
+    if dtype is not None:
+        kw["dtype"] = dtype
+    return module.to(**kw)
 
 
 def _next_layer_input(states: Tensor, cell: nn.Module) -> Tensor:
@@ -225,6 +302,49 @@ def _require_lstm_layout(layers: nn.ModuleList) -> None:
                 "(nn.LSTM (h, c) vs paper (c, h)); "
                 f"got {type(cell).__name__}"
             )
+
+
+def _lstm_hn_cn(lasts: list[Tensor]) -> tuple[Tensor, Tensor]:
+    stacked = torch.stack(lasts, dim=0)
+    return stacked[:, :, LSTM_HIDDEN, :], stacked[:, :, LSTM_CELL, :]
+
+
+def _input_size(cell: nn.Module) -> int | None:
+    size = getattr(cell, "input_size", None)
+    if size is None:
+        size = getattr(cell, "d_in", None)
+    return size if isinstance(size, int) else None
+
+
+def _state_shape(cell: nn.Module, batch: int) -> tuple[int, ...]:
+    hid = getattr(cell, "hidden_size", None)
+    if hid is None:
+        hid = cell.d_h
+    slots = getattr(cell, "state_slots", 1)
+    if slots == 1:
+        return (batch, hid)
+    return (batch, slots, hid)
+
+
+def _validate_input(x: Tensor, cell: nn.Module, *, batch_first: bool) -> None:
+    layout = "(batch, time, features)" if batch_first else "(time, batch, features)"
+    if x.ndim != 3:
+        raise ValueError(f"expected 3D input {layout}, got {x.ndim}D of shape {tuple(x.shape)}")
+    d_in = _input_size(cell)
+    feat = x.shape[-1]
+    if d_in is not None and feat != d_in:
+        raise ValueError(f"expected input features {d_in}, got {feat} (shape {tuple(x.shape)})")
+
+
+def _validate_h0s(h0s: list[Tensor | None], layers: nn.ModuleList, *, batch: int) -> None:
+    n_layers = len(layers)
+    for i, (h0, cell) in enumerate(zip(h0s, layers, strict=True)):
+        if h0 is None:
+            continue
+        expected = _state_shape(cell, batch)
+        if tuple(h0.shape) != expected:
+            where = f"h0 for layer {i}" if n_layers > 1 else "h0"
+            raise ValueError(f"{where} expected shape {expected}, got {tuple(h0.shape)}")
 
 
 def _split_h0(h0: Tensor | Sequence[Tensor] | None, n_layers: int) -> list[Tensor | None]:

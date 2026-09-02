@@ -94,6 +94,13 @@ class ParaSLSTM(nn.Module):
             )
         self.reset_parameters()
 
+    def extra_repr(self) -> str:
+        s = f"{self.input_size}, {self.hidden_size}, mix={self.mix!r}"
+        if self.n_heads is not None:
+            s += f", n_heads={self.n_heads}"
+        s += f", max_recurrent_norm={self.max_recurrent_norm}, eps={self.eps}"
+        return s
+
     def reset_parameters(self) -> None:
         kaiming_uniform_linear_(self.W_x.weight)
         nn.init.zeros_(self.W_x.bias)
@@ -304,8 +311,11 @@ class ParaSLSTM(nn.Module):
         r = self.clipped_r_head()
         # R[g, hd, in, out]; J_pre_g is (out, in).
         j_g = r.permute(0, 1, 3, 2)
-        assert self.n_heads is not None
-        assert self.d_head is not None
+        if self.n_heads is None or self.d_head is None:
+            raise TypeError(
+                f"mix='head' needs n_heads and d_head, got n_heads={self.n_heads!r}, "
+                f"d_head={self.d_head!r}"
+            )
         return self._jac_packed(acts, j_g, n_heads=self.n_heads, d_head=self.d_head)
 
     def _jac_dense(self, acts: _SLSTMActs) -> Tensor:

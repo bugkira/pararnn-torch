@@ -60,6 +60,8 @@ class xLSTMBlock(nn.Module):
             output_hidden=True,
             solver=solver,
             batch_first=batch_first,
+            device=device,
+            dtype=dtype,
         )
 
     @property
@@ -68,6 +70,13 @@ class xLSTMBlock(nn.Module):
         if not isinstance(cell, ParaSLSTM):
             raise TypeError(f"expected ParaSLSTM, got {type(cell).__name__}")
         return cell
+
+    def reset_parameters(self) -> None:
+        self.norm.reset_parameters()
+        self.rnn.reset_parameters()
+
+    def extra_repr(self) -> str:
+        return f"{self.d_model}, solver={self.rnn.solver!r}"
 
     def forward(self, x: Tensor, h0: Tensor | None = None) -> Tensor:
         z = self.norm(x)

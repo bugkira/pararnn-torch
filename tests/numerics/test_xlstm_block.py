@@ -82,3 +82,14 @@ def test_xlstm_block_solver_newton_in_eval():
     h = newton_apply(block.cell, z, cfg)[:, :, SLSTM_HIDDEN, :]
     torch.testing.assert_close(block(x), x + h, atol=2e-4, rtol=1e-4)
     assert block.rnn.solver == "newton"
+
+
+def test_xlstm_block_reset_parameters():
+    torch.manual_seed(86)
+    block = xLSTMBlock(8, solver="sequential", device=device)
+    assert block.cell.R is not None
+    w0 = block.cell.W_x.weight.detach().clone()
+    r0 = block.cell.R.detach().clone()
+    block.reset_parameters()
+    assert not torch.equal(w0, block.cell.W_x.weight)
+    assert not torch.equal(r0, block.cell.R)

@@ -219,6 +219,7 @@ def test_extra_repr_lists_boundary_flags():
     assert "solver='auto'" in text
     assert "effective=newton" in text
     assert "batch_first=True" in text
+    assert "dropout=0.0" in text
     assert "output_hidden=False" in text
     assert "hidden_layout='paper'" in text
     layer.eval()
@@ -262,17 +263,19 @@ def test_hidden_layout_pytorch_swaps_h0_and_last():
     cell_b = ParaLSTM(d_in=4, d_h=6).to(device)
     cell_b.load_state_dict(cell_a.state_dict())
     paper = ParaRNN(cell_a, return_hidden=True, hidden_layout="paper")
-    pytorch = ParaRNN(cell_b, return_hidden=True, hidden_layout="pytorch")
+    pytorch = ParaRNN(cell_b, hidden_layout="pytorch")
     paper.eval()
     pytorch.eval()
     x = torch.randn(2, 7, 4, device=device)
     h0_paper = 0.3 * torch.randn(2, 2, 6, device=device)
     h0_pytorch = swap_lstm_ch(h0_paper)
     y_p, last_p = paper(x, h0=h0_paper)
-    y_t, last_t = pytorch(x, h0=h0_pytorch)
+    y_t, (h_n, c_n) = pytorch(x, h0=h0_pytorch)
     torch.testing.assert_close(y_p, y_t, atol=0, rtol=0)
-    torch.testing.assert_close(last_t, swap_lstm_ch(last_p), atol=0, rtol=0)
-    torch.testing.assert_close(last_p[:, 0], last_t[:, 1], atol=0, rtol=0)
+    assert h_n.shape == (1, 2, 6)
+    assert c_n.shape == (1, 2, 6)
+    torch.testing.assert_close(h_n[0], last_p[:, 1], atol=0, rtol=0)
+    torch.testing.assert_close(c_n[0], last_p[:, 0], atol=0, rtol=0)
 
 
 def test_hidden_layout_pytorch_rejects_non_lstm():
@@ -282,3 +285,132 @@ def test_hidden_layout_pytorch_rejects_non_lstm():
 
     with pytest.raises(TypeError, match="ParaLSTM"):
         ParaRNN(ParaSLSTM(d_in=4, d_h=4), hidden_layout="pytorch")
+
+
+@torch.no_grad()
+def test_pytorch_layout_hn_cn_all_layers():
+    torch.manual_seed(84)
+    paper = ParaRNN(
+        ParaLSTM(d_in=4, d_h=6).to(device),
+        num_layers=2,
+        return_hidden=True,
+        hidden_layout="paper",
+        solver="sequential",
+    )
+    pytorch = ParaRNN(
+        ParaLSTM(d_in=4, d_h=6).to(device),
+        num_layers=2,
+        hidden_layout="pytorch",
+        solver="sequential",
+    )
+    pytorch.load_state_dict(paper.state_dict())
+    paper.eval()
+    pytorch.eval()
+    x = torch.randn(3, 8, 4, device=device)
+    y_p, last_p = paper(x)
+    y_t, (h_n, c_n) = pytorch(x)
+    torch.testing.assert_close(y_p, y_t, atol=0, rtol=0)
+    assert h_n.shape == (2, 3, 6)
+    assert c_n.shape == (2, 3, 6)
+    torch.testing.assert_close(h_n[-1], last_p[:, 1], atol=0, rtol=0)
+    torch.testing.assert_close(c_n[-1], last_p[:, 0], atol=0, rtol=0)
+    first = sequential_apply(paper.layers[0], x)
+    torch.testing.assert_close(h_n[0], first[:, -1, 1], atol=0, rtol=0)
+    torch.testing.assert_close(c_n[0], first[:, -1, 0], atol=0, rtol=0)
+
+
+@torch.no_grad()
+def test_pytorch_layout_hn_cn_ignores_batch_first():
+    torch.manual_seed(85)
+    cell_a = ParaLSTM(d_in=5, d_h=7).to(device)
+    cell_b = ParaLSTM(d_in=5, d_h=7).to(device)
+    cell_b.load_state_dict(cell_a.state_dict())
+    bf = ParaRNN(cell_a, num_layers=2, hidden_layout="pytorch", solver="sequential")
+    tf = ParaRNN(
+        cell_b, num_layers=2, hidden_layout="pytorch", batch_first=False, solver="sequential"
+    )
+    bf.load_state_dict(tf.state_dict())
+    bf.eval()
+    tf.eval()
+    x_bf = torch.randn(3, 9, 5, device=device)
+    y_bf, (h_bf, c_bf) = bf(x_bf)
+    y_tf, (h_tf, c_tf) = tf(x_bf.transpose(0, 1))
+    assert y_tf.shape == (9, 3, 7)
+    assert h_bf.shape == (2, 3, 7)
+    assert c_tf.shape == (2, 3, 7)
+    torch.testing.assert_close(y_tf, y_bf.transpose(0, 1), atol=0, rtol=0)
+    torch.testing.assert_close(h_bf, h_tf, atol=0, rtol=0)
+    torch.testing.assert_close(c_bf, c_tf, atol=0, rtol=0)
+
+
+def test_dropout_warns_when_single_layer():
+    with pytest.warns(UserWarning, match="non-zero dropout expects"):
+        ParaRNN(ParaGRU(d_in=4, d_h=5), dropout=0.5)
+
+
+def test_dropout_rejects_out_of_range():
+    with pytest.raises(ValueError, match="dropout should be a number in range"):
+        ParaRNN(ParaGRU(d_in=4, d_h=5), dropout=1.5)
+
+
+@torch.no_grad()
+def test_dropout_train_active_eval_inert():
+    torch.manual_seed(86)
+    cell = ParaGRU(d_in=8, d_h=8).to(device)
+    layer = ParaRNN(cell, num_layers=2, dropout=1.0, solver="sequential")
+    x = torch.randn(2, 6, 8, device=device)
+    layer.train()
+    y_train = layer(x)
+    zeros = torch.zeros_like(sequential_apply(layer.layers[0], x))
+    torch.testing.assert_close(y_train, sequential_apply(layer.layers[1], zeros), atol=0, rtol=0)
+    layer.eval()
+    y_eval = layer(x)
+    h = sequential_apply(layer.layers[0], x)
+    torch.testing.assert_close(y_eval, sequential_apply(layer.layers[1], h), atol=0, rtol=0)
+    torch.testing.assert_close(layer(x), y_eval, atol=0, rtol=0)
+
+
+def test_forward_rejects_wrong_ndim():
+    layer = ParaRNN(ParaGRU(d_in=4, d_h=8), solver="sequential")
+    with pytest.raises(ValueError, match=r"expected 3D input \(batch, time, features\)"):
+        layer(torch.randn(4, 8))
+
+
+def test_forward_rejects_wrong_ndim_time_major():
+    layer = ParaRNN(ParaGRU(d_in=4, d_h=8), solver="sequential", batch_first=False)
+    with pytest.raises(ValueError, match=r"expected 3D input \(time, batch, features\)"):
+        layer(torch.randn(4, 8))
+
+
+def test_forward_rejects_wrong_features():
+    layer = ParaRNN(ParaGRU(d_in=4, d_h=8), solver="sequential")
+    with pytest.raises(ValueError, match=r"expected input features 4, got 7"):
+        layer(torch.randn(2, 5, 7))
+
+
+def test_forward_rejects_wrong_h0_shape():
+    layer = ParaRNN(ParaGRU(d_in=4, d_h=8), solver="sequential")
+    x = torch.randn(2, 5, 4)
+    with pytest.raises(ValueError, match=r"h0 expected shape \(2, 8\), got \(2, 7\)"):
+        layer(x, h0=torch.randn(2, 7))
+
+
+def test_forward_rejects_wrong_lstm_h0_shape():
+    layer = ParaRNN(ParaLSTM(d_in=4, d_h=6), solver="sequential")
+    x = torch.randn(2, 5, 4)
+    with pytest.raises(ValueError, match=r"h0 expected shape \(2, 2, 6\), got \(2, 6\)"):
+        layer(x, h0=torch.randn(2, 6))
+
+
+def test_forward_rejects_wrong_h0_per_layer():
+    layer = ParaRNN(ParaGRU(d_in=4, d_h=8), num_layers=2, solver="sequential")
+    x = torch.randn(2, 5, 4)
+    with pytest.raises(ValueError, match=r"h0 for layer 1 expected shape \(2, 8\), got \(2, 3\)"):
+        layer(x, h0=(torch.randn(2, 8), torch.randn(2, 3)))
+
+
+def test_forward_rejects_h0_batch_mismatch_time_major():
+    layer = ParaRNN(ParaGRU(d_in=4, d_h=8), solver="sequential", batch_first=False)
+    x = torch.randn(9, 3, 4)
+    with pytest.raises(ValueError, match=r"h0 expected shape \(3, 8\), got \(9, 8\)"):
+        layer(x, h0=torch.randn(9, 8))

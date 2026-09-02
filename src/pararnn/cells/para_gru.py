@@ -58,6 +58,11 @@ class ParaGRU(nn.Module):
         self.W_x = nn.Linear(input_size, 3 * hidden_size, bias=True, **factory_kwargs)
         self.reset_parameters()
 
+    def extra_repr(self) -> str:
+        return (
+            f"{self.input_size}, {self.hidden_size}, max_recurrent_norm={self.max_recurrent_norm}"
+        )
+
     def reset_parameters(self) -> None:
         xavier_gaussian_vec_(self.a_z)
         xavier_gaussian_vec_(self.a_r)
