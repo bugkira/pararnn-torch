@@ -12,12 +12,31 @@ from __future__ import annotations
 
 import logging
 
-import torch
 import triton
 import triton.language as tl
 from torch import Tensor
-from triton.language.extra.cuda.libdevice import tanh as _nv_tanh
 
+from pararnn.kernels._fused_common import (
+    _load_h0,
+    _load_state,
+    _store_state,
+    _tanh,
+    alloc_fp32_update,
+    fp32_omega_add,
+    log_fused_done,
+    log_fused_iter,
+    prepare_h0,
+    time_tiles,
+)
+from pararnn.kernels._scan_common import (
+    _load_j as _load_j_lane,
+)
+from pararnn.kernels._scan_common import (
+    _store_agg_j,
+)
+from pararnn.kernels._scan_common import (
+    _store_j as _store_j_lane,
+)
 from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
 from pararnn.layout import (
     SLSTM_CELL,
@@ -36,11 +55,6 @@ _BLOCK_D = 16
 # T cap = 32 × 512 = 16384.
 _CHUNK_D = 1
 _CHUNK_PAD = 512
-
-
-@triton.jit
-def _tanh(x):
-    return _nv_tanh(x)
 
 
 @triton.jit
@@ -514,56 +528,6 @@ def _load_wx(wx_ptr, pid_b, offs_t, offs_d, d_h, mask, sb, st, sd):
 @triton.jit
 def _load_r_gate(r_ptr, gate, offs_d, dmask, sg, sd):
     return load_acc(r_ptr + gate * sg + offs_d * sd, dmask, 0.0)
-
-
-@triton.jit
-def _load_state(s_ptr, pid_b, offs_t, offs_d, slot, mask, sb, st, ss, sd):
-    return load_acc(
-        s_ptr + pid_b * sb + offs_t[:, None] * st + slot * ss + offs_d[None, :] * sd,
-        mask,
-        0.0,
-    )
-
-
-@triton.jit
-def _store_state(s_ptr, val, pid_b, offs_t, offs_d, slot, mask, sb, st, ss, sd):
-    store_acc(
-        s_ptr + pid_b * sb + offs_t[:, None] * st + slot * ss + offs_d[None, :] * sd,
-        val,
-        mask,
-    )
-
-
-@triton.jit
-def _load_h0(h0_ptr, pid_b, offs_d, slot, dmask, sb, ss, sd):
-    return load_acc(
-        h0_ptr + pid_b * sb + slot * ss + offs_d * sd,
-        dmask,
-        0.0,
-    )
-
-
-@triton.jit
-def _store_j_lane(ptr, val, pid_b, offs_t, offs_d, k, mask, sb, st, sk, sd):
-    store_acc(
-        ptr + pid_b * sb + offs_t[:, None] * st + k * sk + offs_d[None, :] * sd,
-        val,
-        mask,
-    )
-
-
-@triton.jit
-def _load_j_lane(ptr, pid_b, offs_t, offs_d, k, ident, mask, sb, st, sk, sd):
-    return load_acc(
-        ptr + pid_b * sb + offs_t[:, None] * st + k * sk + offs_d[None, :] * sd,
-        mask,
-        ident,
-    )
-
-
-@triton.jit
-def _store_agg_j(ptr, val, pid_b, pid_c, offs_d, k, dmask, sb, sc, sk, sd):
-    store_acc(ptr + pid_b * sb + pid_c * sc + k * sk + offs_d * sd, val, dmask)
 
 
 @triton.jit
@@ -1835,24 +1799,18 @@ def newton_slstm_fused(
         raise ValueError(f"r shape {tuple(r.shape)} != {(4, d_h)}")
     if four_d != 4 * d_h:
         raise ValueError(f"wx last dim {four_d} != 4 * d_h={4 * d_h}")
-    if h0 is None:
-        h0 = wx.new_zeros(batch, SLSTM_SLOTS, d_h)
-    else:
-        h0 = h0.contiguous()
-        if h0.shape != (batch, SLSTM_SLOTS, d_h):
-            raise ValueError(f"h0 shape {tuple(h0.shape)} != {(batch, SLSTM_SLOTS, d_h)}")
-        if h0.dtype != wx.dtype:
-            h0 = h0.to(dtype=wx.dtype)
+    h0 = prepare_h0(wx, h0, (batch, SLSTM_SLOTS, d_h))
     validate_cuda_tensors(wx, r, h0, name="newton_slstm_fused")
     if states is not None:
         validate_cuda_tensors(wx, states, name="newton_slstm_fused")
-    n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
-    if n_chunks > _CHUNK_PAD:
-        raise ValueError(
-            f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD} "
-            f"(T≤{_BLOCK_T * _CHUNK_PAD}). Shrink CHUNK_D or raise CHUNK_PAD."
-        )
-    n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
+    n_chunks, n_dtiles = time_tiles(
+        time,
+        d_h,
+        _BLOCK_T,
+        _BLOCK_D,
+        _CHUNK_PAD,
+        cap_suffix=(f" (T≤{_BLOCK_T * _CHUNK_PAD}). Shrink CHUNK_D or raise CHUNK_PAD."),
+    )
     n_dtiles_chunk = (d_h + _CHUNK_D - 1) // _CHUNK_D
     grid_td = (batch, n_chunks, n_dtiles)
     if states is None:
@@ -1898,10 +1856,7 @@ def newton_slstm_fused(
     agg_r = r_loc.new_empty(batch, n_chunks, SLSTM_SLOTS, d_h)
     incl_r = r_loc.new_empty(batch, n_chunks, SLSTM_SLOTS, d_h) if n_chunks > 1 else None
     omega_f = float(omega)
-    states32 = r32 = None
-    if n_chunks == 1:
-        states32 = states.new_empty(states.shape, dtype=torch.float32)
-        r32 = r_loc.new_empty(r_loc.shape, dtype=torch.float32)
+    states32, r32 = alloc_fp32_update(states, r_loc, n_chunks)
     if scan_tile not in ("assoc", "seq"):
         raise ValueError(f"unknown scan_tile {scan_tile!r}")
     seq = scan_tile == "seq"
@@ -1936,11 +1891,8 @@ def newton_slstm_fused(
             LOG=log_coords,
             SEQ=seq,
         )
-        if n_chunks == 1:
-            states32.copy_(states)
-            r32.copy_(r_loc)
-            states32.add_(r32, alpha=omega_f)
-            states.copy_(states32)
+        if states32 is not None and r32 is not None:
+            fp32_omega_add(states, r_loc, omega_f, states32, r32)
         else:
             _chunk_incl_kernel[(batch, n_dtiles_chunk)](
                 agg_j,
@@ -1975,28 +1927,25 @@ def newton_slstm_fused(
             )
         if log_coords:
             states = slstm_clamp_log_coords(states)
-        if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
-            log.debug(
-                "newton_slstm_fused_iter",
-                extra={
-                    "iter": it,
-                    "seq_len": time,
-                    "batch": batch,
-                    "d_h": d_h,
-                    "n_chunks": n_chunks,
-                },
-            )
-    log.debug(
+        log_fused_iter(
+            log,
+            "newton_slstm_fused_iter",
+            it=it,
+            time=time,
+            batch=batch,
+            d_h=d_h,
+            n_chunks=n_chunks,
+        )
+    log_fused_done(
+        log,
         "newton_slstm_fused",
-        extra={
-            "seq_len": time,
-            "batch": batch,
-            "d_h": d_h,
-            "max_iters": max_iters,
-            "n_chunks": n_chunks,
-            "log_coords": log_coords,
-            "scan_tile": scan_tile,
-        },
+        time=time,
+        batch=batch,
+        d_h=d_h,
+        max_iters=max_iters,
+        n_chunks=n_chunks,
+        log_coords=log_coords,
+        scan_tile=scan_tile,
     )
     if log_coords:
         states = slstm_decode_log(states, eps=float(eps))

@@ -8,12 +8,21 @@ from __future__ import annotations
 
 import logging
 
-import torch
 import triton
 import triton.language as tl
 from torch import Tensor
-from triton.language.extra.cuda.libdevice import tanh as _nv_tanh
 
+from pararnn.kernels._fused_common import (
+    _load_state,
+    _store_state,
+    _tanh,
+    alloc_fp32_update,
+    fp32_omega_add,
+    log_fused_done,
+    log_fused_iter,
+    prepare_h0,
+    time_tiles,
+)
 from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
 from pararnn.layout import LSTM_CELL, LSTM_HIDDEN
 
@@ -23,11 +32,6 @@ log = logging.getLogger(__name__)
 _BLOCK_T = 64
 _BLOCK_D = 16
 _CHUNK_PAD = 64  # 64 * 64 = 4096.
-
-
-@triton.jit
-def _tanh(x):
-    return _nv_tanh(x)
 
 
 @triton.jit
@@ -92,24 +96,6 @@ def _load_wx(wx_ptr, pid_b, offs_t, offs_d, d_h, mask, sb, st, sd):
     zx = load_acc(base + (offs_d[None, :] + d_h) * sd, mask, 0.0)
     ox = load_acc(base + (offs_d[None, :] + 2 * d_h) * sd, mask, 0.0)
     return fx, zx, ox
-
-
-@triton.jit
-def _load_state(s_ptr, pid_b, offs_t, offs_d, slot, mask, sb, st, ss, sd):
-    return load_acc(
-        s_ptr + pid_b * sb + offs_t[:, None] * st + slot * ss + offs_d[None, :] * sd,
-        mask,
-        0.0,
-    )
-
-
-@triton.jit
-def _store_state(s_ptr, val, pid_b, offs_t, offs_d, slot, mask, sb, st, ss, sd):
-    store_acc(
-        s_ptr + pid_b * sb + offs_t[:, None] * st + slot * ss + offs_d[None, :] * sd,
-        val,
-        mask,
-    )
 
 
 @triton.jit
@@ -676,22 +662,9 @@ def newton_lstm_fused(
     d_h = a_f.numel()
     if three_d != 3 * d_h:
         raise ValueError(f"wx last dim {three_d} != 3 * d_h={3 * d_h}")
-    if h0 is None:
-        h0 = wx.new_zeros(batch, 2, d_h)
-    else:
-        h0 = h0.contiguous()
-        if h0.shape != (batch, 2, d_h):
-            raise ValueError(f"h0 shape {tuple(h0.shape)} != {(batch, 2, d_h)}")
-        if h0.dtype != wx.dtype:
-            h0 = h0.to(dtype=wx.dtype)
+    h0 = prepare_h0(wx, h0, (batch, 2, d_h))
     validate_cuda_tensors(wx, a_f, a_z, a_o, c_f, c_o, h0, name="newton_lstm_fused")
-    n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
-    if n_chunks > _CHUNK_PAD:
-        raise ValueError(
-            f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD}. "
-            "Increase BLOCK_T or CHUNK_PAD."
-        )
-    n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
+    n_chunks, n_dtiles = time_tiles(time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD)
     states = wx.new_empty(batch, time, 2, d_h)
     grid_td = (batch, n_chunks, n_dtiles)
     _lstm_init_kernel[grid_td](
@@ -722,10 +695,7 @@ def newton_lstm_fused(
     agg_r = r_loc.new_empty(batch, n_chunks, 2, d_h)
     incl_r = r_loc.new_empty(batch, n_chunks, 2, d_h) if n_chunks > 1 else None
     omega_f = float(omega)
-    states32 = r32 = None
-    if n_chunks == 1:
-        states32 = states.new_empty(states.shape, dtype=torch.float32)
-        r32 = r_loc.new_empty(r_loc.shape, dtype=torch.float32)
+    states32, r32 = alloc_fp32_update(states, r_loc, n_chunks)
 
     for it in range(max_iters):
         _lstm_cell_local_scan_kernel[grid_td](
@@ -755,11 +725,8 @@ def newton_lstm_fused(
             BLOCK_T=_BLOCK_T,
             BLOCK_D=_BLOCK_D,
         )
-        if n_chunks == 1:
-            states32.copy_(states)
-            r32.copy_(r_loc)
-            states32.add_(r32, alpha=omega_f)
-            states.copy_(states32)
+        if states32 is not None and r32 is not None:
+            fp32_omega_add(states, r_loc, omega_f, states32, r32)
         else:
             _chunk_incl_kernel[(batch, n_dtiles)](
                 agg_j,
@@ -790,25 +757,22 @@ def newton_lstm_fused(
                 BLOCK_T=_BLOCK_T,
                 BLOCK_D=_BLOCK_D,
             )
-        if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
-            log.debug(
-                "newton_lstm_fused_iter",
-                extra={
-                    "iter": it,
-                    "seq_len": time,
-                    "batch": batch,
-                    "d_h": d_h,
-                    "n_chunks": n_chunks,
-                },
-            )
-    log.debug(
+        log_fused_iter(
+            log,
+            "newton_lstm_fused_iter",
+            it=it,
+            time=time,
+            batch=batch,
+            d_h=d_h,
+            n_chunks=n_chunks,
+        )
+    log_fused_done(
+        log,
         "newton_lstm_fused",
-        extra={
-            "seq_len": time,
-            "batch": batch,
-            "d_h": d_h,
-            "max_iters": max_iters,
-            "n_chunks": n_chunks,
-        },
+        time=time,
+        batch=batch,
+        d_h=d_h,
+        max_iters=max_iters,
+        n_chunks=n_chunks,
     )
     return states

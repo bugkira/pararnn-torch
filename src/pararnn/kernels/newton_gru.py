@@ -9,12 +9,19 @@ from __future__ import annotations
 
 import logging
 
-import torch
 import triton
 import triton.language as tl
 from torch import Tensor
-from triton.language.extra.cuda.libdevice import tanh as _nv_tanh
 
+from pararnn.kernels._fused_common import (
+    _tanh,
+    alloc_fp32_update,
+    fp32_omega_add,
+    log_fused_done,
+    log_fused_iter,
+    prepare_h0,
+    time_tiles,
+)
 from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
 
 log = logging.getLogger(__name__)
@@ -23,12 +30,6 @@ log = logging.getLogger(__name__)
 _BLOCK_T = 128
 _BLOCK_D = 32
 _CHUNK_PAD = 64  # 64 * 128 = 8192.
-
-
-@triton.jit
-def _tanh(x):
-    """CUDA libdevice tanh — same family as torch.tanh."""
-    return _nv_tanh(x)
 
 
 @triton.jit
@@ -339,22 +340,9 @@ def newton_gru_fused(
     d_h = a_z.numel()
     if three_d != 3 * d_h:
         raise ValueError(f"wx last dim {three_d} != 3 * d_h={3 * d_h}")
-    if h0 is None:
-        h0 = wx.new_zeros(batch, d_h)
-    else:
-        h0 = h0.contiguous()
-        if h0.shape != (batch, d_h):
-            raise ValueError(f"h0 shape {tuple(h0.shape)} != {(batch, d_h)}")
-        if h0.dtype != wx.dtype:
-            h0 = h0.to(dtype=wx.dtype)
+    h0 = prepare_h0(wx, h0, (batch, d_h))
     validate_cuda_tensors(wx, a_z, a_r, a_n, h0, name="newton_gru_fused")
-    n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
-    if n_chunks > _CHUNK_PAD:
-        raise ValueError(
-            f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD}. "
-            "Increase BLOCK_T or CHUNK_PAD."
-        )
-    n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
+    n_chunks, n_dtiles = time_tiles(time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD)
     h = wx.new_empty(batch, time, d_h)
     grid_td = (batch, n_chunks, n_dtiles)
     _gru_init_kernel[grid_td](
@@ -382,10 +370,7 @@ def newton_gru_fused(
     agg_r = h.new_empty(batch, n_chunks, d_h)
     incl_r = h.new_empty(batch, n_chunks, d_h) if n_chunks > 1 else None
     omega_f = float(omega)
-    h32 = r32 = None
-    if n_chunks == 1:
-        h32 = h.new_empty(h.shape, dtype=torch.float32)
-        r32 = h.new_empty(h.shape, dtype=torch.float32)
+    h32, r32 = alloc_fp32_update(h, r_loc, n_chunks)
 
     for it in range(max_iters):
         _gru_cell_local_scan_kernel[grid_td](
@@ -412,11 +397,8 @@ def newton_gru_fused(
             BLOCK_T=_BLOCK_T,
             BLOCK_D=_BLOCK_D,
         )
-        if n_chunks == 1:
-            h32.copy_(h)
-            r32.copy_(r_loc)
-            h32.add_(r32, alpha=omega_f)
-            h.copy_(h32)
+        if h32 is not None and r32 is not None:
+            fp32_omega_add(h, r_loc, omega_f, h32, r32)
         else:
             _chunk_incl_kernel[(batch, n_dtiles)](
                 agg_j,
@@ -445,25 +427,22 @@ def newton_gru_fused(
                 BLOCK_T=_BLOCK_T,
                 BLOCK_D=_BLOCK_D,
             )
-        if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
-            log.debug(
-                "newton_gru_fused_iter",
-                extra={
-                    "iter": it,
-                    "seq_len": time,
-                    "batch": batch,
-                    "d_h": d_h,
-                    "n_chunks": n_chunks,
-                },
-            )
-    log.debug(
+        log_fused_iter(
+            log,
+            "newton_gru_fused_iter",
+            it=it,
+            time=time,
+            batch=batch,
+            d_h=d_h,
+            n_chunks=n_chunks,
+        )
+    log_fused_done(
+        log,
         "newton_gru_fused",
-        extra={
-            "seq_len": time,
-            "batch": batch,
-            "d_h": d_h,
-            "max_iters": max_iters,
-            "n_chunks": n_chunks,
-        },
+        time=time,
+        batch=batch,
+        d_h=d_h,
+        max_iters=max_iters,
+        n_chunks=n_chunks,
     )
     return h

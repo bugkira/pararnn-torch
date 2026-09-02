@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import logging
 
-import torch
 import triton
 import triton.language as tl
 from torch import Tensor
 
-from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
+from pararnn.kernels._fused_common import _load_state as _load_r
+from pararnn.kernels._fused_common import _store_state as _store_r
+from pararnn.kernels._scan_common import _load_j, _store_j, run_block_scan_triton
+from pararnn.kernels.precision import load_acc, store_acc
 
 log = logging.getLogger(__name__)
 
@@ -47,42 +49,6 @@ def _compose_block2(
     w0 = b00 * u0 + b01 * u1 + v0
     w1 = b10 * u0 + b11 * u1 + v1
     return o00, o01, o10, o11, w0, w1
-
-
-@triton.jit
-def _load_j(ptr, pid_b, offs_t, offs_d, k, ident, mask, sb, st, sk, sd):
-    return load_acc(
-        ptr + pid_b * sb + offs_t[:, None] * st + k * sk + offs_d[None, :] * sd,
-        mask,
-        ident,
-    )
-
-
-@triton.jit
-def _load_r(ptr, pid_b, offs_t, offs_d, s, mask, sb, st, ss, sd):
-    return load_acc(
-        ptr + pid_b * sb + offs_t[:, None] * st + s * ss + offs_d[None, :] * sd,
-        mask,
-        0.0,
-    )
-
-
-@triton.jit
-def _store_j(ptr, val, pid_b, offs_t, offs_d, k, mask, sb, st, sk, sd):
-    store_acc(
-        ptr + pid_b * sb + offs_t[:, None] * st + k * sk + offs_d[None, :] * sd,
-        val,
-        mask,
-    )
-
-
-@triton.jit
-def _store_r(ptr, val, pid_b, offs_t, offs_d, s, mask, sb, st, ss, sd):
-    store_acc(
-        ptr + pid_b * sb + offs_t[:, None] * st + s * ss + offs_d[None, :] * sd,
-        val,
-        mask,
-    )
 
 
 @triton.jit
@@ -432,88 +398,16 @@ def _apply_carry_kernel(
 
 def scan_block2_triton(jac: Tensor, residual: Tensor) -> Tensor:
     """Same contract as ``scan_block2``. ``jac`` is ``(B, T, 2, 2, d)``."""
-    if residual.dim() != 4 or residual.shape[2] != 2:
-        raise ValueError("residual must be (batch, time, 2, d)")
-    if jac.shape[:2] != residual.shape[:2] or jac.shape[-1] != residual.shape[-1]:
-        raise ValueError("jac/residual batch, time, d mismatch")
-    if jac.shape[2:4] != (2, 2):
-        raise ValueError("jac must be (batch, time, 2, 2, d)")
-    validate_cuda_tensors(jac, residual, name="scan_block2_triton")
-    jac = jac.contiguous()
-    residual = residual.contiguous()
-    batch, time, _, d_h = residual.shape
-    if time <= 1:
-        return residual.clone()
-
-    n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
-    if n_chunks > _CHUNK_PAD:
-        raise ValueError(
-            f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD}. "
-            "Increase BLOCK_T or CHUNK_PAD."
-        )
-    n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
-    j_flat = jac.view(batch, time, 4, d_h)
-    r_flat = residual
-    j_loc = torch.empty_like(j_flat)
-    r_loc = torch.empty_like(r_flat)
-    agg_j = j_flat.new_empty(batch, n_chunks, 4, d_h)
-    agg_r = r_flat.new_empty(batch, n_chunks, 2, d_h)
-
-    _local_scan_kernel[(batch, n_chunks, n_dtiles)](
-        j_flat,
-        r_flat,
-        j_loc,
-        r_loc,
-        agg_j,
-        agg_r,
-        time,
-        d_h,
-        *j_flat.stride(),
-        *r_flat.stride(),
-        *j_loc.stride(),
-        *r_loc.stride(),
-        *agg_j.stride(),
-        *agg_r.stride(),
-        BLOCK_T=_BLOCK_T,
-        BLOCK_D=_BLOCK_D,
+    return run_block_scan_triton(
+        jac,
+        residual,
+        n_state=2,
+        local_kernel=_local_scan_kernel,
+        chunk_incl_kernel=_chunk_incl_kernel,
+        apply_carry_kernel=_apply_carry_kernel,
+        block_t=_BLOCK_T,
+        block_d=_BLOCK_D,
+        chunk_pad=_CHUNK_PAD,
+        name="scan_block2_triton",
+        logger=log,
     )
-    if n_chunks == 1:
-        log.debug(
-            "scan_block2_triton",
-            extra={"batch": batch, "seq_len": time, "d_h": d_h, "n_chunks": 1},
-        )
-        return r_loc
-
-    incl_r = r_flat.new_empty(batch, n_chunks, 2, d_h)
-    _chunk_incl_kernel[(batch, n_dtiles)](
-        agg_j,
-        agg_r,
-        incl_r,
-        n_chunks,
-        d_h,
-        *agg_j.stride(),
-        *agg_r.stride(),
-        *incl_r.stride(),
-        CHUNK_PAD=_CHUNK_PAD,
-        BLOCK_D=_BLOCK_D,
-    )
-    out = torch.empty_like(r_flat)
-    _apply_carry_kernel[(batch, n_chunks, n_dtiles)](
-        j_loc,
-        r_loc,
-        incl_r,
-        out,
-        time,
-        d_h,
-        *j_loc.stride(),
-        *r_loc.stride(),
-        *incl_r.stride(),
-        *out.stride(),
-        BLOCK_T=_BLOCK_T,
-        BLOCK_D=_BLOCK_D,
-    )
-    log.debug(
-        "scan_block2_triton",
-        extra={"batch": batch, "seq_len": time, "d_h": d_h, "n_chunks": n_chunks},
-    )
-    return out
