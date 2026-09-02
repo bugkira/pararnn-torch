@@ -4,15 +4,72 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.12"
-      - name: Sync and test (CPU; CUDA tests skip)
+      - name: Ruff
         run: |
           uv sync --group dev
+          uv run ruff check
+          uv run ruff format --check
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Sync and test (CPU; CUDA tests deselected)
+        run: |
+          uv sync --group dev
+          echo "CUDA-marked tests (deselected here; covered by the gpu job):"
+          uv run pytest --collect-only -q -m cuda
+          uv run pytest -q -m "not cuda"
+
+  gpu:
+    # Lab box only. Fork PRs must not run here (untrusted code on the GPUs,
+    # and forks have no [self-hosted, cuda] runner to pick the job up).
+    if: github.repository == 'bugkira/pararnn-torch' && github.event.pull_request.head.repo.fork != true
+    name: gpu (${{ matrix.label }})
+    runs-on: [self-hosted, cuda]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: ampere-rtx3060-cc86
+            cuda_visible_devices: "0"
+          - label: turing-rtx2080ti-cc75
+            cuda_visible_devices: "1"
+    env:
+      # nvidia-smi is PCI bus order; CUDA defaults to FASTEST_FIRST and swaps
+      # these two cards. PCI_BUS_ID makes index 0 the 3060 and index 1 the 2080 Ti.
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      CUDA_VISIBLE_DEVICES: ${{ matrix.cuda_visible_devices }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+      - name: Sync, identify GPU, and test
+        run: |
+          uv sync --group dev
+          uv run python scripts/gpu.py
           uv run pytest -q
