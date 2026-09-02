@@ -2,16 +2,23 @@
 
 ``state_prev`` detached. ``W_x`` GEMM stays in PyTorch.
 Dtype gate is ``validate_cuda_tensors`` (bf16 if CC ≥ 8.0).
+
+Formulas live in ``lstm_recurrence_vjp_eager`` (eq. 3.1b). The kernel is the
+fused CUDA implementation of the same lines. ``∇a_*`` / ``∇c_*``: tile
+``tl.sum`` into fp32 ``(B, n_tiles, d_h)``, then ``.sum`` — deterministic,
+no atomics. ``∇wx`` stays ``(B, T, 3 d_h)`` for the GEMM.
 """
 
 from __future__ import annotations
 
+import torch
 import triton
 import triton.language as tl
 from torch import Tensor
 from triton.language.extra.cuda.libdevice import tanh as _nv_tanh
 
 from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
+from pararnn.layout import LSTM_CELL, LSTM_HIDDEN
 
 _BLOCK_T = 64
 _BLOCK_D = 32
@@ -66,7 +73,7 @@ def _lstm_vjp_kernel(
     stride_gt,
     stride_gd,
     stride_ab,
-    stride_at,
+    stride_ac,
     stride_ad,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
@@ -124,12 +131,62 @@ def _lstm_vjp_kernel(
     store_acc(gout + (offs_d[None, :] + d_h) * stride_gd, d_zpre, mask)
     store_acc(gout + (offs_d[None, :] + 2 * d_h) * stride_gd, d_opre, mask)
 
-    acc = pid_b * stride_ab + offs_t[:, None] * stride_at + offs_d[None, :] * stride_ad
-    store_acc(gaf_ptr + acc, d_fpre * h_prev, mask)
-    store_acc(gaz_ptr + acc, d_zpre * h_prev, mask)
-    store_acc(gao_ptr + acc, d_opre * h_prev, mask)
-    store_acc(gcf_ptr + acc, d_fpre * c_prev, mask)
-    store_acc(gco_ptr + acc, d_opre * c, mask)
+    off = pid_b * stride_ab + pid_c * stride_ac + offs_d * stride_ad
+    store_acc(gaf_ptr + off, tl.sum(tl.where(mask, d_fpre * h_prev, 0.0), 0), dmask)
+    store_acc(gaz_ptr + off, tl.sum(tl.where(mask, d_zpre * h_prev, 0.0), 0), dmask)
+    store_acc(gao_ptr + off, tl.sum(tl.where(mask, d_opre * h_prev, 0.0), 0), dmask)
+    store_acc(gcf_ptr + off, tl.sum(tl.where(mask, d_fpre * c_prev, 0.0), 0), dmask)
+    store_acc(gco_ptr + off, tl.sum(tl.where(mask, d_opre * c, 0.0), 0), dmask)
+
+
+def lstm_recurrence_vjp_eager(
+    state_prev: Tensor,
+    wx: Tensor,
+    a_f: Tensor,
+    a_z: Tensor,
+    a_o: Tensor,
+    peephole_f: Tensor,
+    peephole_o: Tensor,
+    mu: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Eq. 3.1b VJP. fp32 algebra, fp32 ``(B, T)`` reduce, cast to ``wx.dtype``."""
+    dt = wx.dtype
+    state_prev = state_prev.float()
+    wx = wx.float()
+    a_f = a_f.float()
+    a_z = a_z.float()
+    a_o = a_o.float()
+    peephole_f = peephole_f.float()
+    peephole_o = peephole_o.float()
+    mu = mu.float()
+    c_prev = state_prev[..., LSTM_CELL, :]
+    h_prev = state_prev[..., LSTM_HIDDEN, :]
+    mu_c = mu[..., LSTM_CELL, :]
+    mu_h = mu[..., LSTM_HIDDEN, :]
+    fx, zx, ox = wx.chunk(3, dim=-1)
+    f = torch.sigmoid(a_f * h_prev + peephole_f * c_prev + fx)
+    z = torch.tanh(a_z * h_prev + zx)
+    c = f * c_prev + (1.0 - f) * z
+    o = torch.sigmoid(a_o * h_prev + peephole_o * c + ox)
+    h_act = torch.tanh(c)
+    d_o = mu_h * h_act
+    d_h_act = mu_h * o
+    d_opre = d_o * o * (1.0 - o)
+    d_c = mu_c + d_h_act * (1.0 - h_act.square()) + d_opre * peephole_o
+    d_f = d_c * (c_prev - z)
+    d_z = d_c * (1.0 - f)
+    d_zpre = d_z * (1.0 - z.square())
+    d_fpre = d_f * f * (1.0 - f)
+    g_wx = torch.cat((d_fpre, d_zpre, d_opre), dim=-1)
+    dims = (0, 1)
+    return (
+        g_wx.to(dt),
+        (d_fpre * h_prev).sum(dim=dims).to(dt),
+        (d_zpre * h_prev).sum(dim=dims).to(dt),
+        (d_opre * h_prev).sum(dim=dims).to(dt),
+        (d_fpre * c_prev).sum(dim=dims).to(dt),
+        (d_opre * c).sum(dim=dims).to(dt),
+    )
 
 
 def lstm_recurrence_vjp(
@@ -142,6 +199,8 @@ def lstm_recurrence_vjp(
     c_o: Tensor,
     mu: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    if not state_prev.is_cuda:
+        return lstm_recurrence_vjp_eager(state_prev, wx, a_f, a_z, a_o, c_f, c_o, mu)
     validate_cuda_tensors(state_prev, wx, a_f, a_z, a_o, c_f, c_o, mu, name="lstm_recurrence_vjp")
     state_prev = state_prev.contiguous()
     wx = wx.contiguous()
@@ -155,12 +214,12 @@ def lstm_recurrence_vjp(
     n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
     g_wx = wx.new_empty(wx.shape)
-    acc_shape = (batch, time, d_h)
-    g_af_bt = wx.new_empty(acc_shape)
-    g_az_bt = wx.new_empty(acc_shape)
-    g_ao_bt = wx.new_empty(acc_shape)
-    g_cf_bt = wx.new_empty(acc_shape)
-    g_co_bt = wx.new_empty(acc_shape)
+    acc_shape = (batch, n_chunks, d_h)
+    g_af = torch.zeros(acc_shape, device=state_prev.device, dtype=torch.float32)
+    g_az = torch.zeros(acc_shape, device=state_prev.device, dtype=torch.float32)
+    g_ao = torch.zeros(acc_shape, device=state_prev.device, dtype=torch.float32)
+    g_cf = torch.zeros(acc_shape, device=state_prev.device, dtype=torch.float32)
+    g_co = torch.zeros(acc_shape, device=state_prev.device, dtype=torch.float32)
     _lstm_vjp_kernel[(batch, n_chunks, n_dtiles)](
         state_prev,
         wx,
@@ -171,27 +230,28 @@ def lstm_recurrence_vjp(
         c_o,
         mu,
         g_wx,
-        g_af_bt,
-        g_az_bt,
-        g_ao_bt,
-        g_cf_bt,
-        g_co_bt,
+        g_af,
+        g_az,
+        g_ao,
+        g_cf,
+        g_co,
         time,
         d_h,
         *state_prev.stride(),
         *wx.stride(),
         *mu.stride(),
         *g_wx.stride(),
-        *g_af_bt.stride(),
+        *g_af.stride(),
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
     )
+    dt = a_f.dtype
     dims = (0, 1)
     return (
         g_wx,
-        g_af_bt.sum(dim=dims),
-        g_az_bt.sum(dim=dims),
-        g_ao_bt.sum(dim=dims),
-        g_cf_bt.sum(dim=dims),
-        g_co_bt.sum(dim=dims),
+        g_af.sum(dim=dims).to(dt),
+        g_az.sum(dim=dims).to(dt),
+        g_ao.sum(dim=dims).to(dt),
+        g_cf.sum(dim=dims).to(dt),
+        g_co.sum(dim=dims).to(dt),
     )

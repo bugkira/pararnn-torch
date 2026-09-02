@@ -3,6 +3,11 @@
 ``state_prev`` detached (eq. 2.6 already scanned ``J^T``). ``W_x`` GEMM stays
 in PyTorch. ``mix='diag'`` only. Dtype gate is ``validate_cuda_tensors``
 (bf16 if CC ≥ 8.0).
+
+Formulas live in ``slstm_recurrence_vjp_eager``. The kernel is the fused
+CUDA implementation of the same lines. ``∇R``: tile ``tl.sum`` into fp32
+``(B, n_tiles, d_h)``, then ``.sum`` — deterministic, no atomics. ``∇wx``
+stays ``(B, T, 4 d_h)`` for the GEMM.
 """
 
 from __future__ import annotations
@@ -14,6 +19,12 @@ from torch import Tensor
 from triton.language.extra.cuda.libdevice import tanh as _nv_tanh
 
 from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
+from pararnn.layout import (
+    SLSTM_CELL,
+    SLSTM_HIDDEN,
+    SLSTM_NORMALIZER,
+    SLSTM_STABILIZER,
+)
 
 _BLOCK_T = 64
 _BLOCK_D = 32
@@ -69,7 +80,7 @@ def _slstm_vjp_kernel(
     stride_gt,
     stride_gd,
     stride_ab,
-    stride_at,
+    stride_ac,
     stride_ad,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
@@ -153,11 +164,75 @@ def _slstm_vjp_kernel(
     store_acc(gout + (offs_d[None, :] + 2 * d_h) * stride_gd, d_zz, mask)
     store_acc(gout + (offs_d[None, :] + 3 * d_h) * stride_gd, d_zo, mask)
 
-    acc = pid_b * stride_ab + offs_t[:, None] * stride_at + offs_d[None, :] * stride_ad
-    store_acc(gri_ptr + acc, d_zi * h_prev, mask)
-    store_acc(grf_ptr + acc, d_zf * h_prev, mask)
-    store_acc(grz_ptr + acc, d_zz * h_prev, mask)
-    store_acc(gro_ptr + acc, d_zo * h_prev, mask)
+    off = pid_b * stride_ab + pid_c * stride_ac + offs_d * stride_ad
+    store_acc(gri_ptr + off, tl.sum(tl.where(mask, d_zi * h_prev, 0.0), 0), dmask)
+    store_acc(grf_ptr + off, tl.sum(tl.where(mask, d_zf * h_prev, 0.0), 0), dmask)
+    store_acc(grz_ptr + off, tl.sum(tl.where(mask, d_zz * h_prev, 0.0), 0), dmask)
+    store_acc(gro_ptr + off, tl.sum(tl.where(mask, d_zo * h_prev, 0.0), 0), dmask)
+
+
+def slstm_recurrence_vjp_eager(
+    state_prev: Tensor,
+    wx: Tensor,
+    r: Tensor,
+    mu: Tensor,
+    eps: float,
+) -> tuple[Tensor, Tensor]:
+    """Channelwise sLSTM VJP. fp32 algebra, fp32 ``(B, T)`` reduce, cast to ``wx.dtype``."""
+    dt = wx.dtype
+    state_prev = state_prev.float()
+    wx = wx.float()
+    r = r.float()
+    mu = mu.float()
+    c_prev = state_prev[..., SLSTM_CELL, :]
+    n_prev = state_prev[..., SLSTM_NORMALIZER, :]
+    m_prev = state_prev[..., SLSTM_STABILIZER, :]
+    h_prev = state_prev[..., SLSTM_HIDDEN, :]
+    mu_c = mu[..., SLSTM_CELL, :]
+    mu_n = mu[..., SLSTM_NORMALIZER, :]
+    mu_m = mu[..., SLSTM_STABILIZER, :]
+    mu_h = mu[..., SLSTM_HIDDEN, :]
+    wx_i, wx_f, wx_z, wx_o = wx.chunk(4, dim=-1)
+    r_i, r_f, r_z, r_o = r.unbind(0)
+    z_i = wx_i + r_i * h_prev
+    z_f = wx_f + r_f * h_prev
+    z_z = wx_z + r_z * h_prev
+    z_o = wx_o + r_o * h_prev
+    left = z_f + m_prev
+    m_new = torch.maximum(left, z_i)
+    gt = (left > z_i).to(dtype=left.dtype)
+    eq = (left == z_i).to(dtype=left.dtype)
+    alpha = gt + 0.5 * eq
+    i_t = torch.exp(z_i - m_new)
+    f_t = torch.exp(z_f + m_prev - m_new)
+    z = torch.tanh(z_z)
+    n_new = f_t * n_prev + i_t
+    c_new = f_t * c_prev + i_t * z
+    o = torch.sigmoid(z_o)
+    denom = n_new + eps
+    d_o = mu_h * (c_new / denom)
+    d_cnew = mu_c + mu_h * (o / denom)
+    d_nnew = mu_n + mu_h * (-o * c_new / denom.square())
+    d_f = d_cnew * c_prev + d_nnew * n_prev
+    d_i = d_cnew * z + d_nnew
+    d_z = d_cnew * i_t
+    d_zo = d_o * o * (1.0 - o)
+    d_zz = d_z * (1.0 - z.square())
+    d_mnew = mu_m - d_i * i_t - d_f * f_t
+    d_zi = d_i * i_t + d_mnew * (1.0 - alpha)
+    d_zf = d_f * f_t + d_mnew * alpha
+    g_wx = torch.cat((d_zi, d_zf, d_zz, d_zo), dim=-1)
+    dims = (0, 1)
+    g_r = torch.stack(
+        (
+            (d_zi * h_prev).sum(dim=dims),
+            (d_zf * h_prev).sum(dim=dims),
+            (d_zz * h_prev).sum(dim=dims),
+            (d_zo * h_prev).sum(dim=dims),
+        ),
+        dim=0,
+    )
+    return g_wx.to(dt), g_r.to(dt)
 
 
 def slstm_recurrence_vjp(
@@ -167,6 +242,8 @@ def slstm_recurrence_vjp(
     mu: Tensor,
     eps: float,
 ) -> tuple[Tensor, Tensor]:
+    if not state_prev.is_cuda:
+        return slstm_recurrence_vjp_eager(state_prev, wx, r, mu, eps)
     validate_cuda_tensors(state_prev, wx, r, mu, name="slstm_recurrence_vjp")
     state_prev = state_prev.contiguous()
     wx = wx.contiguous()
@@ -177,11 +254,11 @@ def slstm_recurrence_vjp(
     n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
     g_wx = wx.new_empty(wx.shape)
-    acc_shape = (batch, time, d_h)
-    g_ri_bt = wx.new_empty(acc_shape)
-    g_rf_bt = wx.new_empty(acc_shape)
-    g_rz_bt = wx.new_empty(acc_shape)
-    g_ro_bt = wx.new_empty(acc_shape)
+    acc_shape = (batch, n_chunks, d_h)
+    g_ri = torch.zeros(acc_shape, device=state_prev.device, dtype=torch.float32)
+    g_rf = torch.zeros(acc_shape, device=state_prev.device, dtype=torch.float32)
+    g_rz = torch.zeros(acc_shape, device=state_prev.device, dtype=torch.float32)
+    g_ro = torch.zeros(acc_shape, device=state_prev.device, dtype=torch.float32)
     _slstm_vjp_kernel[(batch, n_chunks, n_dtiles)](
         state_prev,
         wx,
@@ -191,10 +268,10 @@ def slstm_recurrence_vjp(
         r_o,
         mu,
         g_wx,
-        g_ri_bt,
-        g_rf_bt,
-        g_rz_bt,
-        g_ro_bt,
+        g_ri,
+        g_rf,
+        g_rz,
+        g_ro,
         time,
         d_h,
         float(eps),
@@ -202,18 +279,19 @@ def slstm_recurrence_vjp(
         *wx.stride(),
         *mu.stride(),
         *g_wx.stride(),
-        *g_ri_bt.stride(),
+        *g_ri.stride(),
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
     )
+    dt = r.dtype
     dims = (0, 1)
     g_r = torch.stack(
         (
-            g_ri_bt.sum(dim=dims),
-            g_rf_bt.sum(dim=dims),
-            g_rz_bt.sum(dim=dims),
-            g_ro_bt.sum(dim=dims),
+            g_ri.sum(dim=dims),
+            g_rf.sum(dim=dims),
+            g_rz.sum(dim=dims),
+            g_ro.sum(dim=dims),
         ),
         dim=0,
     )
-    return g_wx, g_r
+    return g_wx, g_r.to(dt)

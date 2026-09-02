@@ -3,9 +3,10 @@
 ``h_prev`` detached (eq. 2.6 already scanned ``J^T``). ``W_x`` GEMM stays
 in PyTorch. Dtype gate is ``validate_cuda_tensors`` (bf16 if CC ≥ 8.0).
 
-``∇a_*`` is reduced in-kernel (tile ``tl.sum`` + fp32 ``atomic_add`` into
-``(d_h,)``). ``∇wx`` stays ``(B, T, 3 d_h)`` for the GEMM. Packed-VJP
-tests use atol.
+Formulas live in ``gru_recurrence_vjp_eager`` (eq. 3.1a). The kernel is the
+fused CUDA implementation of the same lines. ``∇a_*``: tile ``tl.sum`` into
+fp32 ``(B, n_tiles, d_h)``, then ``.sum`` — deterministic, no atomics.
+``∇wx`` stays ``(B, T, 3 d_h)`` for the GEMM.
 """
 
 from __future__ import annotations
@@ -48,6 +49,9 @@ def _gru_vjp_kernel(
     stride_gb,
     stride_gt,
     stride_gd,
+    stride_ab,
+    stride_ac,
+    stride_ad,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
@@ -94,9 +98,44 @@ def _gru_vjp_kernel(
     store_acc(gout + (offs_d[None, :] + d_h) * stride_gd, d_rpre, mask)
     store_acc(gout + (offs_d[None, :] + 2 * d_h) * stride_gd, d_npre, mask)
 
-    tl.atomic_add(gaz_ptr + offs_d, tl.sum(tl.where(mask, d_zpre * h, 0.0), 0), mask=dmask)
-    tl.atomic_add(gar_ptr + offs_d, tl.sum(tl.where(mask, d_rpre * h, 0.0), 0), mask=dmask)
-    tl.atomic_add(gan_ptr + offs_d, tl.sum(tl.where(mask, d_npre * (h * r), 0.0), 0), mask=dmask)
+    off = pid_b * stride_ab + pid_c * stride_ac + offs_d * stride_ad
+    store_acc(gaz_ptr + off, tl.sum(tl.where(mask, d_zpre * h, 0.0), 0), dmask)
+    store_acc(gar_ptr + off, tl.sum(tl.where(mask, d_rpre * h, 0.0), 0), dmask)
+    store_acc(gan_ptr + off, tl.sum(tl.where(mask, d_npre * (h * r), 0.0), 0), dmask)
+
+
+def gru_recurrence_vjp_eager(
+    h_prev: Tensor,
+    wx: Tensor,
+    a_z: Tensor,
+    a_r: Tensor,
+    a_n: Tensor,
+    mu: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Eq. 3.1a VJP. fp32 algebra, fp32 ``(B, T)`` reduce, cast to ``h_prev.dtype``."""
+    dt = h_prev.dtype
+    h_prev = h_prev.float()
+    wx = wx.float()
+    a_z = a_z.float()
+    a_r = a_r.float()
+    a_n = a_n.float()
+    mu = mu.float()
+    zx, rx, nx = wx.chunk(3, dim=-1)
+    z = torch.sigmoid(a_z * h_prev + zx)
+    r = torch.sigmoid(a_r * h_prev + rx)
+    n = torch.tanh(a_n * (h_prev * r) + nx)
+    d_z = mu * (n - h_prev)
+    d_npre = mu * z * (1.0 - n.square())
+    d_zpre = d_z * z * (1.0 - z)
+    d_rpre = (d_npre * a_n * h_prev) * r * (1.0 - r)
+    g_wx = torch.cat((d_zpre, d_rpre, d_npre), dim=-1)
+    dims = (0, 1)
+    return (
+        g_wx.to(dt),
+        (d_zpre * h_prev).sum(dim=dims).to(dt),
+        (d_rpre * h_prev).sum(dim=dims).to(dt),
+        (d_npre * (h_prev * r)).sum(dim=dims).to(dt),
+    )
 
 
 def gru_recurrence_vjp(
@@ -107,6 +146,8 @@ def gru_recurrence_vjp(
     a_n: Tensor,
     mu: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    if not h_prev.is_cuda:
+        return gru_recurrence_vjp_eager(h_prev, wx, a_z, a_r, a_n, mu)
     validate_cuda_tensors(h_prev, wx, a_z, a_r, a_n, mu, name="gru_recurrence_vjp")
     h_prev = h_prev.contiguous()
     wx = wx.contiguous()
@@ -129,10 +170,10 @@ def gru_recurrence_vjp(
     n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
     g_wx = wx.new_empty(wx.shape)
-    # fp32 atomics: SM 7.x has no bf16 atomicAdd; fp16 atomics are the wrong accum.
-    g_az = torch.zeros(d_h, device=h_prev.device, dtype=torch.float32)
-    g_ar = torch.zeros(d_h, device=h_prev.device, dtype=torch.float32)
-    g_an = torch.zeros(d_h, device=h_prev.device, dtype=torch.float32)
+    acc_shape = (batch, n_chunks, d_h)
+    g_az = torch.zeros(acc_shape, device=h_prev.device, dtype=torch.float32)
+    g_ar = torch.zeros(acc_shape, device=h_prev.device, dtype=torch.float32)
+    g_an = torch.zeros(acc_shape, device=h_prev.device, dtype=torch.float32)
     _gru_vjp_kernel[(batch, n_chunks, n_dtiles)](
         h_prev,
         wx,
@@ -150,8 +191,10 @@ def gru_recurrence_vjp(
         *wx.stride(),
         *mu.stride(),
         *g_wx.stride(),
+        *g_az.stride(),
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
     )
     dt = a_z.dtype
-    return g_wx, g_az.to(dt), g_ar.to(dt), g_an.to(dt)
+    dims = (0, 1)
+    return g_wx, g_az.sum(dim=dims).to(dt), g_ar.sum(dim=dims).to(dt), g_an.sum(dim=dims).to(dt)
