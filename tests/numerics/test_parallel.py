@@ -56,9 +56,7 @@ def test_scan_block2_matches_forward_substitution():
     ref[:, 0] = residual[:, 0]
     for s in range(1, t):
         # J @ delta_prev + r  (einsum out,in)
-        ref[:, s] = (
-            torch.einsum("boid,bid->bod", jac[:, s], ref[:, s - 1]) + residual[:, s]
-        )
+        ref[:, s] = torch.einsum("boid,bid->bod", jac[:, s], ref[:, s - 1]) + residual[:, s]
     torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-5)
 
 
@@ -149,7 +147,9 @@ def test_reverse_scan_block2_matches_backward_substitution():
 def _assert_param_grads_close(
     cell_a: torch.nn.Module, cell_b: torch.nn.Module, atol: float
 ) -> None:
-    for (n, p_a), (_, p_b) in zip(cell_a.named_parameters(), cell_b.named_parameters()):
+    for (n, p_a), (_, p_b) in zip(
+        cell_a.named_parameters(), cell_b.named_parameters(), strict=True
+    ):
         assert p_a.grad is not None, n
         assert p_b.grad is not None, n
         torch.testing.assert_close(p_a.grad, p_b.grad, atol=atol, rtol=1e-4)
@@ -337,9 +337,7 @@ def test_triton_scan_block2_matches_substitution(cuda_device: torch.device) -> N
         ref = torch.zeros_like(residual)
         ref[:, 0] = residual[:, 0]
         for s in range(1, t):
-            ref[:, s] = (
-                torch.einsum("boid,bid->bod", jac[:, s], ref[:, s - 1]) + residual[:, s]
-            )
+            ref[:, s] = torch.einsum("boid,bid->bod", jac[:, s], ref[:, s - 1]) + residual[:, s]
         torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-5)
 
 
@@ -381,9 +379,7 @@ def test_paralstm_newton_triton_bwd_matches_sequential_bptt(
     x_n = x.clone().requires_grad_(True)
     loss_s = (sequential_apply(cell_s, x_s) * w).sum()
     loss_s.backward()
-    loss_n = (
-        newton_apply(cell_n, x_n, NewtonConfig(max_iters=3, scan_backend="triton")) * w
-    ).sum()
+    loss_n = (newton_apply(cell_n, x_n, NewtonConfig(max_iters=3, scan_backend="triton")) * w).sum()
     loss_n.backward()
     _assert_param_grads_close(cell_s, cell_n, atol=5e-4)
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=5e-4, rtol=1e-4)
@@ -438,9 +434,7 @@ def test_paragru_newton_fused_bwd_matches_sequential_bptt(
     x_n = x.clone().requires_grad_(True)
     loss_s = (sequential_apply(cell_s, x_s) * w).sum()
     loss_s.backward()
-    loss_n = (
-        newton_apply(cell_n, x_n, NewtonConfig(max_iters=3, scan_backend="fused")) * w
-    ).sum()
+    loss_n = (newton_apply(cell_n, x_n, NewtonConfig(max_iters=3, scan_backend="fused")) * w).sum()
     loss_n.backward()
     _assert_param_grads_close(cell_s, cell_n, atol=2e-4)
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=2e-4, rtol=1e-4)
@@ -461,9 +455,7 @@ def test_paralstm_newton_fused_bwd_matches_sequential_bptt(
     x_n = x.clone().requires_grad_(True)
     loss_s = (sequential_apply(cell_s, x_s) * w).sum()
     loss_s.backward()
-    loss_n = (
-        newton_apply(cell_n, x_n, NewtonConfig(max_iters=3, scan_backend="fused")) * w
-    ).sum()
+    loss_n = (newton_apply(cell_n, x_n, NewtonConfig(max_iters=3, scan_backend="fused")) * w).sum()
     loss_n.backward()
     _assert_param_grads_close(cell_s, cell_n, atol=5e-4)
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=5e-4, rtol=1e-4)
@@ -634,6 +626,7 @@ def test_validate_cuda_tensors_rejects_mixed_devices(
     y = torch.zeros(2, device=other)
     with pytest.raises(RuntimeError, match="different devices"):
         validate_cuda_tensors(x, y, name="t")
+
 
 @torch.no_grad()
 def test_paragru_newton_h0_matches_sequential():

@@ -135,11 +135,12 @@ def test_custom_diag_bwd_matches_sequential_bptt():
     x_s = x.clone().requires_grad_(True)
     x_n = x.clone().requires_grad_(True)
     (sequential_apply(cell_s, x_s) * w).sum().backward()
-    (
-        newton_apply(cell_n, x_n, NewtonConfig(max_iters=3, jacobian="autograd")) * w
-    ).sum().backward()
-    for (n, p_a), (_, p_b) in zip(cell_s.named_parameters(), cell_n.named_parameters()):
-        assert p_a.grad is not None and p_b.grad is not None, n
+    (newton_apply(cell_n, x_n, NewtonConfig(max_iters=3, jacobian="autograd")) * w).sum().backward()
+    for (n, p_a), (_, p_b) in zip(
+        cell_s.named_parameters(), cell_n.named_parameters(), strict=True
+    ):
+        assert p_a.grad is not None, n
+        assert p_b.grad is not None, n
         torch.testing.assert_close(p_a.grad, p_b.grad, atol=2e-4, rtol=1e-4)
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=2e-4, rtol=1e-4)
 
@@ -153,7 +154,7 @@ def test_paragru_packed_vjp_matches_autograd_vjp():
     gx_p, gp_p = cell_vjp(cell, h, x, mu, packed=True)
     gx_a, gp_a = cell_vjp(cell, h, x, mu, packed=False)
     torch.testing.assert_close(gx_p, gx_a, atol=2e-5, rtol=2e-5)
-    for a, b in zip(gp_p, gp_a):
+    for a, b in zip(gp_p, gp_a, strict=True):
         if a is None and b is None:
             continue
         torch.testing.assert_close(a, b, atol=2e-5, rtol=2e-5)
@@ -168,7 +169,7 @@ def test_paralstm_packed_vjp_matches_autograd_vjp():
     gx_p, gp_p = cell_vjp(cell, h, x, mu, packed=True)
     gx_a, gp_a = cell_vjp(cell, h, x, mu, packed=False)
     torch.testing.assert_close(gx_p, gx_a, atol=5e-5, rtol=5e-5)
-    for a, b in zip(gp_p, gp_a):
+    for a, b in zip(gp_p, gp_a, strict=True):
         if a is None and b is None:
             continue
         torch.testing.assert_close(a, b, atol=5e-5, rtol=5e-5)
@@ -186,7 +187,7 @@ def test_paraslstm_diag_packed_vjp_matches_autograd_vjp():
     gx_p, gp_p = cell_vjp(cell, h, x, mu, packed=True)
     gx_a, gp_a = cell_vjp(cell, h, x, mu, packed=False)
     torch.testing.assert_close(gx_p, gx_a, atol=5e-5, rtol=5e-5)
-    for a, b in zip(gp_p, gp_a):
+    for a, b in zip(gp_p, gp_a, strict=True):
         if a is None and b is None:
             continue
         torch.testing.assert_close(a, b, atol=5e-5, rtol=5e-5)
@@ -201,7 +202,7 @@ def test_paraslstm_head_packed_vjp_falls_back_to_autograd():
     gx_p, gp_p = cell_vjp(cell, h, x, mu, packed=True)
     gx_a, gp_a = cell_vjp(cell, h, x, mu, packed=False)
     torch.testing.assert_close(gx_p, gx_a, atol=5e-5, rtol=5e-5)
-    for a, b in zip(gp_p, gp_a):
+    for a, b in zip(gp_p, gp_a, strict=True):
         if a is None and b is None:
             continue
         torch.testing.assert_close(a, b, atol=5e-5, rtol=5e-5)

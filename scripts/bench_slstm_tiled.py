@@ -83,9 +83,7 @@ def main() -> None:
             ("baseline", NewtonConfig(scan_backend="fused", residual_atol=None)),
             (
                 "scan_seq",
-                NewtonConfig(
-                    scan_backend="fused", residual_atol=None, scan_tile="seq"
-                ),
+                NewtonConfig(scan_backend="fused", residual_atol=None, scan_tile="seq"),
             ),
         )
         for T in (256, 2048):

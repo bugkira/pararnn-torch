@@ -47,9 +47,7 @@ def step_and_jacobian(
     """``(f(h_prev, x), J)`` with ``J = ∂f/∂h_prev`` at this guess."""
     mode = jacobian
     if mode == "auto":
-        mode = (
-            "analytic" if hasattr(cell, "step_with_jacobian") else "autograd"
-        )
+        mode = "analytic" if hasattr(cell, "step_with_jacobian") else "autograd"
     if mode == "analytic":
         if not hasattr(cell, "step_with_jacobian"):
             raise TypeError(
@@ -61,11 +59,7 @@ def step_and_jacobian(
         return cell.step_with_jacobian(h_prev, x, wx=wx)
     if mode != "autograd":
         raise ValueError(f"unknown jacobian {mode!r}")
-    structure = (
-        jac_structure
-        or getattr(cell, "jac_structure", None)
-        or infer_jac_structure(h_prev)
-    )
+    structure = jac_structure or getattr(cell, "jac_structure", None) or infer_jac_structure(h_prev)
     return jacobian_autograd(cell, h_prev, x, structure=structure)
 
 
@@ -101,9 +95,7 @@ def jacobian_autograd(
 
 def _jac_blockn(f, h0: Tensor, *, slots: int) -> tuple[Tensor, Tensor]:
     if h0.dim() != 4 or h0.shape[-2] != slots:
-        raise ValueError(
-            f"jac_structure='block{slots}' needs state (batch, time, {slots}, d_h)"
-        )
+        raise ValueError(f"jac_structure='block{slots}' needs state (batch, time, {slots}, d_h)")
     cols = []
     pred = None
     for s in range(slots):
@@ -132,9 +124,7 @@ def _jac_head(cell: nn.Module, h0: Tensor, x0: Tensor) -> tuple[Tensor, Tensor]:
 
     inner = jacrev(f_one, argnums=0)
     per_head = vmap(inner, in_dims=(0, 0, 0))
-    jac = vmap(vmap(per_head, in_dims=(0, 0, None)), in_dims=(0, 0, None))(
-        packed, wx_p, r_h
-    )
+    jac = vmap(vmap(per_head, in_dims=(0, 0, None)), in_dims=(0, 0, None))(packed, wx_p, r_h)
     pred = cell.step(h0, x0)
     return pred, jac
 

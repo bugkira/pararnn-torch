@@ -72,7 +72,8 @@ def _residual_vs_k(
         )
         err = float((par - seq).abs().amax())
         log.info(
-            "slstm_newton_k k=%s omega=%.2f residual=%.3e seq_err=%.3e seq_len=%s d_h=%s mix=%s n_heads=%s clip=%s",
+            "slstm_newton_k k=%s omega=%.2f residual=%.3e seq_err=%.3e "
+            "seq_len=%s d_h=%s mix=%s n_heads=%s clip=%s",
             k,
             omega,
             st.max_residual,
@@ -315,7 +316,9 @@ def test_slstm_newton_bwd_matches_sequential_bptt():
     loss_s.backward()
     loss_n = (newton_apply(cell_n, x_n, cfg) * w).sum()
     loss_n.backward()
-    for (n, p_a), (_, p_b) in zip(cell_s.named_parameters(), cell_n.named_parameters()):
+    for (n, p_a), (_, p_b) in zip(
+        cell_s.named_parameters(), cell_n.named_parameters(), strict=True
+    ):
         assert p_a.grad is not None, n
         torch.testing.assert_close(p_a.grad, p_b.grad, atol=5e-4, rtol=1e-4)
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=5e-4, rtol=1e-4)
@@ -332,9 +335,7 @@ def test_slstm_newton_h0_grad_matches_sequential_bptt():
     h0 = 0.2 * torch.randn(2, SLSTM_SLOTS, d_h, device=device)
     h0_s = h0.clone().requires_grad_(True)
     h0_n = h0.clone().requires_grad_(True)
-    cfg = NewtonConfig(
-        max_iters=5, scan_backend="eager", residual_atol=None, picard_iters=1
-    )
+    cfg = NewtonConfig(max_iters=5, scan_backend="eager", residual_atol=None, picard_iters=1)
     loss_s = (sequential_apply(cell_s, x, h0_s) * w).sum()
     loss_s.backward()
     loss_n = (newton_apply(cell_n, x, cfg, h0=h0_n) * w).sum()
@@ -427,7 +428,9 @@ def test_slstm_head_newton_bwd_matches_sequential_bptt():
     loss_s.backward()
     loss_n = (newton_apply(cell_n, x_n, cfg) * w).sum()
     loss_n.backward()
-    for (n, p_a), (_, p_b) in zip(cell_s.named_parameters(), cell_n.named_parameters()):
+    for (n, p_a), (_, p_b) in zip(
+        cell_s.named_parameters(), cell_n.named_parameters(), strict=True
+    ):
         assert p_a.grad is not None, n
         torch.testing.assert_close(p_a.grad, p_b.grad, atol=5e-4, rtol=1e-4)
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=5e-4, rtol=1e-4)
@@ -594,7 +597,9 @@ def test_slstm_newton_fused_bwd_matches_sequential_bptt(cuda_device: torch.devic
         * w
     ).sum()
     loss_n.backward()
-    for (n, p_a), (_, p_b) in zip(cell_s.named_parameters(), cell_n.named_parameters()):
+    for (n, p_a), (_, p_b) in zip(
+        cell_s.named_parameters(), cell_n.named_parameters(), strict=True
+    ):
         assert p_a.grad is not None, n
         torch.testing.assert_close(p_a.grad, p_b.grad, atol=5e-4, rtol=1e-4)
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=5e-4, rtol=1e-4)
@@ -874,9 +879,7 @@ def test_slstm_picard_gru_rejected():
     gru = ParaGRU(4, 4).to(device)
     xg = torch.randn(2, 4, 4, device=device)
     with pytest.raises(TypeError, match="ParaSLSTM"):
-        newton_apply(
-            gru, xg, NewtonConfig(picard_iters=1, scan_backend="eager")
-        )
+        newton_apply(gru, xg, NewtonConfig(picard_iters=1, scan_backend="eager"))
 
 
 @pytest.mark.cuda

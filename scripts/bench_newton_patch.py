@@ -210,9 +210,7 @@ def _write_head_hot_files() -> dict[Path, bytes]:
     backups = {path: path.read_bytes() for path in HOT_FILES}
     for path in HOT_FILES:
         rel = path.relative_to(ROOT).as_posix()
-        path.write_bytes(
-            subprocess.check_output(["git", "show", f"HEAD:{rel}"], cwd=ROOT)
-        )
+        path.write_bytes(subprocess.check_output(["git", "show", f"HEAD:{rel}"], cwd=ROOT))
     _purge_pyc()
     return backups
 

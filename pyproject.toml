@@ -73,6 +73,19 @@ addopts = "--strict-markers"
 [tool.ruff]
 src = ["src", "tests", "examples", "scripts"]
 target-version = "py310"
+# Triton kernels carry wide arithmetic expressions; the default 88 would shred them.
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "C4", "PT"]
+# Docs and comments use Cyrillic and typographic/math symbols (en-dashes, ×, ⊙) on purpose.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# Examples/scripts insert repo root on sys.path before importing pararnn.
+# scripts/gpu.py must set CUDA_DEVICE_ORDER before `import torch`.
+"examples/**" = ["E402"]
+"scripts/**" = ["E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["pararnn", "examples", "scripts"]

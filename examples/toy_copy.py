@@ -127,9 +127,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
                 torch.cuda.empty_cache()
                 used_backend = "eager"
-                losses, residuals, used_backend = _train(
-                    spec, device, lr=lr, scan_backend="eager"
-                )
+                losses, residuals, used_backend = _train(spec, device, lr=lr, scan_backend="eager")
             last_losses = losses
             last_residuals = residuals
             used_lr = lr
@@ -141,7 +139,8 @@ def main(argv: list[str] | None = None) -> None:
                 losses[0],
                 losses[-1],
             )
-        assert last_losses is not None and used_lr is not None
+        assert last_losses is not None
+        assert used_lr is not None
         for step, loss in enumerate(last_losses):
             mlflow.log_metric("loss", loss, step=step)
             if last_residuals is not None:
@@ -191,9 +190,7 @@ def _train(
     losses: list[float] = []
     residuals: list[float] = []
     for step in range(steps + 1):
-        tokens = torch.randint(0, vocab, (batch, seq_len), generator=gen, device="cpu").to(
-            device
-        )
+        tokens = torch.randint(0, vocab, (batch, seq_len), generator=gen, device="cpu").to(device)
         logits = model(tokens)
         residual = float("nan")
         resolved = scan_backend
@@ -205,7 +202,8 @@ def _train(
         losses.append(loss_f)
         residuals.append(residual)
         log.info(
-            "train_step step=%d loss=%.4f residual=%.3e lr=%s backend=%s seq_len=%d batch=%d d_h=%d",
+            "train_step step=%d loss=%.4f residual=%.3e lr=%s backend=%s "
+            "seq_len=%d batch=%d d_h=%d",
             step,
             loss_f,
             residual,

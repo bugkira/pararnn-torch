@@ -43,9 +43,7 @@ class ParaGRU(nn.Module):
         dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
-        input_size, hidden_size = resolve_layer_sizes(
-            input_size, hidden_size, d_in=d_in, d_h=d_h
-        )
+        input_size, hidden_size = resolve_layer_sizes(input_size, hidden_size, d_in=d_in, d_h=d_h)
         factory_kwargs = {"device": device, "dtype": dtype}
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -77,9 +75,7 @@ class ParaGRU(nn.Module):
             self.a_n.clamp(-cap, cap),
         )
 
-    def step(
-        self, h_prev: Tensor, x: Tensor | None = None, *, wx: Tensor | None = None
-    ) -> Tensor:
+    def step(self, h_prev: Tensor, x: Tensor | None = None, *, wx: Tensor | None = None) -> Tensor:
         """One step. ``h_prev`` last dim ``d_h``; ``x`` last dim ``d_in``.
 
         Sequential unroll / decode. ``wx`` is optional ``W_x(x)`` (eq. 3.1,

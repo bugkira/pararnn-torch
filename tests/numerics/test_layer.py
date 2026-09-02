@@ -66,7 +66,9 @@ def test_grads_match_sequential_bptt():
     x_n = x.clone().requires_grad_(True)
     (sequential_apply(cell_s, x_s) * w).sum().backward()
     (layer(x_n) * w).sum().backward()
-    for (n, p_a), (_, p_b) in zip(cell_s.named_parameters(), cell_n.named_parameters()):
+    for (n, p_a), (_, p_b) in zip(
+        cell_s.named_parameters(), cell_n.named_parameters(), strict=True
+    ):
         assert p_a.grad is not None, n
         torch.testing.assert_close(p_a.grad, p_b.grad, atol=2e-4, rtol=1e-4)
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=2e-4, rtol=1e-4)
@@ -121,13 +123,9 @@ def test_h0_eval_and_train():
     x = torch.randn(3, 10, 4, device=device)
     h0 = 0.3 * torch.randn(3, 6, device=device)
     layer.eval()
-    torch.testing.assert_close(
-        layer(x, h0=h0), sequential_apply(cell, x, h0), atol=0, rtol=0
-    )
+    torch.testing.assert_close(layer(x, h0=h0), sequential_apply(cell, x, h0), atol=0, rtol=0)
     layer.train()
-    torch.testing.assert_close(
-        layer(x, h0=h0), newton_apply(cell, x, cfg, h0=h0), atol=0, rtol=0
-    )
+    torch.testing.assert_close(layer(x, h0=h0), newton_apply(cell, x, cfg, h0=h0), atol=0, rtol=0)
 
 
 def test_custom_cell_num_layers_gt1_raises():

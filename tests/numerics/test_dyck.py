@@ -46,8 +46,11 @@ def test_dyck_newton_grads_match_sequential_bptt():
     target = tokens[:, 1:]
     F.cross_entropy(logits_s.reshape(-1, VOCAB), target.reshape(-1)).backward()
     F.cross_entropy(logits_n.reshape(-1, VOCAB), target.reshape(-1)).backward()
-    for (n, p_a), (_, p_b) in zip(cell_s.named_parameters(), cell_n.named_parameters()):
-        assert p_a.grad is not None and p_b.grad is not None, n
+    for (n, p_a), (_, p_b) in zip(
+        cell_s.named_parameters(), cell_n.named_parameters(), strict=True
+    ):
+        assert p_a.grad is not None, n
+        assert p_b.grad is not None, n
         assert torch.isfinite(p_b.grad).all()
         torch.testing.assert_close(p_a.grad, p_b.grad, atol=2e-4, rtol=1e-4)
     torch.testing.assert_close(emb_s.weight.grad, emb_n.weight.grad, atol=2e-4, rtol=1e-4)

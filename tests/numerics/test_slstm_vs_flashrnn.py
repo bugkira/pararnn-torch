@@ -28,9 +28,7 @@ def test_dyck_vs_flashrnn_rejects_odd_length():
 
 
 def test_dyck_vs_flashrnn_head_config_validates():
-    spec = yaml.safe_load(
-        (ROOT / "configs" / "train" / "dyck_vs_flashrnn_head.yaml").read_text()
-    )
+    spec = yaml.safe_load((ROOT / "configs" / "train" / "dyck_vs_flashrnn_head.yaml").read_text())
     _validate_spec(spec)
     assert spec["mix"] == "head"
     assert int(spec["newton_iters"]) == 4
@@ -41,18 +39,14 @@ def test_dyck_vs_flashrnn_head_config_validates():
 
 
 def test_dyck_vs_flashrnn_head_rejects_p1():
-    spec = yaml.safe_load(
-        (ROOT / "configs" / "train" / "dyck_vs_flashrnn_head.yaml").read_text()
-    )
+    spec = yaml.safe_load((ROOT / "configs" / "train" / "dyck_vs_flashrnn_head.yaml").read_text())
     spec["picard_iters"] = 1
     with pytest.raises(ValueError, match="picard_iters"):
         _validate_spec(spec)
 
 
 def test_dyck_vs_flashrnn_head_rejects_k3():
-    spec = yaml.safe_load(
-        (ROOT / "configs" / "train" / "dyck_vs_flashrnn_head.yaml").read_text()
-    )
+    spec = yaml.safe_load((ROOT / "configs" / "train" / "dyck_vs_flashrnn_head.yaml").read_text())
     spec["newton_iters"] = 3
     with pytest.raises(ValueError, match="K=4"):
         _validate_spec(spec)

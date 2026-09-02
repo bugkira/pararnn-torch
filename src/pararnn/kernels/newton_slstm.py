@@ -45,10 +45,46 @@ def _tanh(x):
 
 @triton.jit
 def _compose_block4(
-    a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33,
-    u0, u1, u2, u3,
-    b00, b01, b02, b03, b10, b11, b12, b13, b20, b21, b22, b23, b30, b31, b32, b33,
-    v0, v1, v2, v3,
+    a00,
+    a01,
+    a02,
+    a03,
+    a10,
+    a11,
+    a12,
+    a13,
+    a20,
+    a21,
+    a22,
+    a23,
+    a30,
+    a31,
+    a32,
+    a33,
+    u0,
+    u1,
+    u2,
+    u3,
+    b00,
+    b01,
+    b02,
+    b03,
+    b10,
+    b11,
+    b12,
+    b13,
+    b20,
+    b21,
+    b22,
+    b23,
+    b30,
+    b31,
+    b32,
+    b33,
+    v0,
+    v1,
+    v2,
+    v3,
 ):
     o00 = b00 * a00 + b01 * a10 + b02 * a20 + b03 * a30
     o01 = b00 * a01 + b01 * a11 + b02 * a21 + b03 * a31
@@ -71,15 +107,51 @@ def _compose_block4(
     w2 = b20 * u0 + b21 * u1 + b22 * u2 + b23 * u3 + v2
     w3 = b30 * u0 + b31 * u1 + b32 * u2 + b33 * u3 + v3
     return (
-        o00, o01, o02, o03, o10, o11, o12, o13, o20, o21, o22, o23, o30, o31, o32, o33,
-        w0, w1, w2, w3,
+        o00,
+        o01,
+        o02,
+        o03,
+        o10,
+        o11,
+        o12,
+        o13,
+        o20,
+        o21,
+        o22,
+        o23,
+        o30,
+        o31,
+        o32,
+        o33,
+        w0,
+        w1,
+        w2,
+        w3,
     )
 
 
 @triton.jit
 def _seq_scan_block4(
-    j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
-    r0, r1, r2, r3,
+    j00,
+    j01,
+    j02,
+    j03,
+    j10,
+    j11,
+    j12,
+    j13,
+    j20,
+    j21,
+    j22,
+    j23,
+    j30,
+    j31,
+    j32,
+    j33,
+    r0,
+    r1,
+    r2,
+    r3,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
@@ -148,13 +220,67 @@ def _seq_scan_block4(
         er2 = tl.sum(tl.where(sel, r2, 0.0), 0)
         er3 = tl.sum(tl.where(sel, r3, 0.0), 0)
         (
-            a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33,
-            w0, w1, w2, w3,
+            a00,
+            a01,
+            a02,
+            a03,
+            a10,
+            a11,
+            a12,
+            a13,
+            a20,
+            a21,
+            a22,
+            a23,
+            a30,
+            a31,
+            a32,
+            a33,
+            w0,
+            w1,
+            w2,
+            w3,
         ) = _compose_block4(
-            a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33,
-            w0, w1, w2, w3,
-            e00, e01, e02, e03, e10, e11, e12, e13, e20, e21, e22, e23, e30, e31, e32, e33,
-            er0, er1, er2, er3,
+            a00,
+            a01,
+            a02,
+            a03,
+            a10,
+            a11,
+            a12,
+            a13,
+            a20,
+            a21,
+            a22,
+            a23,
+            a30,
+            a31,
+            a32,
+            a33,
+            w0,
+            w1,
+            w2,
+            w3,
+            e00,
+            e01,
+            e02,
+            e03,
+            e10,
+            e11,
+            e12,
+            e13,
+            e20,
+            e21,
+            e22,
+            e23,
+            e30,
+            e31,
+            e32,
+            e33,
+            er0,
+            er1,
+            er2,
+            er3,
         )
         o00 = tl.where(sel, a00[None, :], o00)
         o01 = tl.where(sel, a01[None, :], o01)
@@ -177,8 +303,26 @@ def _seq_scan_block4(
         u2 = tl.where(sel, w2[None, :], u2)
         u3 = tl.where(sel, w3[None, :], u3)
     return (
-        o00, o01, o02, o03, o10, o11, o12, o13, o20, o21, o22, o23, o30, o31, o32, o33,
-        u0, u1, u2, u3,
+        o00,
+        o01,
+        o02,
+        o03,
+        o10,
+        o11,
+        o12,
+        o13,
+        o20,
+        o21,
+        o22,
+        o23,
+        o30,
+        o31,
+        o32,
+        o33,
+        u0,
+        u1,
+        u2,
+        u3,
     )
 
 
@@ -242,11 +386,26 @@ def _slstm_pred_j(
     j_hm = inv * j_cm + dn * j_nm
     j_hh = inv * j_ch + dn * j_nh + du * do_dh
     return (
-        c_new, n_new, m_new, h_new,
-        j_cc, j_cn, j_cm, j_ch,
-        j_nc, j_nn, j_nm, j_nh,
-        j_mc, j_mn, j_mm, j_mh,
-        j_hc, j_hn, j_hm, j_hh,
+        c_new,
+        n_new,
+        m_new,
+        h_new,
+        j_cc,
+        j_cn,
+        j_cm,
+        j_ch,
+        j_nc,
+        j_nn,
+        j_nm,
+        j_nh,
+        j_mc,
+        j_mn,
+        j_mm,
+        j_mh,
+        j_hc,
+        j_hn,
+        j_hm,
+        j_hh,
     )
 
 
@@ -319,11 +478,26 @@ def _slstm_log_pred_j(
     j_hm = o * du_dm
     j_hh = o * du_dh + u_new * do_dh
     return (
-        u_new, ln_new, m_new, h_new,
-        j_uu, j_uln, j_um, j_uh,
-        j_lnu, j_lnln, j_lnm, j_lnh,
-        j_mu, j_mn, j_mm, j_mh,
-        j_hu, j_hln, j_hm, j_hh,
+        u_new,
+        ln_new,
+        m_new,
+        h_new,
+        j_uu,
+        j_uln,
+        j_um,
+        j_uh,
+        j_lnu,
+        j_lnln,
+        j_lnm,
+        j_lnh,
+        j_mu,
+        j_mn,
+        j_mm,
+        j_mh,
+        j_hu,
+        j_hln,
+        j_hm,
+        j_hh,
     )
 
 
@@ -401,10 +575,18 @@ def _slstm_init_kernel(
     d_h,
     time,
     eps,
-    stride_wb, stride_wt, stride_wd,
-    stride_sb, stride_st, stride_ss, stride_sd,
-    stride_rg, stride_rd,
-    stride_h0b, stride_h0s, stride_h0d,
+    stride_wb,
+    stride_wt,
+    stride_wd,
+    stride_sb,
+    stride_st,
+    stride_ss,
+    stride_sd,
+    stride_rg,
+    stride_rd,
+    stride_h0b,
+    stride_h0s,
+    stride_h0d,
     SLOT_C: tl.constexpr,
     SLOT_N: tl.constexpr,
     SLOT_M: tl.constexpr,
@@ -441,10 +623,18 @@ def _slstm_init_kernel(
     c, n, m, h, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ = _slstm_pred_j(
         c_prev, n_prev, m_prev, h_prev, zi, zf, zz, zo, r_i, r_f, r_z, r_o, eps
     )
-    _store_state(s_ptr, c, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    _store_state(s_ptr, n, pid_b, offs_t, offs_d, SLOT_N, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    _store_state(s_ptr, m, pid_b, offs_t, offs_d, SLOT_M, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    _store_state(s_ptr, h, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd)
+    _store_state(
+        s_ptr, c, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    _store_state(
+        s_ptr, n, pid_b, offs_t, offs_d, SLOT_N, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    _store_state(
+        s_ptr, m, pid_b, offs_t, offs_d, SLOT_M, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    _store_state(
+        s_ptr, h, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
 
 
 @triton.jit
@@ -460,14 +650,34 @@ def _slstm_cell_local_scan_kernel(
     time,
     d_h,
     eps,
-    stride_sb, stride_st, stride_ss, stride_sd,
-    stride_h0b, stride_h0s, stride_h0d,
-    stride_wb, stride_wt, stride_wd,
-    stride_rg, stride_rd,
-    stride_jb, stride_jt, stride_jk, stride_jd,
-    stride_rb, stride_rt, stride_rs, stride_rd_s,
-    stride_ajb, stride_ajc, stride_ajk, stride_ajd,
-    stride_arb, stride_arc, stride_ars, stride_ard,
+    stride_sb,
+    stride_st,
+    stride_ss,
+    stride_sd,
+    stride_h0b,
+    stride_h0s,
+    stride_h0d,
+    stride_wb,
+    stride_wt,
+    stride_wd,
+    stride_rg,
+    stride_rd,
+    stride_jb,
+    stride_jt,
+    stride_jk,
+    stride_jd,
+    stride_rb,
+    stride_rt,
+    stride_rs,
+    stride_rd_s,
+    stride_ajb,
+    stride_ajc,
+    stride_ajk,
+    stride_ajd,
+    stride_arb,
+    stride_arc,
+    stride_ars,
+    stride_ard,
     SLOT_C: tl.constexpr,
     SLOT_N: tl.constexpr,
     SLOT_M: tl.constexpr,
@@ -486,16 +696,68 @@ def _slstm_cell_local_scan_kernel(
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
     dmask = offs_d < d_h
-    c = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    n = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_N, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    m = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_M, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    h = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd)
+    c = _load_state(
+        s_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    n = _load_state(
+        s_ptr, pid_b, offs_t, offs_d, SLOT_N, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    m = _load_state(
+        s_ptr, pid_b, offs_t, offs_d, SLOT_M, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    h = _load_state(
+        s_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
     offs_tm1 = offs_t - 1
     mask_prev = (offs_tm1[:, None] >= 0) & (offs_tm1[:, None] < time) & (offs_d[None, :] < d_h)
-    c_prev = _load_state(s_ptr, pid_b, offs_tm1, offs_d, SLOT_C, mask_prev, stride_sb, stride_st, stride_ss, stride_sd)
-    n_prev = _load_state(s_ptr, pid_b, offs_tm1, offs_d, SLOT_N, mask_prev, stride_sb, stride_st, stride_ss, stride_sd)
-    m_prev = _load_state(s_ptr, pid_b, offs_tm1, offs_d, SLOT_M, mask_prev, stride_sb, stride_st, stride_ss, stride_sd)
-    h_prev = _load_state(s_ptr, pid_b, offs_tm1, offs_d, SLOT_H, mask_prev, stride_sb, stride_st, stride_ss, stride_sd)
+    c_prev = _load_state(
+        s_ptr,
+        pid_b,
+        offs_tm1,
+        offs_d,
+        SLOT_C,
+        mask_prev,
+        stride_sb,
+        stride_st,
+        stride_ss,
+        stride_sd,
+    )
+    n_prev = _load_state(
+        s_ptr,
+        pid_b,
+        offs_tm1,
+        offs_d,
+        SLOT_N,
+        mask_prev,
+        stride_sb,
+        stride_st,
+        stride_ss,
+        stride_sd,
+    )
+    m_prev = _load_state(
+        s_ptr,
+        pid_b,
+        offs_tm1,
+        offs_d,
+        SLOT_M,
+        mask_prev,
+        stride_sb,
+        stride_st,
+        stride_ss,
+        stride_sd,
+    )
+    h_prev = _load_state(
+        s_ptr,
+        pid_b,
+        offs_tm1,
+        offs_d,
+        SLOT_H,
+        mask_prev,
+        stride_sb,
+        stride_st,
+        stride_ss,
+        stride_sd,
+    )
     c0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_C, dmask, stride_h0b, stride_h0s, stride_h0d)
     n0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_N, dmask, stride_h0b, stride_h0s, stride_h0d)
     m0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_M, dmask, stride_h0b, stride_h0s, stride_h0d)
@@ -514,18 +776,50 @@ def _slstm_cell_local_scan_kernel(
     r_o = _load_r_gate(r_ptr, 3, offs_d, dmask, stride_rg, stride_rd)
     if LOG:
         (
-            c_new, n_new, m_new, h_new,
-            j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
-        ) = _slstm_log_pred_j(
-            c_prev, n_prev, m_prev, h_prev, zi, zf, zz, zo, r_i, r_f, r_z, r_o
-        )
+            c_new,
+            n_new,
+            m_new,
+            h_new,
+            j00,
+            j01,
+            j02,
+            j03,
+            j10,
+            j11,
+            j12,
+            j13,
+            j20,
+            j21,
+            j22,
+            j23,
+            j30,
+            j31,
+            j32,
+            j33,
+        ) = _slstm_log_pred_j(c_prev, n_prev, m_prev, h_prev, zi, zf, zz, zo, r_i, r_f, r_z, r_o)
     else:
         (
-            c_new, n_new, m_new, h_new,
-            j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
-        ) = _slstm_pred_j(
-            c_prev, n_prev, m_prev, h_prev, zi, zf, zz, zo, r_i, r_f, r_z, r_o, eps
-        )
+            c_new,
+            n_new,
+            m_new,
+            h_new,
+            j00,
+            j01,
+            j02,
+            j03,
+            j10,
+            j11,
+            j12,
+            j13,
+            j20,
+            j21,
+            j22,
+            j23,
+            j30,
+            j31,
+            j32,
+            j33,
+        ) = _slstm_pred_j(c_prev, n_prev, m_prev, h_prev, zi, zf, zz, zo, r_i, r_f, r_z, r_o, eps)
     r0 = tl.where(mask, c_new - c, 0.0)
     r1 = tl.where(mask, n_new - n, 0.0)
     r2 = tl.where(mask, m_new - m, 0.0)
@@ -548,67 +842,443 @@ def _slstm_cell_local_scan_kernel(
     j33 = tl.where(mask, j33, 1.0)
     if SEQ:
         (
-            s00, s01, s02, s03, s10, s11, s12, s13, s20, s21, s22, s23, s30, s31, s32, s33,
-            u0, u1, u2, u3,
+            s00,
+            s01,
+            s02,
+            s03,
+            s10,
+            s11,
+            s12,
+            s13,
+            s20,
+            s21,
+            s22,
+            s23,
+            s30,
+            s31,
+            s32,
+            s33,
+            u0,
+            u1,
+            u2,
+            u3,
         ) = _seq_scan_block4(
-            j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
-            r0, r1, r2, r3,
+            j00,
+            j01,
+            j02,
+            j03,
+            j10,
+            j11,
+            j12,
+            j13,
+            j20,
+            j21,
+            j22,
+            j23,
+            j30,
+            j31,
+            j32,
+            j33,
+            r0,
+            r1,
+            r2,
+            r3,
             BLOCK_T,
             BLOCK_D,
         )
     else:
         (
-            s00, s01, s02, s03, s10, s11, s12, s13, s20, s21, s22, s23, s30, s31, s32, s33,
-            u0, u1, u2, u3,
+            s00,
+            s01,
+            s02,
+            s03,
+            s10,
+            s11,
+            s12,
+            s13,
+            s20,
+            s21,
+            s22,
+            s23,
+            s30,
+            s31,
+            s32,
+            s33,
+            u0,
+            u1,
+            u2,
+            u3,
         ) = tl.associative_scan(
             (
-                j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
-                r0, r1, r2, r3,
+                j00,
+                j01,
+                j02,
+                j03,
+                j10,
+                j11,
+                j12,
+                j13,
+                j20,
+                j21,
+                j22,
+                j23,
+                j30,
+                j31,
+                j32,
+                j33,
+                r0,
+                r1,
+                r2,
+                r3,
             ),
             0,
             _compose_block4,
         )
-    _store_j_lane(j_loc_ptr, s00, pid_b, offs_t, offs_d, 0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s01, pid_b, offs_t, offs_d, 1, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s02, pid_b, offs_t, offs_d, 2, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s03, pid_b, offs_t, offs_d, 3, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s10, pid_b, offs_t, offs_d, 4, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s11, pid_b, offs_t, offs_d, 5, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s12, pid_b, offs_t, offs_d, 6, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s13, pid_b, offs_t, offs_d, 7, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s20, pid_b, offs_t, offs_d, 8, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s21, pid_b, offs_t, offs_d, 9, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s22, pid_b, offs_t, offs_d, 10, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s23, pid_b, offs_t, offs_d, 11, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s30, pid_b, offs_t, offs_d, 12, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s31, pid_b, offs_t, offs_d, 13, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s32, pid_b, offs_t, offs_d, 14, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_j_lane(j_loc_ptr, s33, pid_b, offs_t, offs_d, 15, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    _store_state(r_loc_ptr, u0, pid_b, offs_t, offs_d, SLOT_C, mask, stride_rb, stride_rt, stride_rs, stride_rd_s)
-    _store_state(r_loc_ptr, u1, pid_b, offs_t, offs_d, SLOT_N, mask, stride_rb, stride_rt, stride_rs, stride_rd_s)
-    _store_state(r_loc_ptr, u2, pid_b, offs_t, offs_d, SLOT_M, mask, stride_rb, stride_rt, stride_rs, stride_rd_s)
-    _store_state(r_loc_ptr, u3, pid_b, offs_t, offs_d, SLOT_H, mask, stride_rb, stride_rt, stride_rs, stride_rd_s)
+    _store_j_lane(
+        j_loc_ptr, s00, pid_b, offs_t, offs_d, 0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s01, pid_b, offs_t, offs_d, 1, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s02, pid_b, offs_t, offs_d, 2, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s03, pid_b, offs_t, offs_d, 3, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s10, pid_b, offs_t, offs_d, 4, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s11, pid_b, offs_t, offs_d, 5, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s12, pid_b, offs_t, offs_d, 6, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s13, pid_b, offs_t, offs_d, 7, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s20, pid_b, offs_t, offs_d, 8, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s21, pid_b, offs_t, offs_d, 9, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s22, pid_b, offs_t, offs_d, 10, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s23, pid_b, offs_t, offs_d, 11, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s30, pid_b, offs_t, offs_d, 12, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s31, pid_b, offs_t, offs_d, 13, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s32, pid_b, offs_t, offs_d, 14, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_j_lane(
+        j_loc_ptr, s33, pid_b, offs_t, offs_d, 15, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    _store_state(
+        r_loc_ptr,
+        u0,
+        pid_b,
+        offs_t,
+        offs_d,
+        SLOT_C,
+        mask,
+        stride_rb,
+        stride_rt,
+        stride_rs,
+        stride_rd_s,
+    )
+    _store_state(
+        r_loc_ptr,
+        u1,
+        pid_b,
+        offs_t,
+        offs_d,
+        SLOT_N,
+        mask,
+        stride_rb,
+        stride_rt,
+        stride_rs,
+        stride_rd_s,
+    )
+    _store_state(
+        r_loc_ptr,
+        u2,
+        pid_b,
+        offs_t,
+        offs_d,
+        SLOT_M,
+        mask,
+        stride_rb,
+        stride_rt,
+        stride_rs,
+        stride_rd_s,
+    )
+    _store_state(
+        r_loc_ptr,
+        u3,
+        pid_b,
+        offs_t,
+        offs_d,
+        SLOT_H,
+        mask,
+        stride_rb,
+        stride_rt,
+        stride_rs,
+        stride_rd_s,
+    )
     last = (tl.arange(0, BLOCK_T) == (BLOCK_T - 1))[:, None]
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s00, 0.0), axis=0), pid_b, pid_c, offs_d, 0, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s01, 0.0), axis=0), pid_b, pid_c, offs_d, 1, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s02, 0.0), axis=0), pid_b, pid_c, offs_d, 2, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s03, 0.0), axis=0), pid_b, pid_c, offs_d, 3, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s10, 0.0), axis=0), pid_b, pid_c, offs_d, 4, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s11, 0.0), axis=0), pid_b, pid_c, offs_d, 5, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s12, 0.0), axis=0), pid_b, pid_c, offs_d, 6, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s13, 0.0), axis=0), pid_b, pid_c, offs_d, 7, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s20, 0.0), axis=0), pid_b, pid_c, offs_d, 8, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s21, 0.0), axis=0), pid_b, pid_c, offs_d, 9, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s22, 0.0), axis=0), pid_b, pid_c, offs_d, 10, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s23, 0.0), axis=0), pid_b, pid_c, offs_d, 11, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s30, 0.0), axis=0), pid_b, pid_c, offs_d, 12, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s31, 0.0), axis=0), pid_b, pid_c, offs_d, 13, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s32, 0.0), axis=0), pid_b, pid_c, offs_d, 14, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    _store_agg_j(agg_j_ptr, tl.sum(tl.where(last, s33, 0.0), axis=0), pid_b, pid_c, offs_d, 15, dmask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    store_acc(agg_r_ptr + pid_b * stride_arb + pid_c * stride_arc + SLOT_C * stride_ars + offs_d * stride_ard, tl.sum(tl.where(last, u0, 0.0), axis=0), dmask)
-    store_acc(agg_r_ptr + pid_b * stride_arb + pid_c * stride_arc + SLOT_N * stride_ars + offs_d * stride_ard, tl.sum(tl.where(last, u1, 0.0), axis=0), dmask)
-    store_acc(agg_r_ptr + pid_b * stride_arb + pid_c * stride_arc + SLOT_M * stride_ars + offs_d * stride_ard, tl.sum(tl.where(last, u2, 0.0), axis=0), dmask)
-    store_acc(agg_r_ptr + pid_b * stride_arb + pid_c * stride_arc + SLOT_H * stride_ars + offs_d * stride_ard, tl.sum(tl.where(last, u3, 0.0), axis=0), dmask)
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s00, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        0,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s01, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        1,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s02, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        2,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s03, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        3,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s10, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        4,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s11, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        5,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s12, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        6,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s13, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        7,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s20, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        8,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s21, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        9,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s22, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        10,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s23, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        11,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s30, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        12,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s31, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        13,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s32, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        14,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    _store_agg_j(
+        agg_j_ptr,
+        tl.sum(tl.where(last, s33, 0.0), axis=0),
+        pid_b,
+        pid_c,
+        offs_d,
+        15,
+        dmask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    store_acc(
+        agg_r_ptr
+        + pid_b * stride_arb
+        + pid_c * stride_arc
+        + SLOT_C * stride_ars
+        + offs_d * stride_ard,
+        tl.sum(tl.where(last, u0, 0.0), axis=0),
+        dmask,
+    )
+    store_acc(
+        agg_r_ptr
+        + pid_b * stride_arb
+        + pid_c * stride_arc
+        + SLOT_N * stride_ars
+        + offs_d * stride_ard,
+        tl.sum(tl.where(last, u1, 0.0), axis=0),
+        dmask,
+    )
+    store_acc(
+        agg_r_ptr
+        + pid_b * stride_arb
+        + pid_c * stride_arc
+        + SLOT_M * stride_ars
+        + offs_d * stride_ard,
+        tl.sum(tl.where(last, u2, 0.0), axis=0),
+        dmask,
+    )
+    store_acc(
+        agg_r_ptr
+        + pid_b * stride_arb
+        + pid_c * stride_arc
+        + SLOT_H * stride_ars
+        + offs_d * stride_ard,
+        tl.sum(tl.where(last, u3, 0.0), axis=0),
+        dmask,
+    )
 
 
 @triton.jit
@@ -618,9 +1288,18 @@ def _chunk_incl_kernel(
     incl_r_ptr,
     n_chunks,
     d_h,
-    stride_ajb, stride_ajc, stride_ajk, stride_ajd,
-    stride_arb, stride_arc, stride_ars, stride_ard,
-    stride_ib, stride_ic, stride_is, stride_id,
+    stride_ajb,
+    stride_ajc,
+    stride_ajk,
+    stride_ajd,
+    stride_arb,
+    stride_arc,
+    stride_ars,
+    stride_ard,
+    stride_ib,
+    stride_ic,
+    stride_is,
+    stride_id,
     CHUNK_PAD: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
@@ -629,41 +1308,285 @@ def _chunk_incl_kernel(
     offs_c = tl.arange(0, CHUNK_PAD)
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_c[:, None] < n_chunks) & (offs_d[None, :] < d_h)
-    j00 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 0, 1.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j01 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 1, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j02 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 2, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j03 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 3, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j10 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 4, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j11 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 5, 1.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j12 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 6, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j13 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 7, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j20 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 8, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j21 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 9, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j22 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 10, 1.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j23 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 11, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j30 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 12, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j31 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 13, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j32 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 14, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    j33 = _load_j_lane(agg_j_ptr, pid_b, offs_c, offs_d, 15, 1.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    u0 = _load_state(agg_r_ptr, pid_b, offs_c, offs_d, 0, mask, stride_arb, stride_arc, stride_ars, stride_ard)
-    u1 = _load_state(agg_r_ptr, pid_b, offs_c, offs_d, 1, mask, stride_arb, stride_arc, stride_ars, stride_ard)
-    u2 = _load_state(agg_r_ptr, pid_b, offs_c, offs_d, 2, mask, stride_arb, stride_arc, stride_ars, stride_ard)
-    u3 = _load_state(agg_r_ptr, pid_b, offs_c, offs_d, 3, mask, stride_arb, stride_arc, stride_ars, stride_ard)
+    j00 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        0,
+        1.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j01 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        1,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j02 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        2,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j03 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        3,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j10 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        4,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j11 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        5,
+        1.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j12 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        6,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j13 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        7,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j20 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        8,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j21 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        9,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j22 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        10,
+        1.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j23 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        11,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j30 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        12,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j31 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        13,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j32 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        14,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    j33 = _load_j_lane(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        15,
+        1.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    u0 = _load_state(
+        agg_r_ptr, pid_b, offs_c, offs_d, 0, mask, stride_arb, stride_arc, stride_ars, stride_ard
+    )
+    u1 = _load_state(
+        agg_r_ptr, pid_b, offs_c, offs_d, 1, mask, stride_arb, stride_arc, stride_ars, stride_ard
+    )
+    u2 = _load_state(
+        agg_r_ptr, pid_b, offs_c, offs_d, 2, mask, stride_arb, stride_arc, stride_ars, stride_ard
+    )
+    u3 = _load_state(
+        agg_r_ptr, pid_b, offs_c, offs_d, 3, mask, stride_arb, stride_arc, stride_ars, stride_ard
+    )
     (
-        _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-        s0, s1, s2, s3,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        s0,
+        s1,
+        s2,
+        s3,
     ) = tl.associative_scan(
         (
-            j00, j01, j02, j03, j10, j11, j12, j13, j20, j21, j22, j23, j30, j31, j32, j33,
-            u0, u1, u2, u3,
+            j00,
+            j01,
+            j02,
+            j03,
+            j10,
+            j11,
+            j12,
+            j13,
+            j20,
+            j21,
+            j22,
+            j23,
+            j30,
+            j31,
+            j32,
+            j33,
+            u0,
+            u1,
+            u2,
+            u3,
         ),
         0,
         _compose_block4,
     )
-    _store_state(incl_r_ptr, s0, pid_b, offs_c, offs_d, 0, mask, stride_ib, stride_ic, stride_is, stride_id)
-    _store_state(incl_r_ptr, s1, pid_b, offs_c, offs_d, 1, mask, stride_ib, stride_ic, stride_is, stride_id)
-    _store_state(incl_r_ptr, s2, pid_b, offs_c, offs_d, 2, mask, stride_ib, stride_ic, stride_is, stride_id)
-    _store_state(incl_r_ptr, s3, pid_b, offs_c, offs_d, 3, mask, stride_ib, stride_ic, stride_is, stride_id)
+    _store_state(
+        incl_r_ptr, s0, pid_b, offs_c, offs_d, 0, mask, stride_ib, stride_ic, stride_is, stride_id
+    )
+    _store_state(
+        incl_r_ptr, s1, pid_b, offs_c, offs_d, 1, mask, stride_ib, stride_ic, stride_is, stride_id
+    )
+    _store_state(
+        incl_r_ptr, s2, pid_b, offs_c, offs_d, 2, mask, stride_ib, stride_ic, stride_is, stride_id
+    )
+    _store_state(
+        incl_r_ptr, s3, pid_b, offs_c, offs_d, 3, mask, stride_ib, stride_ic, stride_is, stride_id
+    )
 
 
 @triton.jit
@@ -675,10 +1598,22 @@ def _slstm_apply_update_kernel(
     time,
     d_h,
     omega,
-    stride_sb, stride_st, stride_ss, stride_sd,
-    stride_jb, stride_jt, stride_jk, stride_jd,
-    stride_rb, stride_rt, stride_rs, stride_rd,
-    stride_ib, stride_ic, stride_is, stride_id,
+    stride_sb,
+    stride_st,
+    stride_ss,
+    stride_sd,
+    stride_jb,
+    stride_jt,
+    stride_jk,
+    stride_jd,
+    stride_rb,
+    stride_rt,
+    stride_rs,
+    stride_rd,
+    stride_ib,
+    stride_ic,
+    stride_is,
+    stride_id,
     SLOT_C: tl.constexpr,
     SLOT_N: tl.constexpr,
     SLOT_M: tl.constexpr,
@@ -695,31 +1630,103 @@ def _slstm_apply_update_kernel(
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
     dmask = offs_d < d_h
-    j00 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 0, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j01 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 1, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j02 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 2, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j03 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 3, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j10 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 4, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j11 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 5, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j12 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 6, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j13 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 7, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j20 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 8, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j21 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 9, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j22 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 10, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j23 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 11, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j30 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 12, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j31 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 13, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j32 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 14, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j33 = _load_j_lane(j_loc_ptr, pid_b, offs_t, offs_d, 15, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    r0 = _load_state(r_loc_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_rb, stride_rt, stride_rs, stride_rd)
-    r1 = _load_state(r_loc_ptr, pid_b, offs_t, offs_d, SLOT_N, mask, stride_rb, stride_rt, stride_rs, stride_rd)
-    r2 = _load_state(r_loc_ptr, pid_b, offs_t, offs_d, SLOT_M, mask, stride_rb, stride_rt, stride_rs, stride_rd)
-    r3 = _load_state(r_loc_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_rb, stride_rt, stride_rs, stride_rd)
+    j00 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 0, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j01 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 1, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j02 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 2, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j03 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 3, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j10 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 4, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j11 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 5, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j12 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 6, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j13 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 7, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j20 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 8, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j21 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 9, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j22 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 10, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j23 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 11, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j30 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 12, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j31 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 13, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j32 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 14, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j33 = _load_j_lane(
+        j_loc_ptr, pid_b, offs_t, offs_d, 15, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    r0 = _load_state(
+        r_loc_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_rb, stride_rt, stride_rs, stride_rd
+    )
+    r1 = _load_state(
+        r_loc_ptr, pid_b, offs_t, offs_d, SLOT_N, mask, stride_rb, stride_rt, stride_rs, stride_rd
+    )
+    r2 = _load_state(
+        r_loc_ptr, pid_b, offs_t, offs_d, SLOT_M, mask, stride_rb, stride_rt, stride_rs, stride_rd
+    )
+    r3 = _load_state(
+        r_loc_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_rb, stride_rt, stride_rs, stride_rd
+    )
     idx_c = tl.where(pid_c > 0, pid_c - 1, 0)
-    c0 = load_acc(incl_r_ptr + pid_b * stride_ib + idx_c * stride_ic + SLOT_C * stride_is + offs_d * stride_id, dmask, 0.0)
-    c1 = load_acc(incl_r_ptr + pid_b * stride_ib + idx_c * stride_ic + SLOT_N * stride_is + offs_d * stride_id, dmask, 0.0)
-    c2 = load_acc(incl_r_ptr + pid_b * stride_ib + idx_c * stride_ic + SLOT_M * stride_is + offs_d * stride_id, dmask, 0.0)
-    c3 = load_acc(incl_r_ptr + pid_b * stride_ib + idx_c * stride_ic + SLOT_H * stride_is + offs_d * stride_id, dmask, 0.0)
+    c0 = load_acc(
+        incl_r_ptr
+        + pid_b * stride_ib
+        + idx_c * stride_ic
+        + SLOT_C * stride_is
+        + offs_d * stride_id,
+        dmask,
+        0.0,
+    )
+    c1 = load_acc(
+        incl_r_ptr
+        + pid_b * stride_ib
+        + idx_c * stride_ic
+        + SLOT_N * stride_is
+        + offs_d * stride_id,
+        dmask,
+        0.0,
+    )
+    c2 = load_acc(
+        incl_r_ptr
+        + pid_b * stride_ib
+        + idx_c * stride_ic
+        + SLOT_M * stride_is
+        + offs_d * stride_id,
+        dmask,
+        0.0,
+    )
+    c3 = load_acc(
+        incl_r_ptr
+        + pid_b * stride_ib
+        + idx_c * stride_ic
+        + SLOT_H * stride_is
+        + offs_d * stride_id,
+        dmask,
+        0.0,
+    )
     c0 = tl.where(pid_c > 0, c0, 0.0)
     c1 = tl.where(pid_c > 0, c1, 0.0)
     c2 = tl.where(pid_c > 0, c2, 0.0)
@@ -728,14 +1735,70 @@ def _slstm_apply_update_kernel(
     delta_n = j10 * c0[None, :] + j11 * c1[None, :] + j12 * c2[None, :] + j13 * c3[None, :] + r1
     delta_m = j20 * c0[None, :] + j21 * c1[None, :] + j22 * c2[None, :] + j23 * c3[None, :] + r2
     delta_h = j30 * c0[None, :] + j31 * c1[None, :] + j32 * c2[None, :] + j33 * c3[None, :] + r3
-    c = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    n = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_N, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    m = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_M, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    h = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    _store_state(s_ptr, c + omega * delta_c, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    _store_state(s_ptr, n + omega * delta_n, pid_b, offs_t, offs_d, SLOT_N, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    _store_state(s_ptr, m + omega * delta_m, pid_b, offs_t, offs_d, SLOT_M, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    _store_state(s_ptr, h + omega * delta_h, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd)
+    c = _load_state(
+        s_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    n = _load_state(
+        s_ptr, pid_b, offs_t, offs_d, SLOT_N, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    m = _load_state(
+        s_ptr, pid_b, offs_t, offs_d, SLOT_M, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    h = _load_state(
+        s_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    _store_state(
+        s_ptr,
+        c + omega * delta_c,
+        pid_b,
+        offs_t,
+        offs_d,
+        SLOT_C,
+        mask,
+        stride_sb,
+        stride_st,
+        stride_ss,
+        stride_sd,
+    )
+    _store_state(
+        s_ptr,
+        n + omega * delta_n,
+        pid_b,
+        offs_t,
+        offs_d,
+        SLOT_N,
+        mask,
+        stride_sb,
+        stride_st,
+        stride_ss,
+        stride_sd,
+    )
+    _store_state(
+        s_ptr,
+        m + omega * delta_m,
+        pid_b,
+        offs_t,
+        offs_d,
+        SLOT_M,
+        mask,
+        stride_sb,
+        stride_st,
+        stride_ss,
+        stride_sd,
+    )
+    _store_state(
+        s_ptr,
+        h + omega * delta_h,
+        pid_b,
+        offs_t,
+        offs_d,
+        SLOT_H,
+        mask,
+        stride_sb,
+        stride_st,
+        stride_ss,
+        stride_sd,
+    )
 
 
 def newton_slstm_fused(

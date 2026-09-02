@@ -77,12 +77,8 @@ class _S6Block(nn.Module):
         self.dt_proj = nn.Linear(d_model, d_model)
         self.B_proj = nn.Linear(d_model, d_model)
         self.C_proj = nn.Linear(d_model, d_model)
-        self.log_A = nn.Parameter(
-            torch.log(torch.arange(1, d_model + 1, dtype=torch.float32))
-        )
-        self.dt_bias = nn.Parameter(
-            torch.linspace(math.log(1e-3), math.log(1e-1), d_model)
-        )
+        self.log_A = nn.Parameter(torch.log(torch.arange(1, d_model + 1, dtype=torch.float32)))
+        self.dt_bias = nn.Parameter(torch.linspace(math.log(1e-3), math.log(1e-1), d_model))
 
     def forward(self, x: Tensor) -> Tensor:
         z = self.norm(x)
@@ -364,7 +360,7 @@ def main(argv: list[str] | None = None) -> None:
             mlflow.log_metric(f"{arm}/long_tok", used["long_tok"])
             mlflow.log_metric(f"{arm}/long_exact", used["long_exact"])
             mlflow.log_metric(f"{arm}/long_last", used["long_last"])
-            for i, (ce, acc) in enumerate(zip(used["losses"], used["token_acc"])):
+            for i, (ce, acc) in enumerate(zip(used["losses"], used["token_acc"], strict=True)):
                 if i % 10 == 0 or i + 1 == len(used["losses"]):
                     mlflow.log_metric(f"{arm}/loss", ce, step=i)
                     mlflow.log_metric(f"{arm}/train_tok", acc, step=i)

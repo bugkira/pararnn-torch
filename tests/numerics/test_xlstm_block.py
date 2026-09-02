@@ -48,9 +48,7 @@ def test_xlstm_block_head_mix_shape():
     torch.manual_seed(83)
     d, t = 8, 10
     cfg = NewtonConfig(max_iters=4, scan_backend="eager")
-    block = xLSTMBlock(
-        d, solver="auto", mix="head", n_heads=2, config=cfg, device=device
-    )
+    block = xLSTMBlock(d, solver="auto", mix="head", n_heads=2, config=cfg, device=device)
     x = 0.3 * torch.randn(2, t, d, device=device)
     y = block(x)
     assert y.shape == x.shape
@@ -63,9 +61,7 @@ def test_xlstm_block_head_newton_matches_eval():
     torch.manual_seed(84)
     d, t = 8, 8
     cfg = NewtonConfig(max_iters=4, scan_backend="eager")
-    block = xLSTMBlock(
-        d, solver="auto", mix="head", n_heads=2, config=cfg, device=device
-    )
+    block = xLSTMBlock(d, solver="auto", mix="head", n_heads=2, config=cfg, device=device)
     x = 0.3 * torch.randn(2, t, d, device=device)
     block.train()
     y_train = block(x)

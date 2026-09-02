@@ -91,7 +91,7 @@ def _vjp_quality(cell: ParaSLSTM, h_prev: Tensor, x: Tensor, mu: Tensor) -> dict
     gx_a, gp_a = cell_vjp(cell, h_prev, x, mu, packed=False)
     err_x = _max_err(gx_p, gx_a)
     err_p = 0.0
-    for a, b in zip(gp_p, gp_a):
+    for a, b in zip(gp_p, gp_a, strict=True):
         err_p = max(err_p, _max_err(a, b))
     return {"err_x": err_x, "err_params": err_p}
 
@@ -112,9 +112,7 @@ def _vjp_time(cell: ParaSLSTM, h_prev: Tensor, x: Tensor, mu: Tensor, packed: bo
     return {"min_ms": tmin, "median_ms": tmed, "mean_ms": tmean}
 
 
-def _newton_fwd_bwd_time(
-    cell: ParaSLSTM, x: Tensor, cfg: NewtonConfig, packed: bool
-) -> dict:
+def _newton_fwd_bwd_time(cell: ParaSLSTM, x: Tensor, cfg: NewtonConfig, packed: bool) -> dict:
     _set_packed(packed)
     x_in = x.detach().requires_grad_(True)
 
@@ -313,7 +311,7 @@ def main() -> None:
             _set_packed(False)
             gx_a, gp_a, _ = _eq26_vjp(cell, states, x, partial, backend="triton")
             err_nx = _max_err(gx_p, gx_a)
-            err_np = max(_max_err(a, b) for a, b in zip(gp_p, gp_a))
+            err_np = max(_max_err(a, b) for a, b in zip(gp_p, gp_a, strict=True))
             log.info(
                 "eq26 quality %s  max|dx|=%.3e  max|dtheta|=%.3e",
                 name,
@@ -336,7 +334,7 @@ def main() -> None:
         ce_gap = abs(packed_train["ce_final"] - autograd_train["ce_final"])
         max_ce_gap = max(
             abs(a - b)
-            for a, b in zip(packed_train["losses"], autograd_train["losses"])
+            for a, b in zip(packed_train["losses"], autograd_train["losses"], strict=True)
         )
         log.info(
             "dyck CE packed %.4f → %.4f  autograd %.4f → %.4f  "

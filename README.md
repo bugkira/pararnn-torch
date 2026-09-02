@@ -45,7 +45,7 @@ x = torch.randn(4, 128, 32, device=device)
 model.train()  # solver='auto' → Newton + scan
 y_train = model(x)
 
-model.eval()   # sequential cell.step
+model.eval()  # sequential cell.step
 y_eval = model(x)
 
 block = xLSTMBlock(64, solver="auto", device=device)  # LN → sLSTM → residual
@@ -61,7 +61,7 @@ Low-level solvers:
 ```python
 from pararnn.solvers import newton_apply, sequential_apply
 
-h = newton_apply(cell, x)       # (B, T, hidden_size)
+h = newton_apply(cell, x)  # (B, T, hidden_size)
 h = sequential_apply(cell, x)
 ```
 

@@ -23,15 +23,11 @@ def resolve_layer_sizes(
     in_sz = _pick_size("input_size", input_size, "d_in", d_in)
     hid = _pick_size("hidden_size", hidden_size, "d_h", d_h)
     if in_sz < 1 or hid < 1:
-        raise ValueError(
-            f"input_size and hidden_size must be positive, got {in_sz}, {hid}"
-        )
+        raise ValueError(f"input_size and hidden_size must be positive, got {in_sz}, {hid}")
     return in_sz, hid
 
 
-def _pick_size(
-    name: str, value: int | None, alias: str, alias_value: int | None
-) -> int:
+def _pick_size(name: str, value: int | None, alias: str, alias_value: int | None) -> int:
     if value is not None and alias_value is not None and value != alias_value:
         raise ValueError(f"{name}={value!r} conflicts with {alias}={alias_value!r}")
     picked = value if value is not None else alias_value
@@ -66,13 +62,10 @@ def check_cell(cell: nn.Module) -> None:
         d_h = getattr(cell, "hidden_size", None)
     if not isinstance(d_h, int) or d_h < 1:
         raise TypeError(
-            f"{type(cell).__name__} needs integer d_h / hidden_size "
-            f"(hidden size), got {d_h!r}"
+            f"{type(cell).__name__} needs integer d_h / hidden_size (hidden size), got {d_h!r}"
         )
     if not callable(getattr(cell, "step", None)):
         raise TypeError(f"{type(cell).__name__} needs a step(h_prev, x) method")
     slots = getattr(cell, "state_slots", 1)
     if slots not in (1, 2, 4):
-        raise TypeError(
-            f"{type(cell).__name__}.state_slots must be 1, 2, or 4, got {slots!r}"
-        )
+        raise TypeError(f"{type(cell).__name__}.state_slots must be 1, 2, or 4, got {slots!r}")

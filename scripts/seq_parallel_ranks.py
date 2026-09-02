@@ -123,9 +123,7 @@ def main() -> None:
                 err_pref,
             )
             if err_two > 1e-4 or err_pref > 1e-4:
-                raise RuntimeError(
-                    f"scan mismatch T={t} two={err_two:.3e} prefix={err_pref:.3e}"
-                )
+                raise RuntimeError(f"scan mismatch T={t} two={err_two:.3e} prefix={err_pref:.3e}")
             mlflow.log_metric("maxabs_two_rank", err_two, step=t)
             mlflow.log_metric("maxabs_seq_prefix", err_pref, step=t)
 

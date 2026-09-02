@@ -41,9 +41,7 @@ class ParaLSTM(nn.Module):
         dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
-        input_size, hidden_size = resolve_layer_sizes(
-            input_size, hidden_size, d_in=d_in, d_h=d_h
-        )
+        input_size, hidden_size = resolve_layer_sizes(input_size, hidden_size, d_in=d_in, d_h=d_h)
         factory_kwargs = {"device": device, "dtype": dtype}
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -83,9 +81,7 @@ class ParaLSTM(nn.Module):
             self._clip(self.c_o),
         )
 
-    def step(
-        self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
-    ) -> Tensor:
+    def step(self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None) -> Tensor:
         """One step (sequential unroll / decode).
 
         ``wx`` is optional ``W_x(x)`` (eq. 3.1, independent of state).
@@ -110,10 +106,7 @@ class ParaLSTM(nn.Module):
         j_cc = acts.f + (acts.c_prev - acts.z) * f_p * acts.peephole_f
         j_ch = (acts.c_prev - acts.z) * f_p * acts.a_f + (1.0 - acts.f) * z_p * acts.a_z
         j_hc = (acts.h_act * o_p * acts.peephole_o + acts.o * h_act_p) * j_cc
-        j_hh = (
-            acts.h_act * o_p * (acts.a_o + acts.peephole_o * j_ch)
-            + acts.o * h_act_p * j_ch
-        )
+        j_hh = acts.h_act * o_p * (acts.a_o + acts.peephole_o * j_ch) + acts.o * h_act_p * j_ch
         jac = torch.stack(
             (
                 torch.stack((j_cc, j_ch), dim=-2),
@@ -123,9 +116,7 @@ class ParaLSTM(nn.Module):
         )
         return acts.state_new, jac
 
-    def _recurrence(
-        self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
-    ) -> _LSTMActs:
+    def _recurrence(self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None) -> _LSTMActs:
         c_prev = state_prev[..., LSTM_CELL, :]
         h_prev = state_prev[..., LSTM_HIDDEN, :]
         a_f, a_z, a_o, peephole_f, peephole_o = self.clipped_recurrent()

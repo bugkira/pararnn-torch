@@ -141,16 +141,12 @@ class ParaRNN(nn.Module):
         return y
 
 
-def _build_layers(
-    cell: nn.Module | Sequence[nn.Module], num_layers: int
-) -> list[nn.Module]:
+def _build_layers(cell: nn.Module | Sequence[nn.Module], num_layers: int) -> list[nn.Module]:
     if isinstance(cell, (list, tuple)):
         if not cell:
             raise ValueError("cell list must be non-empty")
         if num_layers not in (1, len(cell)):
-            raise ValueError(
-                f"num_layers={num_layers} does not match len(cells)={len(cell)}"
-            )
+            raise ValueError(f"num_layers={num_layers} does not match len(cells)={len(cell)}")
         layers = list(cell)
         for c in layers:
             check_cell(c)
@@ -231,9 +227,7 @@ def _require_lstm_layout(layers: nn.ModuleList) -> None:
             )
 
 
-def _split_h0(
-    h0: Tensor | Sequence[Tensor] | None, n_layers: int
-) -> list[Tensor | None]:
+def _split_h0(h0: Tensor | Sequence[Tensor] | None, n_layers: int) -> list[Tensor | None]:
     if h0 is None:
         return [None] * n_layers
     if n_layers == 1:
@@ -245,7 +239,5 @@ def _split_h0(
             return [h0[0]]
         return [h0]
     if not isinstance(h0, (list, tuple)) or len(h0) != n_layers:
-        raise TypeError(
-            f"h0 for {n_layers} layers must be a tuple/list of length {n_layers}"
-        )
+        raise TypeError(f"h0 for {n_layers} layers must be a tuple/list of length {n_layers}")
     return list(h0)

@@ -157,10 +157,7 @@ def _chunk_incl_kernel(
     )
     _, r_s = tl.associative_scan((j, r), 0, _compose_diag)
     store_acc(
-        incl_r_ptr
-        + pid_b * stride_ib
-        + offs_c[:, None] * stride_ic
-        + offs_d[None, :] * stride_id,
+        incl_r_ptr + pid_b * stride_ib + offs_c[:, None] * stride_ic + offs_d[None, :] * stride_id,
         r_s,
         mask,
     )
@@ -198,18 +195,12 @@ def _apply_carry_kernel(
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
     j_loc = load_acc(
-        j_loc_ptr
-        + pid_b * stride_jb
-        + offs_t[:, None] * stride_jt
-        + offs_d[None, :] * stride_jd,
+        j_loc_ptr + pid_b * stride_jb + offs_t[:, None] * stride_jt + offs_d[None, :] * stride_jd,
         mask,
         1.0,
     )
     r_loc = load_acc(
-        r_loc_ptr
-        + pid_b * stride_rb
-        + offs_t[:, None] * stride_rt
-        + offs_d[None, :] * stride_rd,
+        r_loc_ptr + pid_b * stride_rb + offs_t[:, None] * stride_rt + offs_d[None, :] * stride_rd,
         mask,
         0.0,
     )
@@ -222,10 +213,7 @@ def _apply_carry_kernel(
     carry = tl.where(pid_c > 0, carry, 0.0)
     out = j_loc * carry[None, :] + r_loc
     store_acc(
-        out_ptr
-        + pid_b * stride_ob
-        + offs_t[:, None] * stride_ot
-        + offs_d[None, :] * stride_od,
+        out_ptr + pid_b * stride_ob + offs_t[:, None] * stride_ot + offs_d[None, :] * stride_od,
         out,
         mask,
     )

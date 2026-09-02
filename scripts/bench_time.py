@@ -195,7 +195,7 @@ def _newton_fused(cell: nn.Module, x: Tensor, cfg: NewtonConfig) -> Tensor:
         return newton_apply(cell, x, fused)
 
 
-_flashrnn_backend_memo: str | None | bool = False
+_flashrnn_backend_memo: str | bool | None = False
 
 
 def _ensure_cuda_home() -> None:
@@ -222,7 +222,8 @@ def _flashrnn_backend() -> str | None:
     _ensure_cuda_home()
     try:
         import flashrnn  # noqa: F401
-    except Exception as exc:
+    except (ImportError, RuntimeError, OSError) as exc:
+        # Optional dep; import also compiles a CUDA extension (not just ImportError).
         log.warning("flashrnn skip: %s", exc)
         _flashrnn_backend_memo = None
         return None
@@ -361,9 +362,7 @@ def main() -> None:
     spec = yaml.safe_load(config_path.read_text())
     device = select_device(DEFAULT_EXPERIMENT_GPU_NAME)
     if device.type != "cuda":
-        raise RuntimeError(
-            "App. B needs the 2080 Ti (CUDA_VISIBLE_DEVICES to restrict)"
-        )
+        raise RuntimeError("App. B needs the 2080 Ti (CUDA_VISIBLE_DEVICES to restrict)")
     torch.cuda.set_device(device)
     wait_until_free(device, min_free_gib=8.0, poll_s=30.0)
     newton_cfg = _newton_config_from_spec(spec, scan_backend="eager")
@@ -410,9 +409,7 @@ def main() -> None:
             {
                 "gpu": torch.cuda.get_device_name(device),
                 "dtype": ",".join(dtype_names),
-                "protocol": "smoke-10-50"
-                if int(spec["warmup"]) != 20
-                else "danieli2025-appB",
+                "protocol": "smoke-10-50" if int(spec["warmup"]) != 20 else "danieli2025-appB",
                 "modes": ",".join(modes),
             }
         )
@@ -481,32 +478,24 @@ def main() -> None:
                 cells = _build_cells(spec, d_in, d_h, device=device, dtype=dt)
                 for cell_name, cell in cells.items():
                     for T in spec["seq_lens"]:
-                        x = x_scale * torch.randn(
-                            batch, int(T), d_in, device=device, dtype=dt
-                        )
+                        x = x_scale * torch.randn(batch, int(T), d_in, device=device, dtype=dt)
                         seq_stats = None
                         seq_eager_stats = None
-                        if T <= seq_max_seq:
+                        if seq_max_seq >= T:
                             if "newton" in modes or "newton_compiled" in modes:
                                 err = _agree(cell, x, newton_cfg)
-                                log.info(
-                                    "%s T=%d max|par-naive|=%.3e", cell_name, T, err
-                                )
+                                log.info("%s T=%d max|par-naive|=%.3e", cell_name, T, err)
                                 if err > agree_tol:
                                     msg = f"agreement failed {cell_name} T={T}: {err}"
                                     if require_agreement:
                                         raise RuntimeError(msg)
                                     log.warning("%s (logged, not fatal)", msg)
-                                mlflow.log_metric(
-                                    mkey(cell_name, "max_abs_err"), err, step=int(T)
-                                )
+                                mlflow.log_metric(mkey(cell_name, "max_abs_err"), err, step=int(T))
 
                             if "newton_fused" in modes:
                                 fused_cfg = replace(newton_cfg, scan_backend="fused")
                                 err_f = _agree(cell, x, fused_cfg)
-                                log.info(
-                                    "%s T=%d max|fused-naive|=%.3e", cell_name, T, err_f
-                                )
+                                log.info("%s T=%d max|fused-naive|=%.3e", cell_name, T, err_f)
                                 if err_f > agree_tol:
                                     msg = f"fused agreement failed {cell_name} T={T}: {err_f}"
                                     if require_agreement:
@@ -571,7 +560,7 @@ def main() -> None:
                                 )
 
                         newton_cap = newton_max_t.get(cell_name, int(T))
-                        if T > newton_cap:
+                        if newton_cap < T:
                             log.info(
                                 "%s T=%d skip newton (cap=%d; 2080 Ti 11 GiB, not falling back)",
                                 cell_name,
@@ -645,9 +634,7 @@ def main() -> None:
                                     T,
                                     vs,
                                 )
-                                mlflow.log_metric(
-                                    mkey(cell_name, "fused_speedup"), vs, step=int(T)
-                                )
+                                mlflow.log_metric(mkey(cell_name, "fused_speedup"), vs, step=int(T))
 
                         flash_stats = None
                         if "flashrnn" in modes:
@@ -658,8 +645,8 @@ def main() -> None:
                                 try:
                                     flash_stats = _time_one(
                                         f"{cell_name} flashrnn_{fr_backend}",
-                                        lambda c=cell, xx=x, b=fr_backend: (
-                                            _flashrnn_slstm(c, xx, b)
+                                        lambda c=cell, xx=x, b=fr_backend: _flashrnn_slstm(
+                                            c, xx, b
                                         ),
                                         x,
                                         warmup=warmup,
@@ -690,10 +677,7 @@ def main() -> None:
                                     )
                                     mlflow.set_tag("flashrnn_backend", fr_backend)
                                     if fused_stats is not None:
-                                        vs_fr = (
-                                            flash_stats["min_ms"]
-                                            / fused_stats["min_ms"]
-                                        )
+                                        vs_fr = flash_stats["min_ms"] / fused_stats["min_ms"]
                                         log.info(
                                             "%s T=%d fused vs flashrnn (min)=%.2fx "
                                             "(>1 fused faster)",
@@ -710,7 +694,7 @@ def main() -> None:
                         compiled_stats = None
                         compile_s = None
                         if "newton_compiled" in modes:
-                            if T <= seq_max_seq:
+                            if seq_max_seq >= T:
                                 torch.cuda.synchronize()
                                 t_compile = time.perf_counter()
                                 compiled_h = _newton_compiled(
@@ -720,9 +704,7 @@ def main() -> None:
                                 compile_s = time.perf_counter() - t_compile
                                 with torch.no_grad():
                                     seq_h = sequential_apply(cell, x)
-                                err_c = float(
-                                    (compiled_h.float() - seq_h.float()).abs().amax()
-                                )
+                                err_c = float((compiled_h.float() - seq_h.float()).abs().amax())
                                 log.info(
                                     "%s T=%d max|compiled-naive|=%.3e compile_s=%.2f",
                                     cell_name,
@@ -821,13 +803,9 @@ def main() -> None:
                                 T,
                                 speedup,
                             )
-                            mlflow.log_metric(
-                                mkey(cell_name, "speedup"), speedup, step=int(T)
-                            )
+                            mlflow.log_metric(mkey(cell_name, "speedup"), speedup, step=int(T))
                         if seq_eager_stats is not None and fused_stats is not None:
-                            vs_naive_rnn = (
-                                seq_eager_stats["min_ms"] / fused_stats["min_ms"]
-                            )
+                            vs_naive_rnn = seq_eager_stats["min_ms"] / fused_stats["min_ms"]
                             log.info(
                                 "%s T=%d fused vs naive RNN sequential_eager (min)=%.2fx",
                                 cell_name,
@@ -853,9 +831,7 @@ def main() -> None:
                                 step=int(T),
                             )
                         if seq_eager_stats is not None and par_stats is not None:
-                            vs_par_naive = (
-                                seq_eager_stats["min_ms"] / par_stats["min_ms"]
-                            )
+                            vs_par_naive = seq_eager_stats["min_ms"] / par_stats["min_ms"]
                             log.info(
                                 "%s T=%d eager Newton vs naive RNN sequential_eager (min)=%.2fx",
                                 cell_name,

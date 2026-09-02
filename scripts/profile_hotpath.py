@@ -188,9 +188,7 @@ def main() -> None:
                         with record_function(tag):
                             fn()
                         prof.step()
-                table = prof.key_averages().table(
-                    sort_by="self_device_time_total", row_limit=20
-                )
+                table = prof.key_averages().table(sort_by="self_device_time_total", row_limit=20)
                 table_path = out_dir / f"{tag}_kernels.txt"
                 table_path.write_text(table)
                 trace_path = out_dir / f"{tag}.json"

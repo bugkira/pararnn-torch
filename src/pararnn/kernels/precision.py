@@ -20,9 +20,7 @@ _NARROW_DTYPES = (torch.float16, torch.bfloat16)
 _BF16_MIN_MAJOR = 8  # Ampere / Ada / Hopper / Blackwell TC
 
 
-def is_fused_dtype_supported(
-    dtype: torch.dtype, device: torch.device | str | int
-) -> bool:
+def is_fused_dtype_supported(dtype: torch.dtype, device: torch.device | str | int) -> bool:
     """Whether fused/Triton scan may run this dtype on this **tensor** device.
 
     fp32 and fp16: any CUDA. bf16: SM 8.0+. Query the tensor's ``device``
@@ -50,9 +48,7 @@ def validate_cuda_tensors(*tensors: Tensor, name: str) -> bool:
         if not t.is_cuda:
             raise RuntimeError(f"{name} requires CUDA, got {t.device}")
         if t.device != device:
-            raise RuntimeError(
-                f"{name}: tensors on different devices ({t.device} vs {device})"
-            )
+            raise RuntimeError(f"{name}: tensors on different devices ({t.device} vs {device})")
         if t.dtype != dtype:
             raise TypeError(f"{name}: dtype mismatch {t.dtype} vs {dtype}")
     if not is_fused_dtype_supported(dtype, device):

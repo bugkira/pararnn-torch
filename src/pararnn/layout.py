@@ -38,9 +38,7 @@ def swap_lstm_ch(state: torch.Tensor) -> torch.Tensor:
     ``state`` is ``(..., 2, hidden_size)`` — ``h0`` or last step.
     """
     if state.ndim < 2 or state.shape[-2] != 2:
-        raise ValueError(
-            f"swap_lstm_ch expects (..., 2, d_h), got {tuple(state.shape)}"
-        )
+        raise ValueError(f"swap_lstm_ch expects (..., 2, d_h), got {tuple(state.shape)}")
     return state.flip(-2)
 
 

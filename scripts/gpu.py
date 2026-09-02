@@ -38,10 +38,7 @@ def setup_logging(level: int = logging.INFO) -> None:
 
 
 def _warn_if_order_unpinned() -> None:
-    if (
-        _torch_imported_before_pin
-        and os.environ.get("CUDA_DEVICE_ORDER") != _CUDA_ORDER
-    ):
+    if _torch_imported_before_pin and os.environ.get("CUDA_DEVICE_ORDER") != _CUDA_ORDER:
         log.warning(
             "torch imported before CUDA_DEVICE_ORDER=%s; indices may not "
             "match nvidia-smi. Set the env var in the shell before importing torch.",

@@ -130,21 +130,101 @@ def _local_scan_kernel(
     offs_t = t0 + tl.arange(0, BLOCK_T)
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
-    j00 = _load_j(j_ptr, pid_b, offs_t, offs_d, 0, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j01 = _load_j(j_ptr, pid_b, offs_t, offs_d, 1, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j10 = _load_j(j_ptr, pid_b, offs_t, offs_d, 2, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j11 = _load_j(j_ptr, pid_b, offs_t, offs_d, 3, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
+    j00 = _load_j(
+        j_ptr, pid_b, offs_t, offs_d, 0, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j01 = _load_j(
+        j_ptr, pid_b, offs_t, offs_d, 1, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j10 = _load_j(
+        j_ptr, pid_b, offs_t, offs_d, 2, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j11 = _load_j(
+        j_ptr, pid_b, offs_t, offs_d, 3, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
     r0 = _load_r(r_ptr, pid_b, offs_t, offs_d, 0, mask, stride_rb, stride_rt, stride_rs, stride_rd)
     r1 = _load_r(r_ptr, pid_b, offs_t, offs_d, 1, mask, stride_rb, stride_rt, stride_rs, stride_rd)
     s00, s01, s10, s11, u0, u1 = tl.associative_scan(
         (j00, j01, j10, j11, r0, r1), 0, _compose_block2
     )
-    _store_j(j_out_ptr, s00, pid_b, offs_t, offs_d, 0, mask, stride_ojb, stride_ojt, stride_ojk, stride_ojd)
-    _store_j(j_out_ptr, s01, pid_b, offs_t, offs_d, 1, mask, stride_ojb, stride_ojt, stride_ojk, stride_ojd)
-    _store_j(j_out_ptr, s10, pid_b, offs_t, offs_d, 2, mask, stride_ojb, stride_ojt, stride_ojk, stride_ojd)
-    _store_j(j_out_ptr, s11, pid_b, offs_t, offs_d, 3, mask, stride_ojb, stride_ojt, stride_ojk, stride_ojd)
-    _store_r(r_out_ptr, u0, pid_b, offs_t, offs_d, 0, mask, stride_orb, stride_ort, stride_ors, stride_ord)
-    _store_r(r_out_ptr, u1, pid_b, offs_t, offs_d, 1, mask, stride_orb, stride_ort, stride_ors, stride_ord)
+    _store_j(
+        j_out_ptr,
+        s00,
+        pid_b,
+        offs_t,
+        offs_d,
+        0,
+        mask,
+        stride_ojb,
+        stride_ojt,
+        stride_ojk,
+        stride_ojd,
+    )
+    _store_j(
+        j_out_ptr,
+        s01,
+        pid_b,
+        offs_t,
+        offs_d,
+        1,
+        mask,
+        stride_ojb,
+        stride_ojt,
+        stride_ojk,
+        stride_ojd,
+    )
+    _store_j(
+        j_out_ptr,
+        s10,
+        pid_b,
+        offs_t,
+        offs_d,
+        2,
+        mask,
+        stride_ojb,
+        stride_ojt,
+        stride_ojk,
+        stride_ojd,
+    )
+    _store_j(
+        j_out_ptr,
+        s11,
+        pid_b,
+        offs_t,
+        offs_d,
+        3,
+        mask,
+        stride_ojb,
+        stride_ojt,
+        stride_ojk,
+        stride_ojd,
+    )
+    _store_r(
+        r_out_ptr,
+        u0,
+        pid_b,
+        offs_t,
+        offs_d,
+        0,
+        mask,
+        stride_orb,
+        stride_ort,
+        stride_ors,
+        stride_ord,
+    )
+    _store_r(
+        r_out_ptr,
+        u1,
+        pid_b,
+        offs_t,
+        offs_d,
+        1,
+        mask,
+        stride_orb,
+        stride_ort,
+        stride_ors,
+        stride_ord,
+    )
     last = (tl.arange(0, BLOCK_T) == (BLOCK_T - 1))[:, None]
     dmask = offs_d < d_h
     store_acc(
@@ -206,15 +286,71 @@ def _chunk_incl_kernel(
     offs_c = tl.arange(0, CHUNK_PAD)
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_c[:, None] < n_chunks) & (offs_d[None, :] < d_h)
-    a00 = _load_j(agg_j_ptr, pid_b, offs_c, offs_d, 0, 1.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    a01 = _load_j(agg_j_ptr, pid_b, offs_c, offs_d, 1, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    a10 = _load_j(agg_j_ptr, pid_b, offs_c, offs_d, 2, 0.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    a11 = _load_j(agg_j_ptr, pid_b, offs_c, offs_d, 3, 1.0, mask, stride_ajb, stride_ajc, stride_ajk, stride_ajd)
-    u0 = _load_r(agg_r_ptr, pid_b, offs_c, offs_d, 0, mask, stride_arb, stride_arc, stride_ars, stride_ard)
-    u1 = _load_r(agg_r_ptr, pid_b, offs_c, offs_d, 1, mask, stride_arb, stride_arc, stride_ars, stride_ard)
+    a00 = _load_j(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        0,
+        1.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    a01 = _load_j(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        1,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    a10 = _load_j(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        2,
+        0.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    a11 = _load_j(
+        agg_j_ptr,
+        pid_b,
+        offs_c,
+        offs_d,
+        3,
+        1.0,
+        mask,
+        stride_ajb,
+        stride_ajc,
+        stride_ajk,
+        stride_ajd,
+    )
+    u0 = _load_r(
+        agg_r_ptr, pid_b, offs_c, offs_d, 0, mask, stride_arb, stride_arc, stride_ars, stride_ard
+    )
+    u1 = _load_r(
+        agg_r_ptr, pid_b, offs_c, offs_d, 1, mask, stride_arb, stride_arc, stride_ars, stride_ard
+    )
     _, _, _, _, s0, s1 = tl.associative_scan((a00, a01, a10, a11, u0, u1), 0, _compose_block2)
-    _store_r(incl_r_ptr, s0, pid_b, offs_c, offs_d, 0, mask, stride_ib, stride_ic, stride_is, stride_id)
-    _store_r(incl_r_ptr, s1, pid_b, offs_c, offs_d, 1, mask, stride_ib, stride_ic, stride_is, stride_id)
+    _store_r(
+        incl_r_ptr, s0, pid_b, offs_c, offs_d, 0, mask, stride_ib, stride_ic, stride_is, stride_id
+    )
+    _store_r(
+        incl_r_ptr, s1, pid_b, offs_c, offs_d, 1, mask, stride_ib, stride_ic, stride_is, stride_id
+    )
 
 
 @triton.jit
@@ -254,12 +390,24 @@ def _apply_carry_kernel(
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
     idx_c = tl.where(pid_c > 0, pid_c - 1, 0)
     dmask = offs_d < d_h
-    j00 = _load_j(j_loc_ptr, pid_b, offs_t, offs_d, 0, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j01 = _load_j(j_loc_ptr, pid_b, offs_t, offs_d, 1, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j10 = _load_j(j_loc_ptr, pid_b, offs_t, offs_d, 2, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    j11 = _load_j(j_loc_ptr, pid_b, offs_t, offs_d, 3, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd)
-    r0 = _load_r(r_loc_ptr, pid_b, offs_t, offs_d, 0, mask, stride_rb, stride_rt, stride_rs, stride_rd)
-    r1 = _load_r(r_loc_ptr, pid_b, offs_t, offs_d, 1, mask, stride_rb, stride_rt, stride_rs, stride_rd)
+    j00 = _load_j(
+        j_loc_ptr, pid_b, offs_t, offs_d, 0, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j01 = _load_j(
+        j_loc_ptr, pid_b, offs_t, offs_d, 1, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j10 = _load_j(
+        j_loc_ptr, pid_b, offs_t, offs_d, 2, 0.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    j11 = _load_j(
+        j_loc_ptr, pid_b, offs_t, offs_d, 3, 1.0, mask, stride_jb, stride_jt, stride_jk, stride_jd
+    )
+    r0 = _load_r(
+        r_loc_ptr, pid_b, offs_t, offs_d, 0, mask, stride_rb, stride_rt, stride_rs, stride_rd
+    )
+    r1 = _load_r(
+        r_loc_ptr, pid_b, offs_t, offs_d, 1, mask, stride_rb, stride_rt, stride_rs, stride_rd
+    )
     c0 = load_acc(
         incl_r_ptr + pid_b * stride_ib + idx_c * stride_ic + 0 * stride_is + offs_d * stride_id,
         dmask,
@@ -274,8 +422,12 @@ def _apply_carry_kernel(
     c1 = tl.where(pid_c > 0, c1, 0.0)
     out0 = j00 * c0[None, :] + j01 * c1[None, :] + r0
     out1 = j10 * c0[None, :] + j11 * c1[None, :] + r1
-    _store_r(out_ptr, out0, pid_b, offs_t, offs_d, 0, mask, stride_ob, stride_ot, stride_os, stride_od)
-    _store_r(out_ptr, out1, pid_b, offs_t, offs_d, 1, mask, stride_ob, stride_ot, stride_os, stride_od)
+    _store_r(
+        out_ptr, out0, pid_b, offs_t, offs_d, 0, mask, stride_ob, stride_ot, stride_os, stride_od
+    )
+    _store_r(
+        out_ptr, out1, pid_b, offs_t, offs_d, 1, mask, stride_ob, stride_ot, stride_os, stride_od
+    )
 
 
 def scan_block2_triton(jac: Tensor, residual: Tensor) -> Tensor:

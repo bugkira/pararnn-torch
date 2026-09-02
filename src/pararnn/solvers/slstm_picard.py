@@ -26,11 +26,7 @@ def slstm_frozen_gate_scan(
     ``n`` and ``c`` are 1D scans. ``h`` is readout. Algebra in fp32; DRAM
     dtype preserved. CUDA fp16/fp32 uses the Triton tiled scan.
     """
-    if (
-        pre.is_cuda
-        and pre.dtype in (torch.float16, torch.float32)
-        and (h0 is None or h0.is_cuda)
-    ):
+    if pre.is_cuda and pre.dtype in (torch.float16, torch.float32) and (h0 is None or h0.is_cuda):
         from pararnn.kernels.picard_slstm import (
             _BLOCK_T,
             _CHUNK_PAD,

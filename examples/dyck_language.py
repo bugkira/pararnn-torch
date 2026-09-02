@@ -38,9 +38,7 @@ OPEN, CLOSE = 0, 1
 VOCAB = 2
 
 
-def sample_dyck1(
-    batch: int, length: int, *, generator: torch.Generator | None = None
-) -> Tensor:
+def sample_dyck1(batch: int, length: int, *, generator: torch.Generator | None = None) -> Tensor:
     """Even-length Dyck-1 words. Token 0='(', 1=')'."""
     if length < 2 or length % 2:
         raise ValueError(f"Dyck-1 length must be even and >=2, got {length}")
@@ -158,9 +156,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
                 torch.cuda.empty_cache()
                 used_backend = "eager"
-                losses, residuals, used_backend = _train(
-                    spec, device, lr=lr, scan_backend="eager"
-                )
+                losses, residuals, used_backend = _train(spec, device, lr=lr, scan_backend="eager")
             last_losses = losses
             last_residuals = residuals
             used_lr = lr
@@ -172,7 +168,8 @@ def main(argv: list[str] | None = None) -> None:
                 losses[0],
                 losses[-1],
             )
-        assert last_losses is not None and used_lr is not None
+        assert last_losses is not None
+        assert used_lr is not None
         for step, loss in enumerate(last_losses):
             mlflow.log_metric("loss", loss, step=step)
             if last_residuals is not None:
@@ -232,9 +229,7 @@ def _train(
         if model.rnn.last_stats:
             residual = model.rnn.last_stats[0].max_residual
             resolved = model.rnn.last_stats[0].scan_backend or scan_backend
-        loss = F.cross_entropy(
-            logits.reshape(-1, VOCAB), tokens[:, 1:].reshape(-1)
-        )
+        loss = F.cross_entropy(logits.reshape(-1, VOCAB), tokens[:, 1:].reshape(-1))
         loss_f = float(loss.detach())
         losses.append(loss_f)
         residuals.append(residual)
@@ -260,9 +255,7 @@ def _train(
 
 def _check_grads_finite(model: _DyckLM, device: torch.device, *, seq_len: int) -> None:
     """One backward: all grads finite. Eq. 2.6, not autograd through K."""
-    tokens = sample_dyck1(4, seq_len, generator=torch.Generator().manual_seed(0)).to(
-        device
-    )
+    tokens = sample_dyck1(4, seq_len, generator=torch.Generator().manual_seed(0)).to(device)
     model.zero_grad(set_to_none=True)
     logits = model(tokens[:, :-1])
     loss = F.cross_entropy(logits.reshape(-1, VOCAB), tokens[:, 1:].reshape(-1))

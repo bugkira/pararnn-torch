@@ -35,9 +35,7 @@ def fused_newton(
         from pararnn.kernels.newton_gru import newton_gru_fused
 
         a_z, a_r, a_n = cell.clipped_a()
-        return newton_gru_fused(
-            wx, a_z, a_r, a_n, max_iters=max_iters, omega=omega, h0=h0
-        )
+        return newton_gru_fused(wx, a_z, a_r, a_n, max_iters=max_iters, omega=omega, h0=h0)
     if isinstance(cell, ParaLSTM):
         if log_coords:
             raise TypeError("fused log coords is ParaSLSTM only")
@@ -53,10 +51,7 @@ def fused_newton(
         )
     if isinstance(cell, ParaSLSTM):
         if cell.mix != "diag":
-            raise TypeError(
-                "fused Newton is mix='diag' only (4x4 SRAM); "
-                f"got mix={cell.mix!r}"
-            )
+            raise TypeError(f"fused Newton is mix='diag' only (4x4 SRAM); got mix={cell.mix!r}")
         from pararnn.kernels.newton_slstm import newton_slstm_fused
         from pararnn.solvers.slstm_picard import (
             slstm_picard_init,
@@ -64,9 +59,7 @@ def fused_newton(
         )
 
         if picard_iters:
-            states = slstm_picard_init(
-                cell, wx, h0=h0, n_picard=picard_iters
-            )
+            states = slstm_picard_init(cell, wx, h0=h0, n_picard=picard_iters)
         else:
             states = slstm_zero_hidden_init(wx, eps=cell.eps, h0=h0)
         return newton_slstm_fused(
@@ -81,6 +74,5 @@ def fused_newton(
             scan_tile=scan_tile,
         )
     raise TypeError(
-        f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM(diag) only; "
-        f"got {type(cell).__name__}"
+        f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM(diag) only; got {type(cell).__name__}"
     )

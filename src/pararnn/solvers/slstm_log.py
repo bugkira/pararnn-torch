@@ -43,12 +43,8 @@ def slstm_decode_log(coords: Tensor, *, eps: float) -> Tensor:
 def slstm_clamp_log_coords(coords: Tensor) -> Tensor:
     """Keep ``(c/n, log n)`` inside the decode clamps after a Newton step."""
     out = coords.clone()
-    out[..., SLSTM_CELL, :] = out[..., SLSTM_CELL, :].clamp(
-        -_LOG_RATIO_ABSMAX, _LOG_RATIO_ABSMAX
-    )
-    out[..., SLSTM_NORMALIZER, :] = out[..., SLSTM_NORMALIZER, :].clamp(
-        _LOG_N_MIN, _LOG_N_MAX
-    )
+    out[..., SLSTM_CELL, :] = out[..., SLSTM_CELL, :].clamp(-_LOG_RATIO_ABSMAX, _LOG_RATIO_ABSMAX)
+    out[..., SLSTM_NORMALIZER, :] = out[..., SLSTM_NORMALIZER, :].clamp(_LOG_N_MIN, _LOG_N_MAX)
     return out
 
 
@@ -97,9 +93,7 @@ class SLSTMLogCoords:
     def W_x(self) -> nn.Linear:
         return self.cell.W_x
 
-    def step(
-        self, coords_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
-    ) -> Tensor:
+    def step(self, coords_prev: Tensor, x: Tensor, *, wx: Tensor | None = None) -> Tensor:
         return self._acts_from_coords(coords_prev, x, wx=wx).state_new
 
     def step_with_jacobian(
@@ -109,14 +103,10 @@ class SLSTMLogCoords:
         if self.mix != "diag":
             from pararnn.solvers.jacobian import jacobian_autograd
 
-            return jacobian_autograd(
-                self, coords_prev, x, structure=self.jac_structure
-            )
+            return jacobian_autograd(self, coords_prev, x, structure=self.jac_structure)
         return acts.state_new, self._jac_log_diag(acts)
 
-    def _acts_from_coords(
-        self, coords_prev: Tensor, x: Tensor, *, wx: Tensor | None
-    ) -> _LogActs:
+    def _acts_from_coords(self, coords_prev: Tensor, x: Tensor, *, wx: Tensor | None) -> _LogActs:
         if wx is None:
             wx = self.cell.W_x(x)
         u = coords_prev[..., SLSTM_CELL, :].float()
@@ -137,9 +127,7 @@ class SLSTMLogCoords:
         u_new = (1.0 - gamma) * u + gamma * z
         o = torch.sigmoid(z_o)
         h_new = o * u_new
-        state_new = torch.stack((u_new, ln_new, m_new, h_new), dim=-2).to(
-            dtype=coords_prev.dtype
-        )
+        state_new = torch.stack((u_new, ln_new, m_new, h_new), dim=-2).to(dtype=coords_prev.dtype)
         beta = 1.0 - alpha
         if self.mix == "diag":
             r = self.cell.clipped_r()

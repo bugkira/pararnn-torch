@@ -56,9 +56,7 @@ class ParaSLSTM(nn.Module):
         super().__init__()
         if mix not in _MIX:
             raise ValueError(f"mix must be one of {_MIX}, got {mix!r}")
-        input_size, hidden_size = resolve_layer_sizes(
-            input_size, hidden_size, d_in=d_in, d_h=d_h
-        )
+        input_size, hidden_size = resolve_layer_sizes(input_size, hidden_size, d_in=d_in, d_h=d_h)
         factory_kwargs = {"device": device, "dtype": dtype}
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -83,9 +81,7 @@ class ParaSLSTM(nn.Module):
         elif mix == "dense":
             if n_heads is not None:
                 raise ValueError("n_heads is only for mix='head'")
-            self.R_dense = nn.Linear(
-                hidden_size, 4 * hidden_size, bias=False, **factory_kwargs
-            )
+            self.R_dense = nn.Linear(hidden_size, 4 * hidden_size, bias=False, **factory_kwargs)
         else:
             if n_heads is None or n_heads < 1 or hidden_size % n_heads != 0:
                 raise ValueError(
@@ -124,9 +120,7 @@ class ParaSLSTM(nn.Module):
             return self.R_head
         return self.R_head.clamp(-self.max_recurrent_norm, self.max_recurrent_norm)
 
-    def step(
-        self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
-    ) -> Tensor:
+    def step(self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None) -> Tensor:
         """One sLSTM step. ``state_prev`` is ``(..., 4, d_h)``."""
         if wx is None:
             wx = self.W_x(x)
@@ -155,7 +149,9 @@ class ParaSLSTM(nn.Module):
         return acts.state_new, jac
 
     def step_head(self, state: Tensor, wx_head: Tensor, r: Tensor) -> Tensor:
-        """One head: ``state`` / ``wx_head`` are ``(4, d_head)``; ``r`` is ``(4, d_head, d_head)``."""
+        """One head: ``state`` / ``wx_head`` are ``(4, d_head)``;
+        ``r`` is ``(4, d_head, d_head)``.
+        """
         h = state[SLSTM_HIDDEN]
         pre = wx_head + torch.einsum("d,gde->ge", h, r)
         return self._step_from_pre(state, pre.reshape(4 * state.shape[-1]))
@@ -308,7 +304,8 @@ class ParaSLSTM(nn.Module):
         r = self.clipped_r_head()
         # R[g, hd, in, out]; J_pre_g is (out, in).
         j_g = r.permute(0, 1, 3, 2)
-        assert self.n_heads is not None and self.d_head is not None
+        assert self.n_heads is not None
+        assert self.d_head is not None
         return self._jac_packed(acts, j_g, n_heads=self.n_heads, d_head=self.d_head)
 
     def _jac_dense(self, acts: _SLSTMActs) -> Tensor:
@@ -317,9 +314,7 @@ class ParaSLSTM(nn.Module):
         packed = self._jac_packed(acts, j_g, n_heads=1, d_head=self.d_h)
         return packed.squeeze(-3)
 
-    def _jac_packed(
-        self, acts: _SLSTMActs, j_g: Tensor, *, n_heads: int, d_head: int
-    ) -> Tensor:
+    def _jac_packed(self, acts: _SLSTMActs, j_g: Tensor, *, n_heads: int, d_head: int) -> Tensor:
         """``j_g`` is ``(4, H, d_out, d_in)``. Result ``(..., H, 4 d, 4 d)``."""
         prefix = acts.f.shape[:-1]
         d = d_head

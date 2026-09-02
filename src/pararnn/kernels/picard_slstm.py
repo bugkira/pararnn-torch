@@ -69,11 +69,21 @@ def _m_local_kernel(
     agg_b_ptr,
     time,
     d_h,
-    stride_pb, stride_pt, stride_pd,
-    stride_ab, stride_at, stride_ad,
-    stride_bb, stride_bt, stride_bd,
-    stride_aab, stride_aac, stride_aad,
-    stride_bab, stride_bac, stride_bad,
+    stride_pb,
+    stride_pt,
+    stride_pd,
+    stride_ab,
+    stride_at,
+    stride_ad,
+    stride_bb,
+    stride_bt,
+    stride_bd,
+    stride_aab,
+    stride_aac,
+    stride_aad,
+    stride_bab,
+    stride_bac,
+    stride_bad,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
     NEG_INF: tl.constexpr,
@@ -91,8 +101,16 @@ def _m_local_kernel(
     a = tl.where(mask, z_f, 0.0)
     b = tl.where(mask, z_i, NEG_INF)
     a_s, b_s = tl.associative_scan((a, b), 0, _compose_maxplus)
-    store_acc(a_ptr + pid_b * stride_ab + offs_t[:, None] * stride_at + offs_d[None, :] * stride_ad, a_s, mask)
-    store_acc(b_ptr + pid_b * stride_bb + offs_t[:, None] * stride_bt + offs_d[None, :] * stride_bd, b_s, mask)
+    store_acc(
+        a_ptr + pid_b * stride_ab + offs_t[:, None] * stride_at + offs_d[None, :] * stride_ad,
+        a_s,
+        mask,
+    )
+    store_acc(
+        b_ptr + pid_b * stride_bb + offs_t[:, None] * stride_bt + offs_d[None, :] * stride_bd,
+        b_s,
+        mask,
+    )
     last = (tl.arange(0, BLOCK_T) == (BLOCK_T - 1))[:, None]
     dmask = offs_d < d_h
     store_acc(
@@ -115,10 +133,17 @@ def _m_chunk_kernel(
     incl_m_ptr,
     n_chunks,
     d_h,
-    stride_aab, stride_aac, stride_aad,
-    stride_bab, stride_bac, stride_bad,
-    stride_m0b, stride_m0d,
-    stride_ib, stride_ic, stride_id,
+    stride_aab,
+    stride_aac,
+    stride_aad,
+    stride_bab,
+    stride_bac,
+    stride_bad,
+    stride_m0b,
+    stride_m0d,
+    stride_ib,
+    stride_ic,
+    stride_id,
     CHUNK_PAD: tl.constexpr,
     BLOCK_D: tl.constexpr,
     NEG_INF: tl.constexpr,
@@ -130,12 +155,18 @@ def _m_chunk_kernel(
     mask = (offs_c[:, None] < n_chunks) & (offs_d[None, :] < d_h)
     dmask = offs_d < d_h
     a = load_acc(
-        agg_a_ptr + pid_b * stride_aab + offs_c[:, None] * stride_aac + offs_d[None, :] * stride_aad,
+        agg_a_ptr
+        + pid_b * stride_aab
+        + offs_c[:, None] * stride_aac
+        + offs_d[None, :] * stride_aad,
         mask,
         0.0,
     )
     b = load_acc(
-        agg_b_ptr + pid_b * stride_bab + offs_c[:, None] * stride_bac + offs_d[None, :] * stride_bad,
+        agg_b_ptr
+        + pid_b * stride_bab
+        + offs_c[:, None] * stride_bac
+        + offs_d[None, :] * stride_bad,
         mask,
         NEG_INF,
     )
@@ -158,11 +189,20 @@ def _m_apply_kernel(
     m_ptr,
     time,
     d_h,
-    stride_ab, stride_at, stride_ad,
-    stride_bb, stride_bt, stride_bd,
-    stride_m0b, stride_m0d,
-    stride_ib, stride_ic, stride_id,
-    stride_mb, stride_mt, stride_md,
+    stride_ab,
+    stride_at,
+    stride_ad,
+    stride_bb,
+    stride_bt,
+    stride_bd,
+    stride_m0b,
+    stride_m0d,
+    stride_ib,
+    stride_ic,
+    stride_id,
+    stride_mb,
+    stride_mt,
+    stride_md,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
     NEG_INF: tl.constexpr,
@@ -215,15 +255,33 @@ def _nc_local_kernel(
     agg_c_ptr,
     time,
     d_h,
-    stride_pb, stride_pt, stride_pd,
-    stride_mb, stride_mt, stride_md,
-    stride_h0b, stride_h0s, stride_h0d,
-    stride_jb, stride_jt, stride_jd,
-    stride_nb, stride_nt, stride_nd,
-    stride_cb, stride_ct, stride_cd,
-    stride_ajb, stride_ajc, stride_ajd,
-    stride_anb, stride_anc, stride_and,
-    stride_acb, stride_acc, stride_acd,
+    stride_pb,
+    stride_pt,
+    stride_pd,
+    stride_mb,
+    stride_mt,
+    stride_md,
+    stride_h0b,
+    stride_h0s,
+    stride_h0d,
+    stride_jb,
+    stride_jt,
+    stride_jd,
+    stride_nb,
+    stride_nt,
+    stride_nd,
+    stride_cb,
+    stride_ct,
+    stride_cd,
+    stride_ajb,
+    stride_ajc,
+    stride_ajd,
+    stride_anb,
+    stride_anc,
+    stride_and,
+    stride_acb,
+    stride_acc,
+    stride_acd,
     SLOT_C: tl.constexpr,
     SLOT_N: tl.constexpr,
     SLOT_M: tl.constexpr,
@@ -282,9 +340,21 @@ def _nc_local_kernel(
     res_n = tl.where(mask, res_n, 0.0)
     res_c = tl.where(mask, res_c, 0.0)
     j_s, n_s, c_s = tl.associative_scan((j, res_n, res_c), 0, _compose_diag2)
-    store_acc(j_ptr + pid_b * stride_jb + offs_t[:, None] * stride_jt + offs_d[None, :] * stride_jd, j_s, mask)
-    store_acc(n_ptr + pid_b * stride_nb + offs_t[:, None] * stride_nt + offs_d[None, :] * stride_nd, n_s, mask)
-    store_acc(c_ptr + pid_b * stride_cb + offs_t[:, None] * stride_ct + offs_d[None, :] * stride_cd, c_s, mask)
+    store_acc(
+        j_ptr + pid_b * stride_jb + offs_t[:, None] * stride_jt + offs_d[None, :] * stride_jd,
+        j_s,
+        mask,
+    )
+    store_acc(
+        n_ptr + pid_b * stride_nb + offs_t[:, None] * stride_nt + offs_d[None, :] * stride_nd,
+        n_s,
+        mask,
+    )
+    store_acc(
+        c_ptr + pid_b * stride_cb + offs_t[:, None] * stride_ct + offs_d[None, :] * stride_cd,
+        c_s,
+        mask,
+    )
     last = (tl.arange(0, BLOCK_T) == (BLOCK_T - 1))[:, None]
     store_acc(
         agg_j_ptr + pid_b * stride_ajb + pid_c * stride_ajc + offs_d * stride_ajd,
@@ -312,11 +382,21 @@ def _nc_chunk_kernel(
     incl_c_ptr,
     n_chunks,
     d_h,
-    stride_ajb, stride_ajc, stride_ajd,
-    stride_anb, stride_anc, stride_and,
-    stride_acb, stride_acc, stride_acd,
-    stride_inb, stride_inc, stride_ind,
-    stride_icb, stride_icc, stride_icd,
+    stride_ajb,
+    stride_ajc,
+    stride_ajd,
+    stride_anb,
+    stride_anc,
+    stride_and,
+    stride_acb,
+    stride_acc,
+    stride_acd,
+    stride_inb,
+    stride_inc,
+    stride_ind,
+    stride_icb,
+    stride_icc,
+    stride_icd,
     CHUNK_PAD: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
@@ -326,28 +406,43 @@ def _nc_chunk_kernel(
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_c[:, None] < n_chunks) & (offs_d[None, :] < d_h)
     j = load_acc(
-        agg_j_ptr + pid_b * stride_ajb + offs_c[:, None] * stride_ajc + offs_d[None, :] * stride_ajd,
+        agg_j_ptr
+        + pid_b * stride_ajb
+        + offs_c[:, None] * stride_ajc
+        + offs_d[None, :] * stride_ajd,
         mask,
         1.0,
     )
     n = load_acc(
-        agg_n_ptr + pid_b * stride_anb + offs_c[:, None] * stride_anc + offs_d[None, :] * stride_and,
+        agg_n_ptr
+        + pid_b * stride_anb
+        + offs_c[:, None] * stride_anc
+        + offs_d[None, :] * stride_and,
         mask,
         0.0,
     )
     c = load_acc(
-        agg_c_ptr + pid_b * stride_acb + offs_c[:, None] * stride_acc + offs_d[None, :] * stride_acd,
+        agg_c_ptr
+        + pid_b * stride_acb
+        + offs_c[:, None] * stride_acc
+        + offs_d[None, :] * stride_acd,
         mask,
         0.0,
     )
     _, n_s, c_s = tl.associative_scan((j, n, c), 0, _compose_diag2)
     store_acc(
-        incl_n_ptr + pid_b * stride_inb + offs_c[:, None] * stride_inc + offs_d[None, :] * stride_ind,
+        incl_n_ptr
+        + pid_b * stride_inb
+        + offs_c[:, None] * stride_inc
+        + offs_d[None, :] * stride_ind,
         n_s,
         mask,
     )
     store_acc(
-        incl_c_ptr + pid_b * stride_icb + offs_c[:, None] * stride_icc + offs_d[None, :] * stride_icd,
+        incl_c_ptr
+        + pid_b * stride_icb
+        + offs_c[:, None] * stride_icc
+        + offs_d[None, :] * stride_icd,
         c_s,
         mask,
     )
@@ -365,13 +460,28 @@ def _nc_apply_h_kernel(
     time,
     d_h,
     eps,
-    stride_pb, stride_pt, stride_pd,
-    stride_jb, stride_jt, stride_jd,
-    stride_nb, stride_nt, stride_nd,
-    stride_cb, stride_ct, stride_cd,
-    stride_inb, stride_inc, stride_ind,
-    stride_icb, stride_icc, stride_icd,
-    stride_ob, stride_ot, stride_os, stride_od,
+    stride_pb,
+    stride_pt,
+    stride_pd,
+    stride_jb,
+    stride_jt,
+    stride_jd,
+    stride_nb,
+    stride_nt,
+    stride_nd,
+    stride_cb,
+    stride_ct,
+    stride_cd,
+    stride_inb,
+    stride_inc,
+    stride_ind,
+    stride_icb,
+    stride_icc,
+    stride_icd,
+    stride_ob,
+    stride_ot,
+    stride_os,
+    stride_od,
     SLOT_C: tl.constexpr,
     SLOT_N: tl.constexpr,
     SLOT_H: tl.constexpr,
@@ -420,17 +530,29 @@ def _nc_apply_h_kernel(
     z_o = _load_pre(pre_ptr, pid_b, offs_t, offs_d, d_h, 3, mask, stride_pb, stride_pt, stride_pd)
     h = tl.sigmoid(z_o) * (c / (n + eps))
     store_acc(
-        out_ptr + pid_b * stride_ob + offs_t[:, None] * stride_ot + SLOT_C * stride_os + offs_d[None, :] * stride_od,
+        out_ptr
+        + pid_b * stride_ob
+        + offs_t[:, None] * stride_ot
+        + SLOT_C * stride_os
+        + offs_d[None, :] * stride_od,
         c,
         mask,
     )
     store_acc(
-        out_ptr + pid_b * stride_ob + offs_t[:, None] * stride_ot + SLOT_N * stride_os + offs_d[None, :] * stride_od,
+        out_ptr
+        + pid_b * stride_ob
+        + offs_t[:, None] * stride_ot
+        + SLOT_N * stride_os
+        + offs_d[None, :] * stride_od,
         n,
         mask,
     )
     store_acc(
-        out_ptr + pid_b * stride_ob + offs_t[:, None] * stride_ot + SLOT_H * stride_os + offs_d[None, :] * stride_od,
+        out_ptr
+        + pid_b * stride_ob
+        + offs_t[:, None] * stride_ot
+        + SLOT_H * stride_os
+        + offs_d[None, :] * stride_od,
         h,
         mask,
     )

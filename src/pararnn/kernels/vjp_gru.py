@@ -120,9 +120,7 @@ def gru_recurrence_vjp(
             f"gru_recurrence_vjp: wx shape {tuple(wx.shape)} != {(batch, time, 3 * d_h)}"
         )
     if mu.shape != (batch, time, d_h):
-        raise ValueError(
-            f"gru_recurrence_vjp: mu shape {tuple(mu.shape)} != {(batch, time, d_h)}"
-        )
+        raise ValueError(f"gru_recurrence_vjp: mu shape {tuple(mu.shape)} != {(batch, time, d_h)}")
     if a_z.shape != (d_h,) or a_r.shape != (d_h,) or a_n.shape != (d_h,):
         raise ValueError(
             f"gru_recurrence_vjp: a_* must be ({d_h},), got "

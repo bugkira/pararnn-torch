@@ -202,15 +202,14 @@ def main(argv: list[str] | None = None) -> None:
             if ok:
                 break
             log.warning("lr_did_not_drop lr=%s", lr)
-        assert used_lr is not None and summaries
+        assert used_lr is not None
+        assert summaries
         mlflow.log_param("lr_used", used_lr)
         for name, row in summaries.items():
             for step, loss in enumerate(row["losses"]):
                 mlflow.log_metric(f"{name}/loss", loss, step=step)
                 if row["residuals"][step] == row["residuals"][step]:
-                    mlflow.log_metric(
-                        f"{name}/newton_residual", row["residuals"][step], step=step
-                    )
+                    mlflow.log_metric(f"{name}/newton_residual", row["residuals"][step], step=step)
             for step, dt in enumerate(row["step_ms"]):
                 mlflow.log_metric(f"{name}/step_ms", dt, step=step)
             timed = row["step_ms"][int(spec["warmup_time_steps"]) :]
@@ -241,11 +240,7 @@ def main(argv: list[str] | None = None) -> None:
             ratio = n_ms / f_ms if f_ms else float("nan")
             mlflow.log_metric("newton_vs_flashrnn_min_step", ratio)
             log.info("newton/flashrnn min_step ratio=%.3f (>1 = FlashRNN faster)", ratio)
-        failed = [
-            name
-            for name, row in summaries.items()
-            if row["losses"][-1] >= row["losses"][0]
-        ]
+        failed = [name for name, row in summaries.items() if row["losses"][-1] >= row["losses"][0]]
         if failed:
             raise RuntimeError(f"loss did not drop for {failed} after lrs {lrs}")
 
@@ -273,13 +268,9 @@ def _train(
         cfg = NewtonConfig(
             max_iters=int(spec["newton_iters"]),
             scan_backend=scan_backend,
-            picard_iters=None
-            if spec.get("picard_iters") is None
-            else int(spec["picard_iters"]),
+            picard_iters=None if spec.get("picard_iters") is None else int(spec["picard_iters"]),
         )
-        model: nn.Module = _NewtonDyckLM(
-            d_h, cfg, mix=mix, n_heads=n_heads_i
-        ).to(device)
+        model: nn.Module = _NewtonDyckLM(d_h, cfg, mix=mix, n_heads=n_heads_i).to(device)
     elif backend == "flashrnn":
         n_heads, d_head = _flashrnn_heads(d_h)
         model = _FlashRNNDyckLM(d_h, n_heads, d_head, flashrnn_backend).to(device)
@@ -359,8 +350,7 @@ def _flashrnn_backend() -> str:
         import flashrnn  # noqa: F401
     except Exception as exc:
         raise RuntimeError(
-            "FlashRNN is required for this example. "
-            "uv sync --extra flashrnn --group dev"
+            "FlashRNN is required for this example. uv sync --extra flashrnn --group dev"
         ) from exc
     major, _minor = torch.cuda.get_device_capability()
     if major >= 8:
@@ -391,9 +381,7 @@ def _validate_spec(spec: dict) -> None:
             raise ValueError("diag mix: library contract is newton_iters=3")
     elif mix == "head":
         if k != 4:
-            raise ValueError(
-                "mix=head snaps at K=4 (para-slstm.md), not the GRU K=3 default"
-            )
+            raise ValueError("mix=head snaps at K=4 (para-slstm.md), not the GRU K=3 default")
         heads = spec.get("n_heads")
         if heads is None or int(spec["d_h"]) % int(heads):
             raise ValueError("mix=head needs n_heads dividing d_h")

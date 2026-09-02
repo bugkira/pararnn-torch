@@ -79,9 +79,7 @@ def scan_dense(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tens
     return _scan_acc(jac, residual, _compose_dense, _fill_ident_dense)
 
 
-def reverse_scan_diag(
-    jac: Tensor, partial: Tensor, *, backend: str = "eager"
-) -> Tensor:
+def reverse_scan_diag(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Tensor:
     """Total adjoint ``∇_{h_t} L`` from direct ``∂_{h_t} L`` (eq. 2.6, diagonal).
 
     ``∇_{h_{t-1}} L = J_t ∇_{h_t} L + ∂_{h_{t-1}} L``, ``∇_{h_{T-1}} L = ∂_{h_{T-1}} L``.
@@ -92,9 +90,7 @@ def reverse_scan_diag(
     return scan_diag(j_rev, partial.flip(1), backend=backend).flip(1)
 
 
-def reverse_scan_block2(
-    jac: Tensor, partial: Tensor, *, backend: str = "eager"
-) -> Tensor:
+def reverse_scan_block2(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Tensor:
     """Eq. 2.6 with 2×2 blocks: uses ``J^T`` (swap ``out``/``in``)."""
     j_t = jac.transpose(-3, -2)
     j_rev = j_t.new_zeros(j_t.shape)
@@ -102,9 +98,7 @@ def reverse_scan_block2(
     return scan_block2(j_rev, partial.flip(1), backend=backend).flip(1)
 
 
-def reverse_scan_block4(
-    jac: Tensor, partial: Tensor, *, backend: str = "eager"
-) -> Tensor:
+def reverse_scan_block4(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Tensor:
     """Eq. 2.6 with 4×4 blocks: uses ``J^T`` (swap ``out``/``in``)."""
     j_t = jac.transpose(-3, -2)
     j_rev = j_t.new_zeros(j_t.shape)
@@ -112,9 +106,7 @@ def reverse_scan_block4(
     return scan_block4(j_rev, partial.flip(1), backend=backend).flip(1)
 
 
-def reverse_scan_dense(
-    jac: Tensor, partial: Tensor, *, backend: str = "eager"
-) -> Tensor:
+def reverse_scan_dense(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Tensor:
     """Eq. 2.6 with a full matrix: uses ``J^T``."""
     j_t = jac.transpose(-1, -2)
     j_rev = j_t.new_zeros(j_t.shape)
@@ -193,27 +185,19 @@ def _blelloch_exclusive_(
         step //= 2
 
 
-def _compose_diag(
-    j_r: Tensor, r_r: Tensor, j_l: Tensor, r_l: Tensor
-) -> tuple[Tensor, Tensor]:
+def _compose_diag(j_r: Tensor, r_r: Tensor, j_l: Tensor, r_l: Tensor) -> tuple[Tensor, Tensor]:
     return j_r * j_l, j_r * r_l + r_r
 
 
-def _compose_block2(
-    j_r: Tensor, r_r: Tensor, j_l: Tensor, r_l: Tensor
-) -> tuple[Tensor, Tensor]:
+def _compose_block2(j_r: Tensor, r_r: Tensor, j_l: Tensor, r_l: Tensor) -> tuple[Tensor, Tensor]:
     return _mm2(j_r, j_l), _mv2(j_r, r_l) + r_r
 
 
-def _compose_block4(
-    j_r: Tensor, r_r: Tensor, j_l: Tensor, r_l: Tensor
-) -> tuple[Tensor, Tensor]:
+def _compose_block4(j_r: Tensor, r_r: Tensor, j_l: Tensor, r_l: Tensor) -> tuple[Tensor, Tensor]:
     return _mm4(j_r, j_l), _mv4(j_r, r_l) + r_r
 
 
-def _compose_dense(
-    j_r: Tensor, r_r: Tensor, j_l: Tensor, r_l: Tensor
-) -> tuple[Tensor, Tensor]:
+def _compose_dense(j_r: Tensor, r_r: Tensor, j_l: Tensor, r_l: Tensor) -> tuple[Tensor, Tensor]:
     return j_r @ j_l, (j_r @ r_l.unsqueeze(-1)).squeeze(-1) + r_r
 
 

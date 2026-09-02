@@ -81,10 +81,18 @@ def _lstm_vjp_kernel(
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
     dmask = offs_d < d_h
 
-    c_prev = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    h_prev = _load_state(s_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd)
-    mu_c = _load_state(mu_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_mb, stride_mt, stride_ms, stride_md)
-    mu_h = _load_state(mu_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_mb, stride_mt, stride_ms, stride_md)
+    c_prev = _load_state(
+        s_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    h_prev = _load_state(
+        s_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_sb, stride_st, stride_ss, stride_sd
+    )
+    mu_c = _load_state(
+        mu_ptr, pid_b, offs_t, offs_d, SLOT_C, mask, stride_mb, stride_mt, stride_ms, stride_md
+    )
+    mu_h = _load_state(
+        mu_ptr, pid_b, offs_t, offs_d, SLOT_H, mask, stride_mb, stride_mt, stride_ms, stride_md
+    )
 
     base = wx_ptr + pid_b * stride_wb + offs_t[:, None] * stride_wt
     fx = load_acc(base + offs_d[None, :] * stride_wd, mask, 0.0)
@@ -134,9 +142,7 @@ def lstm_recurrence_vjp(
     c_o: Tensor,
     mu: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    validate_cuda_tensors(
-        state_prev, wx, a_f, a_z, a_o, c_f, c_o, mu, name="lstm_recurrence_vjp"
-    )
+    validate_cuda_tensors(state_prev, wx, a_f, a_z, a_o, c_f, c_o, mu, name="lstm_recurrence_vjp")
     state_prev = state_prev.contiguous()
     wx = wx.contiguous()
     mu = mu.contiguous()

@@ -46,11 +46,7 @@ def _gru_pred_j(h_prev, zx, rx, nx, az, ar, an):
     z_p = z * (1.0 - z)
     r_p = r * (1.0 - r)
     n_p = 1.0 - n * n
-    j = (
-        (1.0 - z)
-        + (n - h_prev) * z_p * az
-        + z * n_p * an * (r + h_prev * r_p * ar)
-    )
+    j = (1.0 - z) + (n - h_prev) * z_p * az + z * n_p * an * (r + h_prev * r_p * ar)
     return h_new, j
 
 
@@ -94,9 +90,7 @@ def _gru_init_kernel(
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
     dmask = offs_d < d_h
-    zx, rx, nx = _load_wx(
-        wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd
-    )
+    zx, rx, nx = _load_wx(wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd)
     az = load_acc(az_ptr + offs_d, dmask, 0.0)
     ar = load_acc(ar_ptr + offs_d, dmask, 0.0)
     an = load_acc(an_ptr + offs_d, dmask, 0.0)
@@ -166,18 +160,13 @@ def _gru_cell_local_scan_kernel(
     offs_tm1 = offs_t - 1
     mask_prev = (offs_tm1[:, None] >= 0) & (offs_tm1[:, None] < time) & (offs_d[None, :] < d_h)
     h_prev = load_acc(
-        h_ptr
-        + pid_b * stride_hb
-        + offs_tm1[:, None] * stride_ht
-        + offs_d[None, :] * stride_hd,
+        h_ptr + pid_b * stride_hb + offs_tm1[:, None] * stride_ht + offs_d[None, :] * stride_hd,
         mask_prev,
         0.0,
     )
     h0 = load_acc(h0_ptr + pid_b * stride_h0b + offs_d * stride_h0d, dmask, 0.0)
     h_prev = tl.where((offs_t == 0)[:, None], h0[None, :], h_prev)
-    zx, rx, nx = _load_wx(
-        wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd
-    )
+    zx, rx, nx = _load_wx(wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd)
     az = load_acc(az_ptr + offs_d, dmask, 0.0)
     ar = load_acc(ar_ptr + offs_d, dmask, 0.0)
     an = load_acc(an_ptr + offs_d, dmask, 0.0)
@@ -259,10 +248,7 @@ def _chunk_incl_kernel(
     )
     _, r_s = tl.associative_scan((j, r), 0, _compose_diag)
     store_acc(
-        incl_r_ptr
-        + pid_b * stride_ib
-        + offs_c[:, None] * stride_ic
-        + offs_d[None, :] * stride_id,
+        incl_r_ptr + pid_b * stride_ib + offs_c[:, None] * stride_ic + offs_d[None, :] * stride_id,
         r_s,
         mask,
     )
@@ -302,18 +288,12 @@ def _gru_apply_update_kernel(
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
     j_loc = load_acc(
-        j_loc_ptr
-        + pid_b * stride_jb
-        + offs_t[:, None] * stride_jt
-        + offs_d[None, :] * stride_jd,
+        j_loc_ptr + pid_b * stride_jb + offs_t[:, None] * stride_jt + offs_d[None, :] * stride_jd,
         mask,
         1.0,
     )
     r_loc = load_acc(
-        r_loc_ptr
-        + pid_b * stride_rb
-        + offs_t[:, None] * stride_rt
-        + offs_d[None, :] * stride_rd,
+        r_loc_ptr + pid_b * stride_rb + offs_t[:, None] * stride_rt + offs_d[None, :] * stride_rd,
         mask,
         0.0,
     )
@@ -487,4 +467,3 @@ def newton_gru_fused(
         },
     )
     return h
-

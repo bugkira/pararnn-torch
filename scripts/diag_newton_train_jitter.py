@@ -59,9 +59,7 @@ def main() -> None:
 
         def _fwd(tok: Tensor = tokens, box: dict = loss_box) -> None:
             logits = model(tok[:, :-1])
-            box["loss"] = F.cross_entropy(
-                logits.reshape(-1, VOCAB), tok[:, 1:].reshape(-1)
-            )
+            box["loss"] = F.cross_entropy(logits.reshape(-1, VOCAB), tok[:, 1:].reshape(-1))
 
         ms_fwd = _cuda_ms(_fwd)
         st = model.rnn.last_stats[0]

@@ -30,10 +30,7 @@ def sequential_apply(
     batch, time, _ = x.shape
     if time < 1:
         raise ValueError(f"sequential_apply needs time >= 1, got {time}")
-    if h0 is None:
-        h = _zero_state(cell, batch, x)
-    else:
-        h = h0
+    h = h0 if h0 is not None else _zero_state(cell, batch, x)
     step_fn = step or cell.step
     wx_all = None
     if step is None and _accepts_wx(cell.step):
@@ -42,10 +39,7 @@ def sequential_apply(
             wx_all = lin(x)
     outs = []
     for t in range(time):
-        if wx_all is None:
-            h = step_fn(h, x[:, t])
-        else:
-            h = step_fn(h, x[:, t], wx=wx_all[:, t])
+        h = step_fn(h, x[:, t]) if wx_all is None else step_fn(h, x[:, t], wx=wx_all[:, t])
         outs.append(h)
     return torch.stack(outs, dim=1)
 

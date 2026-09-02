@@ -71,7 +71,7 @@ def _autograd_vjp(
             allow_unused=True,
         )
     grad_x = grads[0]
-    leaf_grads = {id(p): g for p, g in zip(param_leaves, grads[1:])}
+    leaf_grads = {id(p): g for p, g in zip(param_leaves, grads[1:], strict=True)}
     return grad_x, tuple(leaf_grads.get(id(p)) for p in params)
 
 
@@ -81,9 +81,7 @@ def _clip_mask(raw: Tensor, cap: float | None) -> Tensor:
     return (raw.abs() <= cap).to(dtype=raw.dtype)
 
 
-def _linear_vjp(
-    lin: nn.Linear, x: Tensor, grad_y: Tensor
-) -> tuple[Tensor, Tensor, Tensor | None]:
+def _linear_vjp(lin: nn.Linear, x: Tensor, grad_y: Tensor) -> tuple[Tensor, Tensor, Tensor | None]:
     gy = grad_y.reshape(-1, grad_y.shape[-1])
     xx = x.reshape(-1, x.shape[-1])
     grad_x = (gy @ lin.weight).view_as(x)

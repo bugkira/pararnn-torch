@@ -99,7 +99,8 @@ class NewtonConfig:
     picard_iters: int | None = None
     # None: retry P when picard_iters was auto. True/False force. Better initial guess.
     picard_adapt: bool | None = None
-    # Retry next P if max|F| exceeds this (1e-3 = sequential-agreement band). None: only residual_fail.
+    # Retry next P if max|F| exceeds this (1e-3 = sequential-agreement band).
+    # None: only residual_fail.
     picard_retry_atol: float | None = _RESIDUAL_WARN
     # assoc: tl.associative_scan. seq: serial prefix in the tile (ablation).
     scan_tile: str = "assoc"
@@ -137,18 +138,14 @@ def newton_apply(
             f"picard_retry_atol must be >= 0 or None, got {config.picard_retry_atol!r}"
         )
     if config.residual_fail is not None and float(config.residual_fail) < 0:
-        raise ValueError(
-            f"residual_fail must be >= 0 or None, got {config.residual_fail!r}"
-        )
+        raise ValueError(f"residual_fail must be >= 0 or None, got {config.residual_fail!r}")
     if config.scan_tile not in ("assoc", "seq"):
         raise ValueError(f"unknown scan_tile {config.scan_tile!r}")
     config = _resolve_backend(cell, x, config)
     params = tuple(cell.parameters())
     has_h0 = h0 is not None
     needs_grad = torch.is_grad_enabled() and (
-        x.requires_grad
-        or (has_h0 and h0.requires_grad)
-        or any(p.requires_grad for p in params)
+        x.requires_grad or (has_h0 and h0.requires_grad) or any(p.requires_grad for p in params)
     )
     if not needs_grad:
         return _newton_forward(cell, x, config, h0=h0, stats=stats)
@@ -167,9 +164,7 @@ def newton_apply(
             with torch.no_grad():
                 states = _newton_forward(cell, x_in, config, h0=h0_fwd, stats=stats)
             ctx.has_h0 = has_h0
-            ctx.scan_backend = (
-                "triton" if config.scan_backend == "fused" else config.scan_backend
-            )
+            ctx.scan_backend = "triton" if config.scan_backend == "fused" else config.scan_backend
             ctx.jacobian = config.jacobian
             ctx.jac_structure = config.jac_structure
             ctx.save_for_backward(states, x_in, h0_in)
@@ -276,8 +271,7 @@ def _resolve_backend(cell: nn.Module, x: Tensor, config: NewtonConfig) -> Newton
     if config.coords == "log":
         if not isinstance(cell, ParaSLSTM):
             raise TypeError(
-                "NewtonConfig(coords='log') is ParaSLSTM only "
-                f"(got {type(cell).__name__})"
+                f"NewtonConfig(coords='log') is ParaSLSTM only (got {type(cell).__name__})"
             )
         if requested == "fused" and not _can_fuse(cell, x):
             raise TypeError(_fused_error(cell, x))
@@ -312,9 +306,7 @@ def _fused_error(cell: nn.Module, x: Tensor) -> str:
             "Use float16; cell+scan algebra stays fp32."
         )
     if isinstance(cell, ParaSLSTM) and cell.mix != "diag":
-        return (
-            f"scan_backend='fused' is mix='diag' only (4x4 SRAM); got mix={cell.mix!r}"
-        )
+        return f"scan_backend='fused' is mix='diag' only (4x4 SRAM); got mix={cell.mix!r}"
     return (
         "scan_backend='fused' needs CUDA ParaGRU/ParaLSTM/ParaSLSTM(mix='diag') "
         f"in float16/float32/bfloat16 (got {type(cell).__name__} {x.dtype} {x.device})"
@@ -331,11 +323,7 @@ def _newton_forward(
 ) -> Tensor:
     if config.chunk_len is not None:
         return _newton_chunked(cell, x, config, h0=h0, stats=stats)
-    if (
-        config.picard_adapt
-        and isinstance(cell, ParaSLSTM)
-        and not torch.compiler.is_compiling()
-    ):
+    if config.picard_adapt and isinstance(cell, ParaSLSTM) and not torch.compiler.is_compiling():
         return _newton_forward_picard_adapt(cell, x, config, h0=h0, stats=stats)
     return _newton_solve(cell, x, config, h0=h0, stats=stats)
 
@@ -541,9 +529,7 @@ def _newton_chunked(
     iters_done = 0
     for t0 in range(0, x.shape[1], length):
         chunk_stats = NewtonStats() if stats is not None else None
-        piece = _newton_forward(
-            cell, x[:, t0 : t0 + length], inner, h0=carry, stats=chunk_stats
-        )
+        piece = _newton_forward(cell, x[:, t0 : t0 + length], inner, h0=carry, stats=chunk_stats)
         parts.append(piece)
         carry = piece[:, -1]
         if chunk_stats is not None:
@@ -757,9 +743,7 @@ def _reverse_scan(
     return _reverse_scan_infer(jac, partial, backend=backend)
 
 
-def _scan_named(
-    jac: Tensor, residual: Tensor, *, backend: str, structure: str
-) -> Tensor:
+def _scan_named(jac: Tensor, residual: Tensor, *, backend: str, structure: str) -> Tensor:
     if structure == "diag":
         return scan_diag(jac, residual, backend=backend)
     if structure == "block2":
@@ -770,8 +754,7 @@ def _scan_named(
         packed_h = _head_slot_pack(jac, residual)
         if packed_h is None:
             raise ValueError(
-                f"jac_structure='head' but jac {tuple(jac.shape)} "
-                f"residual {tuple(residual.shape)}"
+                f"jac_structure='head' but jac {tuple(jac.shape)} residual {tuple(residual.shape)}"
             )
         jac_f, res_f, shape, n_heads, d_head = packed_h
         delta = scan_dense(jac_f, res_f, backend=backend)
@@ -785,9 +768,7 @@ def _scan_named(
     raise ValueError(f"unknown jac_structure {structure!r}")
 
 
-def _reverse_scan_named(
-    jac: Tensor, partial: Tensor, *, backend: str, structure: str
-) -> Tensor:
+def _reverse_scan_named(jac: Tensor, partial: Tensor, *, backend: str, structure: str) -> Tensor:
     if structure == "diag":
         return reverse_scan_diag(jac, partial, backend=backend)
     if structure == "block2":
@@ -798,8 +779,7 @@ def _reverse_scan_named(
         packed_h = _head_slot_pack(jac, partial)
         if packed_h is None:
             raise ValueError(
-                f"jac_structure='head' but jac {tuple(jac.shape)} "
-                f"partial {tuple(partial.shape)}"
+                f"jac_structure='head' but jac {tuple(jac.shape)} partial {tuple(partial.shape)}"
             )
         jac_f, part_f, shape, n_heads, d_head = packed_h
         mu = reverse_scan_dense(jac_f, part_f, backend=backend)
@@ -868,30 +848,22 @@ def _t0_state_vjp(jac: Tensor, mu: Tensor) -> Tensor:
     packed = _dense_slot_pack(jac, mu)
     if packed is not None:
         jac_f, mu_f, shape = packed
-        g = torch.matmul(
-            jac_f[:, 0].transpose(-1, -2), mu_f[:, 0].unsqueeze(-1)
-        ).squeeze(-1)
+        g = torch.matmul(jac_f[:, 0].transpose(-1, -2), mu_f[:, 0].unsqueeze(-1)).squeeze(-1)
         return g.reshape(shape[0], *shape[2:])
     packed_h = _head_slot_pack(jac, mu)
     if packed_h is not None:
         jac_f, mu_f, shape, n_heads, d_head = packed_h
-        g = torch.matmul(
-            jac_f[:, 0].transpose(-1, -2), mu_f[:, 0].unsqueeze(-1)
-        ).squeeze(-1)
+        g = torch.matmul(jac_f[:, 0].transpose(-1, -2), mu_f[:, 0].unsqueeze(-1)).squeeze(-1)
         packed_h0 = g.reshape(shape[0], n_heads, 4 * d_head)
         return slstm_unpack_heads(packed_h0, n_heads, d_head)
     if jac.dim() == mu.dim():
         return jac[:, 0] * mu[:, 0]
     if jac.dim() == 4:
-        return torch.matmul(
-            jac[:, 0].transpose(-1, -2), mu[:, 0].unsqueeze(-1)
-        ).squeeze(-1)
+        return torch.matmul(jac[:, 0].transpose(-1, -2), mu[:, 0].unsqueeze(-1)).squeeze(-1)
     return torch.einsum("boid,bod->bid", jac[:, 0], mu[:, 0])
 
 
-def _dense_slot_pack(
-    jac: Tensor, vec: Tensor
-) -> tuple[Tensor, Tensor, tuple[int, ...]] | None:
+def _dense_slot_pack(jac: Tensor, vec: Tensor) -> tuple[Tensor, Tensor, tuple[int, ...]] | None:
     """4-slot state with a flattened dense J: ``jac`` is (B, T, S d, S d)."""
     if jac.dim() != 4 or vec.dim() != 4:
         return None
@@ -928,9 +900,7 @@ def _head_slot_pack(
     return jac_f, vec_f, vec.shape, n_heads, d_head
 
 
-def _head_slot_unpack(
-    folded: Tensor, shape: tuple[int, ...], n_heads: int, d_head: int
-) -> Tensor:
+def _head_slot_unpack(folded: Tensor, shape: tuple[int, ...], n_heads: int, d_head: int) -> Tensor:
     b, t = shape[:2]
     sd = 4 * d_head
     packed = folded.reshape(b, n_heads, t, sd).permute(0, 2, 1, 3)

@@ -119,9 +119,7 @@ def _agree_tol(d_h: int) -> float:
     return DYCK_AGREE if d_h <= 32 else BENCH_AGREE
 
 
-def _quality(
-    cell: ParaSLSTM, x: Tensor, seq: Tensor, picard: int, max_iters: int
-) -> dict:
+def _quality(cell: ParaSLSTM, x: Tensor, seq: Tensor, picard: int, max_iters: int) -> dict:
     st = NewtonStats()
     par = newton_apply(cell, x, _cfg(picard, max_iters), stats=st)
     err = float((par.detach() - seq.detach()).abs().amax())
@@ -232,9 +230,7 @@ def _dyck_train(device: torch.device, picard: int | None, max_iters: int) -> dic
 
         def _step(tok: Tensor = tokens) -> Tensor:
             logits = model(tok[:, :-1])
-            loss = F.cross_entropy(
-                logits.reshape(-1, VOCAB), tok[:, 1:].reshape(-1)
-            )
+            loss = F.cross_entropy(logits.reshape(-1, VOCAB), tok[:, 1:].reshape(-1))
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
@@ -363,8 +359,7 @@ def main() -> None:
                     }
                     rows.append(row)
                     log.info(
-                        "picard P=%d K=%d T=%d  err=%.3e res=%.3e  "
-                        "min=%.3f med=%.3f snaps=%s",
+                        "picard P=%d K=%d T=%d  err=%.3e res=%.3e  min=%.3f med=%.3f snaps=%s",
                         p,
                         k,
                         seq_len,
@@ -487,7 +482,7 @@ def main() -> None:
             k1_train["ce0"],
             k1_train["ce_final"],
             k1_train["mean_ms"],
-            max(abs(a - b) for a, b in zip(lib_train["losses"], k1_train["losses"])),
+            max(abs(a - b) for a, b in zip(lib_train["losses"], k1_train["losses"], strict=True)),
         )
         mlflow.log_metric("dyck/lib_ce0", lib_train["ce0"])
         mlflow.log_metric("dyck/lib_ce_final", lib_train["ce_final"])
