@@ -1,0 +1,88 @@
+"""NewtonConfig, stats, and library constants (Danieli et al. 2025 App. A)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+# App. A: K=3 reaches machine precision on these cells. Sequential agreement
+# tests use 1e-4. Stop a wasted extra iter below that and above fp32 noise.
+_DEFAULT_RESIDUAL_ATOL = 1e-5
+# Library contract: K=3 (App. A). sLSTM basin: raise picard_iters (para-slstm.md).
+LIBRARY_NEWTON_ITERS = 3
+# After K steps, max|F| above this is divergence.
+# Sequential agreement is 1e-4…2e-3; diverged sLSTM is 1e2…1e14 (para-slstm.md).
+# 1.0 sits between. None disables (K-curves, P=0 timing benches).
+_DEFAULT_RESIDUAL_FAIL = 1.0
+# Warn when max|F| is past sequential-agreement but under residual_fail.
+# Train can miss the P=1 basin on one batch after Adam (para-slstm.md).
+_RESIDUAL_WARN = 1e-3
+
+
+class NewtonDivergenceError(RuntimeError):
+    """Newton residual exceeded residual_fail. For ParaSLSTM raise picard_iters."""
+
+
+@dataclass
+class NewtonStats:
+    """Filled by ``newton_apply(..., stats=)`` after the forward."""
+
+    max_residual: float = float("nan")
+    # Residual evaluations in the Newton loop (≤ max_iters), including the
+    # eval that triggered early-stop. 0 if max_iters=0. Fused: this is max_iters.
+    iters: int = 0
+    scan_backend: str = ""
+    picard_iters: int = 0
+    residual_history: tuple[float, ...] = ()
+
+
+@dataclass
+class NewtonConfig:
+    # App. A: K=3. ParaSLSTM at long T uses Picard (picard_iters).
+    max_iters: int = LIBRARY_NEWTON_ITERS
+    omega: float = 1.0  # 1 = vanilla Newton; <1 damps (Gonzalez et al. ELK)
+    # auto: fused CUDA GRU/LSTM/sLSTM-diag; else Triton scan + step; else eager Blelloch.
+    scan_backend: str = "auto"
+    # auto: analytic J if step_with_jacobian else Autograd. analytic: require it.
+    jacobian: str = "auto"
+    # None infers from state / cell.jac_structure. diag | block2 | block4 | head | dense.
+    jac_structure: str | None = None
+    # None: run all K. Default 1e-5 skips leftover K when max|F| is already small (App. A).
+    residual_atol: float | None = _DEFAULT_RESIDUAL_ATOL
+    # After last K, raise if max|F| exceeds this. Default 1.0. None: K-curves / benches.
+    residual_fail: float | None = _DEFAULT_RESIDUAL_FAIL
+    # native | log. log: ParaSLSTM LSE cell in (u, log n, m, h).
+    coords: str = "native"
+    # None = one Newton over T. int: sequential chunks; 64 from T=64 K=3 at d_h=256.
+    chunk_len: int | None = None
+    # None = auto P ∈ {1, 3, 5} from T for ParaSLSTM. Explicit 0 is zero-hidden.
+    picard_iters: int | None = None
+    # None: retry P when picard_iters was auto. True/False force. Better initial guess.
+    picard_adapt: bool | None = None
+    # Retry next P if max|F| exceeds this (1e-3 = sequential-agreement band).
+    # None: only residual_fail.
+    picard_retry_atol: float | None = _RESIDUAL_WARN
+    # assoc: tl.associative_scan. seq: serial prefix in the tile (ablation).
+    scan_tile: str = "assoc"
+
+
+def _validate_config(config: NewtonConfig) -> None:
+    if config.scan_backend not in ("auto", "eager", "triton", "fused"):
+        raise ValueError(f"unknown scan backend {config.scan_backend!r}")
+    if config.jacobian not in ("auto", "analytic", "autograd"):
+        raise ValueError(f"unknown jacobian {config.jacobian!r}")
+    if config.coords not in ("native", "log"):
+        raise ValueError(f"unknown newton coords {config.coords!r}")
+    if config.chunk_len is not None and int(config.chunk_len) < 1:
+        raise ValueError(f"chunk_len must be >= 1, got {config.chunk_len!r}")
+    if config.max_iters < 0:
+        raise ValueError(f"max_iters must be >= 0, got {config.max_iters!r}")
+    if config.picard_iters is not None and int(config.picard_iters) < 0:
+        raise ValueError(f"picard_iters must be >= 0, got {config.picard_iters!r}")
+    if config.picard_retry_atol is not None and float(config.picard_retry_atol) < 0:
+        raise ValueError(
+            f"picard_retry_atol must be >= 0 or None, got {config.picard_retry_atol!r}"
+        )
+    if config.residual_fail is not None and float(config.residual_fail) < 0:
+        raise ValueError(f"residual_fail must be >= 0 or None, got {config.residual_fail!r}")
+    if config.scan_tile not in ("assoc", "seq"):
+        raise ValueError(f"unknown scan_tile {config.scan_tile!r}")
