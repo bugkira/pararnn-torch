@@ -16,13 +16,13 @@ import logging
 import sys
 from pathlib import Path
 
-import torch
-from torch import Tensor
-from torch.nn import functional as F
-
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / "scripts"))
+
+import torch
+from torch import Tensor
+from torch.nn import functional as F
 
 from examples.dyck_language import VOCAB, sample_dyck1
 from examples.slstm_vs_flashrnn import _NewtonDyckLM
@@ -33,12 +33,12 @@ from pararnn.solvers import newton_apply
 from pararnn.solvers.newton import _eq26_vjp
 from pararnn.solvers.vjp import cell_vjp
 from pararnn.solvers.vjp import uses_packed_vjp as _uses_packed_vjp
-from scripts.utils.mlflow_helper import git_commit, lock_hash, uv_export_hash
+from utils.cuda_timing import cuda_minmax
+from utils.mlflow_helper import git_commit, lock_hash, setup_logging, uv_export_hash
 
 from gpu import (
     DEFAULT_EXPERIMENT_GPU_NAME,
     select_device,
-    setup_logging,
     wait_until_free,
 )
 
@@ -53,25 +53,6 @@ DYCK_BATCH, DYCK_T, DYCK_DH, DYCK_STEPS, DYCK_LR = 32, 64, 32, 50, 3e-3
 BENCH_BATCH, BENCH_DH, BENCH_T = 8, 256, 2048
 # K=3 App. A / library. Explicit P so the bench path skips picard_adapt D2H.
 NEWTON_K = 3
-
-
-def _cuda_minmax(fn, *, warmup: int, n_runs: int) -> tuple[float, float, float]:
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-    samples: list[float] = []
-    for _ in range(n_runs):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        fn()
-        end.record()
-        torch.cuda.synchronize()
-        samples.append(start.elapsed_time(end))
-    samples.sort()
-    mean = sum(samples) / len(samples)
-    median = samples[len(samples) // 2]
-    return samples[0], median, mean
 
 
 def _set_packed(enabled: bool) -> None:
@@ -100,7 +81,7 @@ def _vjp_time(cell: ParaSLSTM, h_prev: Tensor, x: Tensor, mu: Tensor, packed: bo
     def fn() -> None:
         cell_vjp(cell, h_prev, x, mu, packed=packed)
 
-    tmin, tmed, tmean = _cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
+    tmin, tmed, tmean = cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
     tag = "packed" if packed else "autograd"
     log.info(
         "vjp/%s  min=%.3f ms  median=%.3f  mean=%.3f",
@@ -126,7 +107,7 @@ def _newton_fwd_bwd_time(cell: ParaSLSTM, x: Tensor, cfg: NewtonConfig, packed: 
         cell.zero_grad(set_to_none=True)
         return newton_apply(cell, x_in, cfg)
 
-    fmin, fmed, fmean = _cuda_minmax(fwd_fn, warmup=WARMUP, n_runs=N_RUNS)
+    fmin, fmed, fmean = cuda_minmax(fwd_fn, warmup=WARMUP, n_runs=N_RUNS)
     for _ in range(WARMUP):
         rebuild().square().sum().backward()
     torch.cuda.synchronize()

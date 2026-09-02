@@ -20,12 +20,10 @@ from pathlib import Path
 import torch
 from torch import Tensor, nn
 
-from gpu import (
-    DEFAULT_EXPERIMENT_GPU_NAME,
-    select_device,
-    setup_logging,
-    wait_until_free,
-)
+from utils.cuda_timing import cuda_minmax
+from utils.mlflow_helper import setup_logging
+
+from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
 
 log = logging.getLogger("bench")
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,25 +43,6 @@ BATCH = 8
 D_H = 256
 # K=3: App. A. T=64 is one fused tile; T=2048 is the documented smoke length.
 SEQ_LENS = (64, 2048)
-
-
-def _cuda_minmax(fn, *, warmup: int, n_runs: int) -> tuple[float, float, float]:
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-    samples: list[float] = []
-    for _ in range(n_runs):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        fn()
-        end.record()
-        torch.cuda.synchronize()
-        samples.append(start.elapsed_time(end))
-    samples.sort()
-    mean = sum(samples) / len(samples)
-    median = samples[len(samples) // 2]
-    return samples[0], median, mean
 
 
 def _cfg(*, backend: str, library_default: bool):
@@ -90,7 +69,7 @@ def _time_forward(cell: nn.Module, x: Tensor, cfg, name: str) -> dict:
     torch.cuda.reset_peak_memory_stats()
     fn()
     torch.cuda.synchronize()
-    tmin, tmed, tmean = _cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
+    tmin, tmed, tmean = cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
     mem = torch.cuda.max_memory_allocated() / (1024**2)
     st = NewtonStats()
     with torch.no_grad():
@@ -137,7 +116,7 @@ def _time_backward(cell: nn.Module, x: Tensor, cfg, h0: Tensor | None, name: str
     torch.cuda.reset_peak_memory_stats()
     fn()
     torch.cuda.synchronize()
-    tmin, tmed, tmean = _cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
+    tmin, tmed, tmean = cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
     mem = torch.cuda.max_memory_allocated() / (1024**2)
     log.info(
         "%s  min=%.3f ms  median=%.3f  mean=%.3f  peak=%.1f MiB",

@@ -18,10 +18,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import logging
-import os
-import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -35,13 +32,11 @@ from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
 from pararnn.kernels.precision import is_fused_dtype_supported
 from pararnn.solvers import NewtonConfig, newton_apply, sequential_apply
 from pararnn.solvers.sequential import sequential_apply_compiled
+from utils.cuda_timing import time_forward
+from utils.flashrnn_glue import flashrnn_backend, flashrnn_heads
+from utils.mlflow_helper import git_commit, lock_hash, setup_logging
 
-from gpu import (
-    DEFAULT_EXPERIMENT_GPU_NAME,
-    select_device,
-    setup_logging,
-    wait_until_free,
-)
+from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
 
 log = logging.getLogger("bench")
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,49 +45,6 @@ DEFAULT_CONFIG = ROOT / "configs" / "bench" / "cell_forward.yaml"
 # torch.compile of newton_apply at the call site — not in src/. Keyed by
 # cell identity + T because reduce-overhead CUDA graphs are shape-static.
 _compiled_newton: dict[tuple[int, str, int], Callable[[Tensor], Tensor]] = {}
-
-
-def _cuda_minmax(fn, *, warmup: int, n_runs: int) -> tuple[float, float, float]:
-    """Return (min, median, mean) milliseconds from CUDA events."""
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-    samples: list[float] = []
-    for _ in range(n_runs):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        fn()
-        end.record()
-        torch.cuda.synchronize()
-        samples.append(start.elapsed_time(end))
-    samples.sort()
-    mean = sum(samples) / len(samples)
-    median = samples[len(samples) // 2]
-    return samples[0], median, mean
-
-
-def _peak_mib() -> float:
-    return torch.cuda.max_memory_allocated() / (1024**2)
-
-
-def _git_commit() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "none"
-
-
-def _lock_hash() -> str:
-    lock = ROOT / "uv.lock"
-    if not lock.exists():
-        return "none"
-    return hashlib.sha256(lock.read_bytes()).hexdigest()[:16]
 
 
 def _torch_dtype(name: str) -> torch.dtype:
@@ -195,65 +147,6 @@ def _newton_fused(cell: nn.Module, x: Tensor, cfg: NewtonConfig) -> Tensor:
         return newton_apply(cell, x, fused)
 
 
-_flashrnn_backend_memo: str | bool | None = False
-
-
-def _ensure_cuda_home() -> None:
-    """FlashRNN import calls torch cpp_extension, which requires CUDA_HOME.
-
-    This box has no system toolkit. The pip ``nvidia-cuda-runtime`` wheel
-    ships ``include/cuda.h``; that is enough to *import*. Kernels still
-    need ``nvcc`` + CC 8.0 for ``cuda_fused``.
-    """
-    if os.environ.get("CUDA_HOME"):
-        return
-    nvidia = Path(torch.__file__).resolve().parent.parent / "nvidia"
-    runtime = nvidia / "cuda_runtime"
-    if (runtime / "include" / "cuda.h").is_file():
-        os.environ["CUDA_HOME"] = str(runtime)
-        log.info("flashrnn CUDA_HOME=%s (pip cuda_runtime)", runtime)
-
-
-def _flashrnn_backend() -> str | None:
-    """NX-AI FlashRNN. ``cuda_fused`` needs CC 8.0; this 2080 Ti is 7.5."""
-    global _flashrnn_backend_memo
-    if _flashrnn_backend_memo is not False:
-        return _flashrnn_backend_memo
-    _ensure_cuda_home()
-    try:
-        import flashrnn  # noqa: F401
-    except (ImportError, RuntimeError, OSError) as exc:
-        # Optional dep; import also compiles a CUDA extension (not just ImportError).
-        log.warning("flashrnn skip: %s", exc)
-        _flashrnn_backend_memo = None
-        return None
-    major, minor = torch.cuda.get_device_capability()
-    if major >= 8:
-        _flashrnn_backend_memo = "cuda_fused"
-    else:
-        _flashrnn_backend_memo = "triton_fused"
-        log.warning(
-            "flashrnn backend=triton_fused (CC %d.%d < 8.0; cuda_fused is Ampere+)",
-            major,
-            minor,
-        )
-    return _flashrnn_backend_memo
-
-
-def _flashrnn_heads(d_h: int) -> tuple[int, int]:
-    """``(n_heads, d_head)`` with ``n_heads * d_head == d_h``.
-
-    Triton fused on Turing (64 KiB smem): D=32 works, D=64 does not.
-    Diag mix (D=1) does not compile. This is a speed baseline, not the
-    same mixing as ``mix='diag'``.
-    """
-    if d_h % 32 == 0:
-        return d_h // 32, 32
-    if d_h % 16 == 0:
-        return d_h // 16, 16
-    raise ValueError(f"d_h={d_h} not divisible by 16 for FlashRNN heads")
-
-
 @torch.no_grad()
 def _flashrnn_slstm(cell: nn.Module, x: Tensor, backend: str) -> None:
     """Sequential sLSTM kernel at the same B, T, d_h. Not our diag ``R``."""
@@ -261,7 +154,7 @@ def _flashrnn_slstm(cell: nn.Module, x: Tensor, backend: str) -> None:
 
     if not isinstance(cell, ParaSLSTM):
         raise TypeError("flashrnn bench is ParaSLSTM only")
-    n_heads, d_head = _flashrnn_heads(cell.d_h)
+    n_heads, d_head = flashrnn_heads(cell.d_h)
     batch, time, _ = x.shape
     wx5 = x.new_empty(batch, time, 4, n_heads, d_head).normal_()
     rec = x.new_empty(4, n_heads, d_head, d_head).normal_().mul_(0.1)
@@ -305,27 +198,14 @@ def _time_one(
     warmup: int,
     n_runs: int,
 ) -> dict[str, float]:
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
-    fn()
-    torch.cuda.synchronize()
-    tmin, tmed, tmean = _cuda_minmax(fn, warmup=warmup, n_runs=n_runs)
-    mem = _peak_mib()
-    log.info(
-        "%s  min=%.3f ms  median=%.3f  mean=%.3f  peak=%.1f MiB  T=%d",
+    return time_forward(
         name,
-        tmin,
-        tmed,
-        tmean,
-        mem,
-        x.shape[1],
+        fn,
+        warmup=warmup,
+        n_runs=n_runs,
+        seq_len=int(x.shape[1]),
+        logger=log,
     )
-    return {
-        "min_ms": tmin,
-        "median_ms": tmed,
-        "mean_ms": tmean,
-        "peak_mib": mem,
-    }
 
 
 def _write_csv(rows: list[dict], path: Path) -> None:
@@ -421,8 +301,8 @@ def main() -> None:
                 "d_h": d_h,
                 "warmup": warmup,
                 "n_runs": n_runs,
-                "git": _git_commit(),
-                "uv_lock": _lock_hash(),
+                "git": git_commit(),
+                "uv_lock": lock_hash(),
                 "config": str(config_path.relative_to(ROOT)),
                 "sequential_compile_mode": seq_compile_mode,
                 "newton_compile_mode": newton_compile_mode,
@@ -638,7 +518,7 @@ def main() -> None:
 
                         flash_stats = None
                         if "flashrnn" in modes:
-                            fr_backend = _flashrnn_backend()
+                            fr_backend = flashrnn_backend(logger=log)
                             if fr_backend is None:
                                 log.warning("%s T=%d skip flashrnn", cell_name, T)
                             else:

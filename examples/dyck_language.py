@@ -22,18 +22,24 @@ _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from pararnn import NewtonConfig, ParaRNN, ParaSLSTM
-from scripts.utils.mlflow_helper import (
-    ROOT,
-    git_commit,
-    lock_hash,
-    setup_logging,
-    uv_export_hash,
+from examples._harness import (
+    configure_cuda_device,
+    gpu_label,
+    log_smoke_train_metrics,
+    lr_candidates,
+    mlflow_repro_params,
+    newton_residual,
+    resolve_scan_backend,
+    resolved_scan_backend,
+    run_lr_backend_fallback,
+    smoke_device,
 )
+from pararnn import NewtonConfig, ParaRNN, ParaSLSTM
+from scripts.utils.mlflow_helper import ROOT, setup_logging
 
 log = logging.getLogger("dyck")
 DEFAULT_CONFIG = ROOT / "configs" / "train" / "dyck.yaml"
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = smoke_device()
 OPEN, CLOSE = 0, 1
 VOCAB = 2
 
@@ -85,17 +91,10 @@ def main(argv: list[str] | None = None) -> None:
     spec = yaml.safe_load(args.config.read_text())
     _validate_spec(spec)
 
-    if device.type == "cuda":
-        torch.cuda.set_device(device)
-        gpu_name = torch.cuda.get_device_name(device)
-    else:
-        gpu_name = "cpu"
-    scan_backend = str(spec["scan_backend"])
-    if device.type != "cuda" and scan_backend == "fused":
-        log.warning("fused_requires_cuda_using_eager")
-        scan_backend = "eager"
-
-    lrs = [float(spec["lr"]), *[float(x) for x in spec.get("lr_fallback", [])]]
+    configure_cuda_device(device)
+    gpu_name = gpu_label(device)
+    scan_backend = resolve_scan_backend(spec, device)
+    lrs = lr_candidates(spec)
     log.info(
         "dyck_start gpu=%s torch=%s lrs=%s scan_backend=%s",
         gpu_name,
@@ -129,53 +128,22 @@ def main(argv: list[str] | None = None) -> None:
                 "dtype": spec["dtype"],
                 "scan_backend": scan_backend,
                 "seed": spec["seed"],
-                "git": git_commit(),
-                "uv_lock": lock_hash(),
-                "uv_export": uv_export_hash(),
-                "config": str(args.config),
+                **mlflow_repro_params(args.config),
             }
         )
         mlflow.log_artifact(str(args.config))
         mlflow.log_text(str(spec.get("why", "")).strip() + "\n", "why.txt")
 
-        last_losses: list[float] | None = None
-        last_residuals: list[float] | None = None
-        used_lr: float | None = None
-        used_backend = scan_backend
-        for lr in lrs:
-            try:
-                losses, residuals, used_backend = _train(
-                    spec, device, lr=lr, scan_backend=used_backend
-                )
-            except torch.cuda.OutOfMemoryError:
-                if used_backend not in ("fused", "auto"):
-                    raise
-                log.warning(
-                    "fused_oom_fallback_eager gpu=%s (staying on this card)",
-                    gpu_name,
-                )
-                torch.cuda.empty_cache()
-                used_backend = "eager"
-                losses, residuals, used_backend = _train(spec, device, lr=lr, scan_backend="eager")
-            last_losses = losses
-            last_residuals = residuals
-            used_lr = lr
-            if losses[-1] < losses[0]:
-                break
-            log.warning(
-                "lr_did_not_drop lr=%s loss0=%s loss_final=%s",
-                lr,
-                losses[0],
-                losses[-1],
-            )
-        assert last_losses is not None
-        assert used_lr is not None
-        for step, loss in enumerate(last_losses):
-            mlflow.log_metric("loss", loss, step=step)
-            if last_residuals is not None:
-                mlflow.log_metric("newton_residual", last_residuals[step], step=step)
-        mlflow.log_param("lr_used", used_lr)
-        mlflow.log_param("scan_backend_used", used_backend)
+        last_losses, last_residuals, used_backend, used_lr = run_lr_backend_fallback(
+            spec,
+            device,
+            _train,
+            scan_backend=scan_backend,
+            gpu_name=gpu_name,
+        )
+        log_smoke_train_metrics(
+            mlflow, last_losses, last_residuals, used_lr=used_lr, used_backend=used_backend
+        )
         if last_losses[-1] >= last_losses[0]:
             raise RuntimeError(
                 f"dyck smoke failed: loss at step {len(last_losses) - 1} "
@@ -224,11 +192,8 @@ def _train(
     for step in range(steps + 1):
         tokens = sample_dyck1(batch, seq_len, generator=gen).to(device)
         logits = model(tokens[:, :-1])
-        residual = float("nan")
-        resolved = scan_backend
-        if model.rnn.last_stats:
-            residual = model.rnn.last_stats[0].max_residual
-            resolved = model.rnn.last_stats[0].scan_backend or scan_backend
+        residual, _ = newton_residual(model.rnn)
+        resolved = resolved_scan_backend(model.rnn, scan_backend)
         loss = F.cross_entropy(logits.reshape(-1, VOCAB), tokens[:, 1:].reshape(-1))
         loss_f = float(loss.detach())
         losses.append(loss_f)
@@ -247,10 +212,7 @@ def _train(
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
-    used = scan_backend
-    if model.rnn.last_stats:
-        used = model.rnn.last_stats[0].scan_backend or scan_backend
-    return losses, residuals, used
+    return losses, residuals, resolved_scan_backend(model.rnn, scan_backend)
 
 
 def _check_grads_finite(model: _DyckLM, device: torch.device, *, seq_len: int) -> None:

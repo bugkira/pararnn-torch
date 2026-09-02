@@ -10,9 +10,7 @@ Shapes: configs/bench/profile_hotpath.yaml. GPU: 2080 Ti by name.
 from __future__ import annotations
 
 import csv
-import hashlib
 import logging
-import subprocess
 from pathlib import Path
 
 import torch
@@ -21,48 +19,15 @@ from torch.profiler import ProfilerActivity, profile, record_function
 
 from pararnn.cells import ParaGRU, ParaLSTM
 from pararnn.solvers import NewtonConfig, newton_apply, sequential_apply
+from utils.cuda_timing import cuda_min_ms
+from utils.mlflow_helper import git_commit, lock_hash, setup_logging
 
-from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, setup_logging, wait_until_free
+from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
 
 log = logging.getLogger("profile")
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "configs" / "bench" / "profile_hotpath.yaml"
 CELLS = {"ParaGRU": ParaGRU, "ParaLSTM": ParaLSTM}
-
-
-def _git_commit() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "none"
-
-
-def _lock_hash() -> str:
-    lock = ROOT / "uv.lock"
-    if not lock.exists():
-        return "none"
-    return hashlib.sha256(lock.read_bytes()).hexdigest()[:16]
-
-
-def _cuda_min_ms(fn, *, warmup: int, n_runs: int) -> float:
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-    samples: list[float] = []
-    for _ in range(n_runs):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        fn()
-        end.record()
-        torch.cuda.synchronize()
-        samples.append(start.elapsed_time(end))
-    return min(samples)
 
 
 def _top_cuda_rows(prof: profile, n: int = 15) -> list[dict[str, str | float | int]]:
@@ -119,8 +84,8 @@ def main() -> None:
                 "batch": spec["batch"],
                 "d_in": spec["d_in"],
                 "d_h": spec["d_h"],
-                "git": _git_commit(),
-                "uv_lock": _lock_hash(),
+                "git": git_commit(),
+                "uv_lock": lock_hash(),
                 "config": str(CONFIG_PATH.relative_to(ROOT)),
             }
         )
@@ -147,7 +112,7 @@ def main() -> None:
                 log.info("timing %s", tag)
                 torch.cuda.empty_cache()
                 torch.cuda.reset_peak_memory_stats()
-                min_ms = _cuda_min_ms(
+                min_ms = cuda_min_ms(
                     fn,
                     warmup=int(spec["timing_warmup"]),
                     n_runs=int(spec["timing_runs"]),

@@ -16,11 +16,6 @@ import math
 import sys
 from pathlib import Path
 
-import torch
-import yaml
-from torch import Tensor, nn
-from torch.nn import functional as F
-
 _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
@@ -28,15 +23,14 @@ _SCRIPTS = _REPO / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
+import torch
+import yaml
+from torch import Tensor, nn
+from torch.nn import functional as F
+
 from pararnn import NewtonConfig, xLSTMBlock
 from pararnn.solvers.scan import scan_diag
-from scripts.utils.mlflow_helper import (
-    ROOT,
-    git_commit,
-    lock_hash,
-    setup_logging,
-    uv_export_hash,
-)
+from utils.mlflow_helper import ROOT, git_commit, lock_hash, setup_logging, uv_export_hash
 
 from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
 

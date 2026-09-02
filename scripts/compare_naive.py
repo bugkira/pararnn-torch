@@ -14,8 +14,9 @@ from torch import Tensor, nn
 from pararnn.cells import ParaGRU, ParaLSTM
 from pararnn.layout import prepend_zero_state
 from pararnn.solvers import NewtonConfig, newton_apply
+from utils.mlflow_helper import setup_logging
 
-from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, setup_logging
+from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device
 
 log = logging.getLogger("compare")
 

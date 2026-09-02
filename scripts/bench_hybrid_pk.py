@@ -29,13 +29,13 @@ import math
 import sys
 from pathlib import Path
 
-import torch
-from torch import Tensor
-from torch.nn import functional as F
-
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / "scripts"))
+
+import torch
+from torch import Tensor
+from torch.nn import functional as F
 
 from examples.dyck_language import VOCAB, sample_dyck1
 from examples.slstm_vs_flashrnn import _NewtonDyckLM
@@ -45,12 +45,12 @@ from pararnn.layout import SLSTM_HIDDEN, prepend_state
 from pararnn.solvers import NewtonStats, newton_apply, sequential_apply
 from pararnn.solvers.scan import scan_diag
 from pararnn.solvers.slstm_picard import slstm_frozen_gate_scan
-from scripts.utils.mlflow_helper import git_commit, lock_hash, uv_export_hash
+from utils.cuda_timing import cuda_minmax
+from utils.mlflow_helper import git_commit, lock_hash, setup_logging, uv_export_hash
 
 from gpu import (
     DEFAULT_EXPERIMENT_GPU_NAME,
     select_device,
-    setup_logging,
     wait_until_free,
 )
 
@@ -76,25 +76,6 @@ SPEED_WIN = 0.85
 # Mamba Δ range: Gu & Dao 2023 §3.2 / literature.md. Deterministic linspace,
 # not a random draw per run.
 MAMBA_DT_MIN, MAMBA_DT_MAX = 1e-3, 1e-1
-
-
-def _cuda_minmax(fn, *, warmup: int, n_runs: int) -> tuple[float, float, float]:
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-    samples: list[float] = []
-    for _ in range(n_runs):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        fn()
-        end.record()
-        torch.cuda.synchronize()
-        samples.append(start.elapsed_time(end))
-    samples.sort()
-    mean = sum(samples) / len(samples)
-    median = samples[len(samples) // 2]
-    return samples[0], median, mean
 
 
 def _cfg(picard: int, max_iters: int) -> NewtonConfig:
@@ -138,7 +119,7 @@ def _fwd_time(cell: ParaSLSTM, x: Tensor, picard: int, max_iters: int) -> dict:
         with torch.no_grad():
             newton_apply(cell, x, cfg)
 
-    tmin, tmed, tmean = _cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
+    tmin, tmed, tmean = cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
     return {"min_ms": tmin, "median_ms": tmed, "mean_ms": tmean}
 
 
@@ -206,7 +187,7 @@ def _ssm_fwd_time(cell: ParaSLSTM, x: Tensor, max_iters: int) -> dict:
         with torch.no_grad():
             _ssm_newton(cell, x, max_iters)
 
-    tmin, tmed, tmean = _cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
+    tmin, tmed, tmean = cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
     return {"min_ms": tmin, "median_ms": tmed, "mean_ms": tmean}
 
 

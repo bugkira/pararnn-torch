@@ -16,8 +16,11 @@ from torch import Tensor
 
 from pararnn.cells import ParaSLSTM
 from pararnn.solvers import NewtonConfig, newton_apply, sequential_apply
+from utils.cuda_timing import time_forward
+from utils.flashrnn_glue import ensure_cuda_home
+from utils.mlflow_helper import setup_logging
 
-from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, setup_logging, wait_until_free
+from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
 
 log = logging.getLogger("bench")
 
@@ -27,42 +30,15 @@ BATCH = 8
 D_H = 256
 
 
-def _cuda_minmax(fn, *, warmup: int, n_runs: int) -> tuple[float, float, float]:
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-    samples: list[float] = []
-    for _ in range(n_runs):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        fn()
-        end.record()
-        torch.cuda.synchronize()
-        samples.append(start.elapsed_time(end))
-    samples.sort()
-    mean = sum(samples) / len(samples)
-    median = samples[len(samples) // 2]
-    return samples[0], median, mean
-
-
 def _time(name: str, fn, T: int) -> float:
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
-    fn()
-    torch.cuda.synchronize()
-    tmin, tmed, tmean = _cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
-    mem = torch.cuda.max_memory_allocated() / (1024**2)
-    log.info(
-        "%s  min=%.3f ms  median=%.3f  mean=%.3f  peak=%.1f MiB  T=%d",
+    return time_forward(
         name,
-        tmin,
-        tmed,
-        tmean,
-        mem,
-        T,
-    )
-    return tmin
+        fn,
+        warmup=WARMUP,
+        n_runs=N_RUNS,
+        seq_len=T,
+        logger=log,
+    )["min_ms"]
 
 
 def main() -> None:
@@ -125,14 +101,7 @@ def main() -> None:
                 mlflow.log_metric("head_eager_min_ms", tmin, step=16)
 
             try:
-                import os
-                from pathlib import Path
-
-                if not os.environ.get("CUDA_HOME"):
-                    nvidia = Path(torch.__file__).resolve().parent.parent / "nvidia"
-                    runtime = nvidia / "cuda_runtime"
-                    if (runtime / "include" / "cuda.h").is_file():
-                        os.environ["CUDA_HOME"] = str(runtime)
+                ensure_cuda_home(logger=log)
                 from flashrnn import flashrnn
 
                 n_heads, d_head = 8, 32

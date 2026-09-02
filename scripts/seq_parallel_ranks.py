@@ -12,8 +12,6 @@ import logging
 import sys
 from pathlib import Path
 
-import torch
-
 _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
@@ -21,19 +19,17 @@ _SCRIPTS = _REPO / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
+import torch
+
 from pararnn.solvers.scan import scan_diag
 from pararnn.solvers.seq_parallel import (
     scan_diag_two_ranks,
     sequential_prefix_two_ranks,
 )
-from scripts.utils.mlflow_helper import git_commit, lock_hash, uv_export_hash
+from utils.cuda_timing import cuda_minmax
+from utils.mlflow_helper import git_commit, lock_hash, setup_logging, uv_export_hash
 
-from gpu import (
-    DEFAULT_EXPERIMENT_GPU_NAME,
-    select_device,
-    setup_logging,
-    wait_until_free,
-)
+from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
 
 log = logging.getLogger("seq_parallel")
 
@@ -43,23 +39,6 @@ BATCH = 8
 DIM = 256
 # Long enough that a Blelloch pass is visible; still one card.
 SEQ_LENS = (512, 2048, 8192)
-
-
-def _cuda_minmax(fn, *, warmup: int, n_runs: int) -> tuple[float, float, float]:
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-    samples: list[float] = []
-    for _ in range(n_runs):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        fn()
-        end.record()
-        torch.cuda.synchronize()
-        samples.append(start.elapsed_time(end))
-    samples.sort()
-    return samples[0], samples[len(samples) // 2], sum(samples) / len(samples)
 
 
 def _system(batch: int, time: int, dim: int, device: torch.device, seed: int):
@@ -142,7 +121,7 @@ def main() -> None:
                 ("two_rank_streams", _two),
                 ("seq_prefix", _pref),
             ):
-                tmin, tmed, tmean = _cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
+                tmin, tmed, tmean = cuda_minmax(fn, warmup=WARMUP, n_runs=N_RUNS)
                 mem = torch.cuda.max_memory_allocated(device) / (1024**2)
                 log.info(
                     "%s T=%s min=%.3f median=%.3f mean=%.3f ms peak=%.1f MiB",

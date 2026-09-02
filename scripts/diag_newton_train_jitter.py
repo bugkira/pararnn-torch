@@ -6,13 +6,13 @@ import logging
 import sys
 from pathlib import Path
 
-import torch
-from torch import Tensor
-from torch.nn import functional as F
-
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / "scripts"))
+
+import torch
+from torch import Tensor
+from torch.nn import functional as F
 
 from examples.dyck_language import VOCAB, sample_dyck1
 from examples.slstm_vs_flashrnn import _NewtonDyckLM
@@ -20,11 +20,11 @@ from pararnn import NewtonConfig
 from pararnn.layout import SLSTM_HIDDEN
 from pararnn.solvers import NewtonStats, sequential_apply
 from pararnn.solvers.newton import newton_apply
+from utils.mlflow_helper import setup_logging
 
 from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device
 
 log = logging.getLogger("diag")
-logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 def _cuda_ms(fn) -> float:
@@ -39,6 +39,7 @@ def _cuda_ms(fn) -> float:
 
 
 def main() -> None:
+    setup_logging()
     device = select_device(DEFAULT_EXPERIMENT_GPU_NAME)
     torch.cuda.set_device(device)
     seed, batch, seq_len, d_h, steps, lr = 0, 32, 64, 32, 50, 3e-3

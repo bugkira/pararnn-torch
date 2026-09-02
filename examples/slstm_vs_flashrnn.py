@@ -13,14 +13,8 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
-
-import torch
-import yaml
-from torch import Tensor, nn
-from torch.nn import functional as F
 
 _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
@@ -29,16 +23,18 @@ _SCRIPTS = _REPO / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
+import torch
+import yaml
+from torch import Tensor, nn
+from torch.nn import functional as F
+
 from examples.dyck_language import VOCAB, sample_dyck1
 from pararnn import NewtonConfig, ParaRNN, ParaSLSTM
 from pararnn.weight_init import kaiming_uniform_linear_
-from scripts.utils.mlflow_helper import (
-    ROOT,
-    git_commit,
-    lock_hash,
-    setup_logging,
-    uv_export_hash,
-)
+from scripts.utils.flashrnn_glue import flashrnn_backend, flashrnn_heads
+from scripts.utils.mlflow_helper import ROOT, git_commit, lock_hash, setup_logging, uv_export_hash
+
+_flashrnn_heads = flashrnn_heads
 
 from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
 
@@ -129,7 +125,7 @@ def main(argv: list[str] | None = None) -> None:
     wait_until_free(device, min_free_gib=4.0, poll_s=30.0)
     gpu_name = torch.cuda.get_device_name(device)
     scan_backend = str(spec["scan_backend"])
-    fr_backend = _flashrnn_backend()
+    fr_backend = flashrnn_backend(required=True, logger=log)
     lrs = [float(spec["lr"]), *[float(x) for x in spec.get("lr_fallback", [])]]
     log.info(
         "start gpu=%s torch=%s lrs=%s scan_backend=%s flashrnn=%s",
@@ -272,7 +268,7 @@ def _train(
         )
         model: nn.Module = _NewtonDyckLM(d_h, cfg, mix=mix, n_heads=n_heads_i).to(device)
     elif backend == "flashrnn":
-        n_heads, d_head = _flashrnn_heads(d_h)
+        n_heads, d_head = flashrnn_heads(d_h)
         model = _FlashRNNDyckLM(d_h, n_heads, d_head, flashrnn_backend).to(device)
     else:
         raise ValueError(f"unknown backend {backend!r}")
@@ -332,39 +328,6 @@ def _train(
         "peak_mib": peak,
         "n_params": n_params,
     }
-
-
-def _ensure_cuda_home() -> None:
-    if os.environ.get("CUDA_HOME"):
-        return
-    nvidia = Path(torch.__file__).resolve().parent.parent / "nvidia"
-    runtime = nvidia / "cuda_runtime"
-    if (runtime / "include" / "cuda.h").is_file():
-        os.environ["CUDA_HOME"] = str(runtime)
-        log.info("flashrnn CUDA_HOME=%s (pip cuda_runtime)", runtime)
-
-
-def _flashrnn_backend() -> str:
-    _ensure_cuda_home()
-    try:
-        import flashrnn  # noqa: F401
-    except Exception as exc:
-        raise RuntimeError(
-            "FlashRNN is required for this example. uv sync --extra flashrnn --group dev"
-        ) from exc
-    major, _minor = torch.cuda.get_device_capability()
-    if major >= 8:
-        return "cuda_fused"
-    log.warning("flashrnn backend=triton_fused (CC %d < 8; cuda_fused is Ampere+)", major)
-    return "triton_fused"
-
-
-def _flashrnn_heads(d_h: int) -> tuple[int, int]:
-    if d_h % 32 == 0:
-        return d_h // 32, 32
-    if d_h % 16 == 0:
-        return d_h // 16, 16
-    raise ValueError(f"d_h={d_h} not divisible by 16 for FlashRNN heads")
 
 
 def _validate_spec(spec: dict) -> None:
