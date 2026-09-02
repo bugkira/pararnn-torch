@@ -1,0 +1,9 @@
+# Commits that git-blame should skip: mechanical reformats that would
+# otherwise dominate every line's history.
+#
+# Enable in this clone:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Adopt ruff: 100-char reformat of 44 files, plus the mechanical lint
+# fixes that came with it (zip strict=, split asserts).
+e780916478b8fee7bcab94cae40bcebede605514
