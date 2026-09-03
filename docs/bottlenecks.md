@@ -172,7 +172,7 @@ Diag mix only (`newton_slstm.py`, 4×4 SRAM). Head/dense raise. Library
 default is auto-Picard (`picard_iters=None`); explicit `0` is zero-hidden
 only. Not App. A. Same smoke protocol as the GRU table, 2080 Ti, B=8,
 \(d_h=256\), \(K=3\), 10/50, min ms. Details and the K-curve:
-[`para-slstm.md`](para-slstm.md).
+`docs/internal/para-slstm.md` (lab notes, not in clones).
 
 **P=0** ([`newton_slstm.yaml`](../configs/bench/newton_slstm.yaml)): fused
 \(T=2048\) **30.3 ms** times a **diverged** Newton (max |par − seq| is 17 …

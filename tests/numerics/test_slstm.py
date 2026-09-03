@@ -524,7 +524,7 @@ def test_slstm_diag_long_t_snaps_at_k3():
     """T=48 snaps at K=3 with zero-hidden init. Library default K=3 is enough.
 
     App. A ``f(0, x_t)`` needed K=12 here (running ``n``). See
-    ``docs/para-slstm.md``. Do not raise the global Newton default for GRU.
+    ``docs/internal/para-slstm.md``. Do not raise the global Newton default for GRU.
     """
     torch.manual_seed(101)
     cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
@@ -960,7 +960,7 @@ def test_slstm_picard_adapt_climbs_on_far_guess():
 
     Init-scale table in para-slstm.md: T=256 K=3 without enough Picard is
     outside the sequential basin. Explicit P=1 + picard_adapt=True is the
-    train-diag path (docs/next.md). Fallback if this seed snaps at P=1:
+    train-diag path (docs/internal/next.md). Fallback if this seed snaps at P=1:
     the assert on seq err still holds.
     """
     torch.manual_seed(0)

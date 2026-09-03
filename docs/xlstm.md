@@ -47,4 +47,5 @@ State we use is Beck: `(B, T, 4, d_h) = (c, n, m, h)`, hidden slot 3
 Until a PR *they* would merge, this is a library they could vendor, not
 `pip install` into xLSTM-7B.
 
-See [`para-slstm.md`](para-slstm.md) for the Newton cell.
+Newton cell measurements (Picard rungs, head vs FlashRNN) live in
+lab notes (`docs/internal/para-slstm.md`), not in this clone.

@@ -1,6 +1,6 @@
 """Sequence-parallel Newton scan: tile locally, then apply a carry.
 
-Same monoid as ``scan_diag`` (``docs/tex/seq-parallel-pararnn.tex``).
+Same monoid as ``scan_diag``. Two streams on one GPU, not NCCL.
 Two CUDA streams on one device are virtual ranks.
 
 Rank 1's local scan runs concurrently with rank 0. The carry is an axpy

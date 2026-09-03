@@ -6,6 +6,6 @@ alwaysApply: false
 
 # Accelerator review
 
-Follow [`docs/accelerator-review.md`](docs/accelerator-review.md) when editing kernels or solvers. Do not paste Apple code. Do not rewrite eager Blelloch or the sequential oracle to chase this checklist; fused/Triton is the train path.
+Follow [`docs/internal/accelerator-review.md`](docs/internal/accelerator-review.md) when editing kernels or solvers. Do not paste Apple code. Do not rewrite eager Blelloch or the sequential oracle to chase this checklist; fused/Triton is the train path.
 
 Hot-loop D2H (`float(tensor)`, `.item()`) only for opt-in residual early-stop or a single fail-loud check after \(K\), never on the bench path (`residual_atol=None`). Log behind `torch.compiler.is_compiling()`. fp16 DRAM / fp32 accumulators via `load_acc` / `store_acc`. `h0` must flow through Autograd `apply()`.

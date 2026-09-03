@@ -30,9 +30,8 @@ outputs/
 docs/papers/*.pdf
 third_party/ml-pararnn/
 
-# local lab notes (keep on disk, not in clones)
-docs/next.md
-docs/pytorch_port.md
+# lab notes, paper drafts, reviewer audits (keep on disk, not in clones)
+docs/internal/
 .cursor/rules/git-unsigned.mdc
 
 # editor

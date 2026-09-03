@@ -20,17 +20,14 @@ Three layers, mapped to **existing** dirs (not a rename of working imports):
 ```
 ParaRNN/
 ├── .cursor/rules/              # agent conventions (uv, MLflow, citations, Apple license)
-├── docs/
+├── docs/                       # public notes (see docs/README.md)
 │   ├── literature.md           # annotated bibliography
 │   ├── apple-ml-pararnn.md     # notes on the official repo
-│   ├── bottlenecks.md          # eager Newton+scan: measured bottlenecks, ranked fixes
-│   ├── accelerator-review.md   # GPU/Triton review checklist (memory, sync, numerics)
-│   ├── para-slstm.md           # sLSTM Newton (diag fused; head/dense eager)
+│   ├── bottlenecks.md          # fused vs sequential: measured timings
 │   ├── xlstm.md                # if NX-AI xlstm took our sLSTM Newton (not our mLSTM)
-│   ├── seq-parallel-report.md  # two-stream virtual ranks vs FlashRNN DDP claim
-│   ├── tex/                    # seq-parallel-pararnn.tex (DDP vs time-span)
 │   ├── structure.md            # this file
-│   └── papers/                 # PDFs via scripts/fetch_papers.sh (gitignored)
+│   ├── papers/                 # PDFs via scripts/fetch_papers.sh (gitignored)
+│   └── internal/               # lab notes; gitignored, not in clones
 ├── third_party/
 │   ├── README.md               # how to clone Apple's repo
 │   └── ml-pararnn/             # local clone, gitignored
