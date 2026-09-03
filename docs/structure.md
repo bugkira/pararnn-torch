@@ -8,9 +8,7 @@ One trunk (`main`). Three layers:
 
 ```
 ParaRNN/
-├── docs/                       # see docs/README.md
-│   ├── literature.md
-│   ├── apple-ml-pararnn.md
+├── docs/
 │   ├── xlstm.md
 │   └── structure.md
 ├── src/pararnn/

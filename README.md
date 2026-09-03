@@ -80,7 +80,7 @@ GRU/LSTM init follows App. A: \(h_l^{(0)} = f(0, x_l)\). sLSTM starts from the z
 - Lim et al. *DEER*. ICLR 2024. [arXiv:2309.12252](https://arxiv.org/abs/2309.12252).
 - Merrill et al. *The Illusion of State in State-Space Models*. [arXiv:2404.08819](https://arxiv.org/abs/2404.08819).
 
-Bibliography: [`docs/literature.md`](docs/literature.md). sLSTM layout: [`docs/xlstm.md`](docs/xlstm.md).
+sLSTM layout: [`docs/xlstm.md`](docs/xlstm.md).
 
 ## License
 
