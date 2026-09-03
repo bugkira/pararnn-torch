@@ -62,7 +62,25 @@ class NewtonConfig:
     # None: only residual_fail.
     picard_retry_atol: float | None = _RESIDUAL_WARN
     # assoc: tl.associative_scan. seq: serial prefix in the tile (ablation).
+    # thomas / thomas4: C=4 sequential compose then PCR. thomas2: C=2.
+    # C is an ablation (this repo's bench_slstm_scan_opt.py on 3060 / 2080 Ti),
+    # not Apple App. C. Default assoc until that bench prefers Thomas.
     scan_tile: str = "assoc"
+    # True: one fused launch walks T tiles with solved-state carry (windowed
+    # Newton, same residual as chunk_len=window). False: global two-level
+    # scan. vs global assoc is a different residual, not a lost m_t. Default
+    # False: sequential agreement uses the global solve.
+    fused_time_loop: bool = False
+    # None: FUSED_WINDOW_DEFAULT (64) when fused_time_loop. 32 trips
+    # newton_residual_high (~8e-2) at T=1024 d_h=256 P=3; 64 matched assoc
+    # (~3e-5, vs sequential ~4e-7). 128 if 64 stays >1e-3.
+    fused_window_len: int | None = None
+
+
+# Lengths compiled as Triton BLOCK_T in the fused walk kernel. Not Apple App. C.
+FUSED_WINDOW_LENS = (32, 64, 128)
+# chunk_len=64 at T=1024 d_h=256 P=3 ~2e-4 vs sequential (this repo).
+FUSED_WINDOW_DEFAULT = 64
 
 
 def _validate_config(config: NewtonConfig) -> None:
@@ -84,5 +102,15 @@ def _validate_config(config: NewtonConfig) -> None:
         )
     if config.residual_fail is not None and float(config.residual_fail) < 0:
         raise ValueError(f"residual_fail must be >= 0 or None, got {config.residual_fail!r}")
-    if config.scan_tile not in ("assoc", "seq"):
+    if config.scan_tile not in ("assoc", "seq", "thomas", "thomas2", "thomas4"):
         raise ValueError(f"unknown scan_tile {config.scan_tile!r}")
+    if config.fused_time_loop and config.chunk_len is not None:
+        raise ValueError("fused_time_loop and chunk_len both set; pick one windowed path")
+    if config.fused_time_loop and config.coords == "log":
+        raise ValueError("fused_time_loop is native coords only")
+    if config.fused_window_len is not None:
+        w = int(config.fused_window_len)
+        if w not in FUSED_WINDOW_LENS:
+            raise ValueError(f"fused_window_len must be one of {FUSED_WINDOW_LENS}, got {w}")
+        if not config.fused_time_loop:
+            raise ValueError("fused_window_len requires fused_time_loop=True")

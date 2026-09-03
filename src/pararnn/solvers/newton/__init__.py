@@ -23,6 +23,7 @@ from pararnn.solvers.jacobian import step_and_jacobian
 from pararnn.solvers.newton import config, dispatch, picard
 from pararnn.solvers.newton.config import (
     _RESIDUAL_WARN,
+    FUSED_WINDOW_DEFAULT,
     NewtonConfig,
     NewtonDivergenceError,
     NewtonStats,
@@ -154,6 +155,10 @@ def _newton_solve(
 ) -> Tensor:
     if config.chunk_len is not None:
         return _newton_chunked(cell, x, config, h0=h0, stats=stats)
+    if config.fused_time_loop and config.scan_backend != "fused":
+        raise ValueError(
+            "fused_time_loop requires scan_backend='fused' (or auto on CUDA ParaSLSTM)"
+        )
     if config.scan_backend == "fused":
         states = _newton_fused(cell, x, config, h0=h0)
         # Fused kernels run exactly max_iters (no residual early-stop).
@@ -363,6 +368,9 @@ def _newton_fused(
     wx = _input_affine(cell, x)
     if wx is None:
         raise TypeError(f"fused Newton needs cell.W_x; got {type(cell).__name__}")
+    window = config.fused_window_len
+    if config.fused_time_loop and window is None:
+        window = FUSED_WINDOW_DEFAULT
     log.debug(
         "newton_fused",
         extra={
@@ -375,6 +383,8 @@ def _newton_fused(
             "h0": h0 is not None,
             "picard_iters": int(config.picard_iters or 0),
             "scan_tile": config.scan_tile,
+            "fused_time_loop": config.fused_time_loop,
+            "fused_window_len": window,
         },
     )
     from pararnn.kernels.fused_newton import fused_newton
@@ -388,6 +398,8 @@ def _newton_fused(
         log_coords=config.coords == "log",
         picard_iters=int(config.picard_iters or 0),
         scan_tile=config.scan_tile,
+        fused_time_loop=config.fused_time_loop,
+        fused_window_len=window,
     )
 
 

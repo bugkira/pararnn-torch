@@ -11,9 +11,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 ### Added
 
 - `examples/xlstm_hybrid.py`: NX-AI pre-norm / skip / FFN with `ParaRNN(ParaSLSTM mix='diag')` in the recurrent slot. Install NX-AI `xlstm` separately (`uv add xlstm`; Python 3.11+).
+- `NewtonConfig.scan_tile`: `thomas` / `thomas4` (C=4 sequential compose then PCR of T/C) and `thomas2` (C=2). Default stays `assoc` until a bench on the target GPU prefers Thomas.
+- `NewtonConfig.fused_time_loop`: one fused launch walks `fused_window_len` (default 64) with solved-state carry (same residual as `chunk_len`, not global Newton).
+- `NewtonConfig.fused_window_len`: `32` / `64` / `128` for that walk. `64` is the `chunk_len` that sat at ~2e-4 vs sequential at T=1024 `d_h=256` P=3 in this repo; `32` trips `newton_residual_high`.
 
 ### Changed
 
+- Fused sLSTM Newton keeps the guess, J tiles, and scan residual in fp32 when DRAM is fp16/bf16 (`fp32_newton_work`). `W_x` stays a GEMM in the tensor dtype. This is the App. B algebra contract. It tightens P=3 bf16 residual; it does not make Ampere bf16 fused faster than fp32 (the hot path is still fp32 4×4 PCR).
 - `ParaSLSTM`: `mix='diag'` remains the fused default. `mix='head'` warns as an unfused ablation (`scan_dense`). `mix='dense'` raises if `hidden_size > 8` (Jacobian oracle for tests).
 
 ## [0.4.0] - 2026-09-03

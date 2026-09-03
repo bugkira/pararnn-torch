@@ -154,3 +154,65 @@ def test_newton_fail_loud_can_be_disabled():
     )
     assert st.iters == 0
     assert st.max_residual > 1e-3
+
+
+def test_fused_window_len_requires_time_loop():
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = torch.randn(2, 8, 4, device=device)
+    with pytest.raises(ValueError, match="fused_window_len requires fused_time_loop"):
+        newton_apply(cell, x, NewtonConfig(fused_window_len=64, residual_fail=None))
+
+
+def test_fused_time_loop_rejects_chunk_len():
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = torch.randn(2, 8, 4, device=device)
+    with pytest.raises(ValueError, match="fused_time_loop and chunk_len"):
+        newton_apply(
+            cell,
+            x,
+            NewtonConfig(
+                fused_time_loop=True,
+                chunk_len=64,
+                residual_fail=None,
+            ),
+        )
+
+
+def test_unknown_scan_tile_rejected():
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = torch.randn(2, 8, 4, device=device)
+    with pytest.raises(ValueError, match="unknown scan_tile"):
+        newton_apply(cell, x, NewtonConfig(scan_tile="pcr", residual_fail=None))
+
+
+def test_fused_time_loop_rejects_eager_backend():
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
+    x = torch.randn(2, 8, 4, device=device)
+    with pytest.raises(ValueError, match="fused_time_loop requires"):
+        newton_apply(
+            cell,
+            x,
+            NewtonConfig(
+                fused_time_loop=True,
+                scan_backend="eager",
+                residual_fail=None,
+                picard_iters=0,
+            ),
+        )
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_fused_time_loop_rejects_gru(cuda_device: torch.device) -> None:
+    gru = ParaGRU(4, 4).to(cuda_device)
+    x = torch.randn(2, 8, 4, device=cuda_device)
+    with pytest.raises(TypeError, match="fused_time_loop is ParaSLSTM"):
+        newton_apply(
+            gru,
+            x,
+            NewtonConfig(
+                scan_backend="fused",
+                fused_time_loop=True,
+                residual_fail=None,
+            ),
+        )

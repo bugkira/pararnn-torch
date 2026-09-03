@@ -42,9 +42,7 @@ from pararnn.solvers.slstm_picard import (
 
 log = logging.getLogger(__name__)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:mix='head' is an unfused ablation:UserWarning"
-)
+pytestmark = pytest.mark.filterwarnings("ignore:mix='head' is an unfused ablation:UserWarning")
 
 
 def _residual_vs_k(
@@ -902,6 +900,62 @@ def test_slstm_picard_fused_matches_eager(cuda_device: torch.device) -> None:
 
 @pytest.mark.cuda
 @torch.no_grad()
+def test_slstm_thomas_fused_matches_assoc(cuda_device: torch.device) -> None:
+    torch.manual_seed(101)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(cuda_device)
+    x = 0.3 * torch.randn(2, 48, 4, device=cuda_device)
+    cfg = {"max_iters": 3, "residual_atol": None, "picard_iters": 1}
+    assoc = newton_apply(cell, x, NewtonConfig(**cfg, scan_backend="fused"))
+    for tile in ("thomas2", "thomas4"):
+        got = newton_apply(
+            cell,
+            x,
+            NewtonConfig(**cfg, scan_backend="fused", scan_tile=tile),
+        )
+        torch.testing.assert_close(got, assoc, atol=2e-4, rtol=2e-4)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("window", [32, 64, 128])
+@torch.no_grad()
+def test_slstm_fused_time_loop_matches_chunk_len(cuda_device: torch.device, window: int) -> None:
+    torch.manual_seed(101)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(cuda_device)
+    x = 0.3 * torch.randn(2, 128, 4, device=cuda_device)
+    cfg = {
+        "max_iters": 3,
+        "scan_backend": "fused",
+        "residual_atol": None,
+        "picard_iters": 0,
+    }
+    windows = newton_apply(
+        cell,
+        x,
+        NewtonConfig(**cfg, fused_time_loop=True, fused_window_len=window),
+    )
+    chunked = newton_apply(cell, x, NewtonConfig(**cfg, chunk_len=window))
+    torch.testing.assert_close(windows, chunked, atol=2e-4, rtol=2e-4)
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_slstm_fused_time_loop_default_window_is_64(cuda_device: torch.device) -> None:
+    torch.manual_seed(101)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(cuda_device)
+    x = 0.3 * torch.randn(2, 128, 4, device=cuda_device)
+    cfg = {
+        "max_iters": 3,
+        "scan_backend": "fused",
+        "residual_atol": None,
+        "picard_iters": 0,
+    }
+    default = newton_apply(cell, x, NewtonConfig(**cfg, fused_time_loop=True))
+    explicit = newton_apply(cell, x, NewtonConfig(**cfg, fused_time_loop=True, fused_window_len=64))
+    torch.testing.assert_close(default, explicit, atol=0, rtol=0)
+
+
+@pytest.mark.cuda
+@torch.no_grad()
 def test_slstm_scan_seq_fused_matches_assoc(cuda_device: torch.device) -> None:
     torch.manual_seed(101)
     cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(cuda_device)
@@ -918,6 +972,32 @@ def test_slstm_scan_seq_fused_matches_assoc(cuda_device: torch.device) -> None:
         NewtonConfig(**cfg, scan_backend="fused", scan_tile="seq"),
     )
     torch.testing.assert_close(seqt, assoc, atol=2e-4, rtol=2e-4)
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_slstm_fused_bf16_scan_tiles_match(cuda_device: torch.device) -> None:
+    """fp32 Newton work: scan tiles agree on the same bf16 ``W_x`` problem.
+
+    vs sequential stays looser (bf16 GEMM + sLSTM basin; GRU uses 1.6e-2).
+    """
+    from pararnn.kernels.precision import is_fused_dtype_supported
+
+    if not is_fused_dtype_supported(torch.bfloat16, cuda_device):
+        pytest.skip("fused bf16 requires compute capability >= 8.0")
+    torch.manual_seed(101)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device=cuda_device, dtype=torch.bfloat16)
+    x = 0.3 * torch.randn(2, 48, 4, device=cuda_device, dtype=torch.bfloat16)
+    cfg = {
+        "max_iters": 3,
+        "scan_backend": "fused",
+        "residual_atol": None,
+        "picard_iters": 1,
+    }
+    assoc = newton_apply(cell, x, NewtonConfig(**cfg))
+    for tile in ("seq", "thomas4"):
+        got = newton_apply(cell, x, NewtonConfig(**cfg, scan_tile=tile))
+        torch.testing.assert_close(got, assoc, atol=2e-2, rtol=2e-2)
 
 
 def test_slstm_auto_picard_schedule():

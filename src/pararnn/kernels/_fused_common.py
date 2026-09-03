@@ -84,6 +84,21 @@ def alloc_fp32_update(
     )
 
 
+def fp32_newton_work(states: Tensor, h0: Tensor) -> tuple[Tensor, Tensor]:
+    """fp32 copies of the guess and ``h0`` when DRAM is fp16/bf16.
+
+    ``load_acc`` already widens a single load, but J tiles and the Newton
+    update were stored back in the tensor dtype. That truncation is why
+    P=3 bf16 residual blew up (~0.5 vs ~6e-6 in fp32). Ampere bf16 fused
+    is still slower than fp32 (hot path is fp32 4×4 PCR, not TC GEMM);
+    this helper does not change that. ``W_x`` stays a GEMM in the tensor
+    dtype.
+    """
+    if states.dtype == torch.float32:
+        return states, h0
+    return states.float(), h0.float()
+
+
 def fp32_omega_add(
     states: Tensor, r_loc: Tensor, omega: float, states32: Tensor, r32: Tensor
 ) -> None:

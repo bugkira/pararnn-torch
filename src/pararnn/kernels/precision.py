@@ -1,9 +1,9 @@
 """Narrow DRAM (fp16/bf16) + fp32 Newton/scan accumulators.
 
 Paper App. B cell plots are float32; LM training used bf16 weights on Ampere.
-Algebra is fp32 inside Triton (`load_acc` / `store_acc`). Activations, J
-tiles, and residuals stay in the tensor dtype in DRAM. ``W_x`` is a PyTorch
-GEMM.
+Algebra is fp32 inside Triton (`load_acc` / `store_acc`). sLSTM fused also
+keeps the Newton guess in fp32 DRAM when the tensor is fp16/bf16
+(`fp32_newton_work`). ``W_x`` is a PyTorch GEMM in the tensor dtype.
 
 bf16 fused/Triton is **compute capability ≥ 8.0** (Ampere+ tensor cores).
 CC 7.x has no bf16 TC: ``auto`` falls back; explicit ``fused`` raises.

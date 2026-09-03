@@ -24,6 +24,8 @@ def fused_newton(
     log_coords: bool = False,
     picard_iters: int = 0,
     scan_tile: str = "assoc",
+    fused_time_loop: bool = False,
+    fused_window_len: int | None = None,
 ) -> Tensor:
     if isinstance(cell, ParaGRU):
         if log_coords:
@@ -32,6 +34,8 @@ def fused_newton(
             raise TypeError("fused Picard is ParaSLSTM only")
         if scan_tile != "assoc":
             raise TypeError("fused scan_tile is ParaSLSTM only")
+        if fused_time_loop:
+            raise TypeError("fused_time_loop is ParaSLSTM only")
         from pararnn.kernels.newton_gru import newton_gru_fused
 
         a_z, a_r, a_n = cell.clipped_a()
@@ -43,6 +47,8 @@ def fused_newton(
             raise TypeError("fused Picard is ParaSLSTM only")
         if scan_tile != "assoc":
             raise TypeError("fused scan_tile is ParaSLSTM only")
+        if fused_time_loop:
+            raise TypeError("fused_time_loop is ParaSLSTM only")
         from pararnn.kernels.newton_lstm import newton_lstm_fused
 
         a_f, a_z, a_o, c_f, c_o = cell.clipped_recurrent()
@@ -72,6 +78,8 @@ def fused_newton(
             states=states,
             log_coords=log_coords,
             scan_tile=scan_tile,
+            time_loop=fused_time_loop,
+            window_len=fused_window_len,
         )
     raise TypeError(
         f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM(diag) only; got {type(cell).__name__}"

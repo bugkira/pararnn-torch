@@ -22,6 +22,7 @@ from pararnn.kernels._fused_common import (
     _store_state,
     _tanh,
     alloc_fp32_update,
+    fp32_newton_work,
     fp32_omega_add,
     log_fused_done,
     log_fused_iter,
@@ -45,6 +46,7 @@ from pararnn.layout import (
     SLSTM_SLOTS,
     SLSTM_STABILIZER,
 )
+from pararnn.solvers.newton.config import FUSED_WINDOW_DEFAULT, FUSED_WINDOW_LENS
 
 log = logging.getLogger(__name__)
 
@@ -337,6 +339,543 @@ def _seq_scan_block4(
         u1,
         u2,
         u3,
+    )
+
+
+@triton.jit
+def _at_k(x3, k, C: tl.constexpr):
+    """Slice ``x3[:, k, :]`` without integer indexing (Triton forbids it)."""
+    sel = tl.arange(0, C)[None, :, None] == k
+    return tl.sum(tl.where(sel, x3, 0.0), 1)
+
+
+@triton.jit
+def _put_k(dst3, val2, k, C: tl.constexpr):
+    """Scatter ``val2`` into ``dst3[:, k, :]``."""
+    sel = tl.arange(0, C)[None, :, None] == k
+    return tl.where(sel, val2[:, None, :], dst3)
+
+
+@triton.jit
+def _thomas_pcr_scan_block4(
+    j00,
+    j01,
+    j02,
+    j03,
+    j10,
+    j11,
+    j12,
+    j13,
+    j20,
+    j21,
+    j22,
+    j23,
+    j30,
+    j31,
+    j32,
+    j33,
+    r0,
+    r1,
+    r2,
+    r3,
+    BLOCK_T: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    THOMAS_C: tl.constexpr,
+):
+    """Blocked 4×4 scan: sequential compose of ``THOMAS_C`` steps, then PCR.
+
+    ``THOMAS_C`` must divide ``BLOCK_T``. Intra-group Thomas is a loop of
+    length ``C`` on shape ``(T/C, D)``, not ``tl.range(BLOCK_T)``. Coarse
+    inclusive scan is ``tl.associative_scan`` of ``T/C`` monoid elements.
+    """
+    n_coarse: tl.constexpr = BLOCK_T // THOMAS_C
+    j00g = tl.reshape(j00, [n_coarse, THOMAS_C, BLOCK_D])
+    j01g = tl.reshape(j01, [n_coarse, THOMAS_C, BLOCK_D])
+    j02g = tl.reshape(j02, [n_coarse, THOMAS_C, BLOCK_D])
+    j03g = tl.reshape(j03, [n_coarse, THOMAS_C, BLOCK_D])
+    j10g = tl.reshape(j10, [n_coarse, THOMAS_C, BLOCK_D])
+    j11g = tl.reshape(j11, [n_coarse, THOMAS_C, BLOCK_D])
+    j12g = tl.reshape(j12, [n_coarse, THOMAS_C, BLOCK_D])
+    j13g = tl.reshape(j13, [n_coarse, THOMAS_C, BLOCK_D])
+    j20g = tl.reshape(j20, [n_coarse, THOMAS_C, BLOCK_D])
+    j21g = tl.reshape(j21, [n_coarse, THOMAS_C, BLOCK_D])
+    j22g = tl.reshape(j22, [n_coarse, THOMAS_C, BLOCK_D])
+    j23g = tl.reshape(j23, [n_coarse, THOMAS_C, BLOCK_D])
+    j30g = tl.reshape(j30, [n_coarse, THOMAS_C, BLOCK_D])
+    j31g = tl.reshape(j31, [n_coarse, THOMAS_C, BLOCK_D])
+    j32g = tl.reshape(j32, [n_coarse, THOMAS_C, BLOCK_D])
+    j33g = tl.reshape(j33, [n_coarse, THOMAS_C, BLOCK_D])
+    r0g = tl.reshape(r0, [n_coarse, THOMAS_C, BLOCK_D])
+    r1g = tl.reshape(r1, [n_coarse, THOMAS_C, BLOCK_D])
+    r2g = tl.reshape(r2, [n_coarse, THOMAS_C, BLOCK_D])
+    r3g = tl.reshape(r3, [n_coarse, THOMAS_C, BLOCK_D])
+    p00 = _at_k(j00g, 0, THOMAS_C)
+    p01 = _at_k(j01g, 0, THOMAS_C)
+    p02 = _at_k(j02g, 0, THOMAS_C)
+    p03 = _at_k(j03g, 0, THOMAS_C)
+    p10 = _at_k(j10g, 0, THOMAS_C)
+    p11 = _at_k(j11g, 0, THOMAS_C)
+    p12 = _at_k(j12g, 0, THOMAS_C)
+    p13 = _at_k(j13g, 0, THOMAS_C)
+    p20 = _at_k(j20g, 0, THOMAS_C)
+    p21 = _at_k(j21g, 0, THOMAS_C)
+    p22 = _at_k(j22g, 0, THOMAS_C)
+    p23 = _at_k(j23g, 0, THOMAS_C)
+    p30 = _at_k(j30g, 0, THOMAS_C)
+    p31 = _at_k(j31g, 0, THOMAS_C)
+    p32 = _at_k(j32g, 0, THOMAS_C)
+    p33 = _at_k(j33g, 0, THOMAS_C)
+    pu0 = _at_k(r0g, 0, THOMAS_C)
+    pu1 = _at_k(r1g, 0, THOMAS_C)
+    pu2 = _at_k(r2g, 0, THOMAS_C)
+    pu3 = _at_k(r3g, 0, THOMAS_C)
+    i00 = j00g * 0.0
+    i01 = j01g * 0.0
+    i02 = j02g * 0.0
+    i03 = j03g * 0.0
+    i10 = j10g * 0.0
+    i11 = j11g * 0.0
+    i12 = j12g * 0.0
+    i13 = j13g * 0.0
+    i20 = j20g * 0.0
+    i21 = j21g * 0.0
+    i22 = j22g * 0.0
+    i23 = j23g * 0.0
+    i30 = j30g * 0.0
+    i31 = j31g * 0.0
+    i32 = j32g * 0.0
+    i33 = j33g * 0.0
+    iu0 = r0g * 0.0
+    iu1 = r1g * 0.0
+    iu2 = r2g * 0.0
+    iu3 = r3g * 0.0
+    i00 = _put_k(i00, p00, 0, THOMAS_C)
+    i01 = _put_k(i01, p01, 0, THOMAS_C)
+    i02 = _put_k(i02, p02, 0, THOMAS_C)
+    i03 = _put_k(i03, p03, 0, THOMAS_C)
+    i10 = _put_k(i10, p10, 0, THOMAS_C)
+    i11 = _put_k(i11, p11, 0, THOMAS_C)
+    i12 = _put_k(i12, p12, 0, THOMAS_C)
+    i13 = _put_k(i13, p13, 0, THOMAS_C)
+    i20 = _put_k(i20, p20, 0, THOMAS_C)
+    i21 = _put_k(i21, p21, 0, THOMAS_C)
+    i22 = _put_k(i22, p22, 0, THOMAS_C)
+    i23 = _put_k(i23, p23, 0, THOMAS_C)
+    i30 = _put_k(i30, p30, 0, THOMAS_C)
+    i31 = _put_k(i31, p31, 0, THOMAS_C)
+    i32 = _put_k(i32, p32, 0, THOMAS_C)
+    i33 = _put_k(i33, p33, 0, THOMAS_C)
+    iu0 = _put_k(iu0, pu0, 0, THOMAS_C)
+    iu1 = _put_k(iu1, pu1, 0, THOMAS_C)
+    iu2 = _put_k(iu2, pu2, 0, THOMAS_C)
+    iu3 = _put_k(iu3, pu3, 0, THOMAS_C)
+    for k in tl.static_range(1, THOMAS_C):
+        e00 = _at_k(j00g, k, THOMAS_C)
+        e01 = _at_k(j01g, k, THOMAS_C)
+        e02 = _at_k(j02g, k, THOMAS_C)
+        e03 = _at_k(j03g, k, THOMAS_C)
+        e10 = _at_k(j10g, k, THOMAS_C)
+        e11 = _at_k(j11g, k, THOMAS_C)
+        e12 = _at_k(j12g, k, THOMAS_C)
+        e13 = _at_k(j13g, k, THOMAS_C)
+        e20 = _at_k(j20g, k, THOMAS_C)
+        e21 = _at_k(j21g, k, THOMAS_C)
+        e22 = _at_k(j22g, k, THOMAS_C)
+        e23 = _at_k(j23g, k, THOMAS_C)
+        e30 = _at_k(j30g, k, THOMAS_C)
+        e31 = _at_k(j31g, k, THOMAS_C)
+        e32 = _at_k(j32g, k, THOMAS_C)
+        e33 = _at_k(j33g, k, THOMAS_C)
+        er0 = _at_k(r0g, k, THOMAS_C)
+        er1 = _at_k(r1g, k, THOMAS_C)
+        er2 = _at_k(r2g, k, THOMAS_C)
+        er3 = _at_k(r3g, k, THOMAS_C)
+        (
+            p00,
+            p01,
+            p02,
+            p03,
+            p10,
+            p11,
+            p12,
+            p13,
+            p20,
+            p21,
+            p22,
+            p23,
+            p30,
+            p31,
+            p32,
+            p33,
+            pu0,
+            pu1,
+            pu2,
+            pu3,
+        ) = _compose_block4(
+            p00,
+            p01,
+            p02,
+            p03,
+            p10,
+            p11,
+            p12,
+            p13,
+            p20,
+            p21,
+            p22,
+            p23,
+            p30,
+            p31,
+            p32,
+            p33,
+            pu0,
+            pu1,
+            pu2,
+            pu3,
+            e00,
+            e01,
+            e02,
+            e03,
+            e10,
+            e11,
+            e12,
+            e13,
+            e20,
+            e21,
+            e22,
+            e23,
+            e30,
+            e31,
+            e32,
+            e33,
+            er0,
+            er1,
+            er2,
+            er3,
+        )
+        i00 = _put_k(i00, p00, k, THOMAS_C)
+        i01 = _put_k(i01, p01, k, THOMAS_C)
+        i02 = _put_k(i02, p02, k, THOMAS_C)
+        i03 = _put_k(i03, p03, k, THOMAS_C)
+        i10 = _put_k(i10, p10, k, THOMAS_C)
+        i11 = _put_k(i11, p11, k, THOMAS_C)
+        i12 = _put_k(i12, p12, k, THOMAS_C)
+        i13 = _put_k(i13, p13, k, THOMAS_C)
+        i20 = _put_k(i20, p20, k, THOMAS_C)
+        i21 = _put_k(i21, p21, k, THOMAS_C)
+        i22 = _put_k(i22, p22, k, THOMAS_C)
+        i23 = _put_k(i23, p23, k, THOMAS_C)
+        i30 = _put_k(i30, p30, k, THOMAS_C)
+        i31 = _put_k(i31, p31, k, THOMAS_C)
+        i32 = _put_k(i32, p32, k, THOMAS_C)
+        i33 = _put_k(i33, p33, k, THOMAS_C)
+        iu0 = _put_k(iu0, pu0, k, THOMAS_C)
+        iu1 = _put_k(iu1, pu1, k, THOMAS_C)
+        iu2 = _put_k(iu2, pu2, k, THOMAS_C)
+        iu3 = _put_k(iu3, pu3, k, THOMAS_C)
+    (
+        g00,
+        g01,
+        g02,
+        g03,
+        g10,
+        g11,
+        g12,
+        g13,
+        g20,
+        g21,
+        g22,
+        g23,
+        g30,
+        g31,
+        g32,
+        g33,
+        gu0,
+        gu1,
+        gu2,
+        gu3,
+    ) = tl.associative_scan(
+        (
+            p00,
+            p01,
+            p02,
+            p03,
+            p10,
+            p11,
+            p12,
+            p13,
+            p20,
+            p21,
+            p22,
+            p23,
+            p30,
+            p31,
+            p32,
+            p33,
+            pu0,
+            pu1,
+            pu2,
+            pu3,
+        ),
+        0,
+        _compose_block4,
+    )
+    offs_n = tl.arange(0, n_coarse)
+    first = offs_n[:, None] == 0
+    x00 = tl.where(first, 1.0, 0.0)
+    x01 = tl.zeros_like(p00)
+    x02 = tl.zeros_like(p00)
+    x03 = tl.zeros_like(p00)
+    x10 = tl.zeros_like(p00)
+    x11 = tl.where(first, 1.0, 0.0)
+    x12 = tl.zeros_like(p00)
+    x13 = tl.zeros_like(p00)
+    x20 = tl.zeros_like(p00)
+    x21 = tl.zeros_like(p00)
+    x22 = tl.where(first, 1.0, 0.0)
+    x23 = tl.zeros_like(p00)
+    x30 = tl.zeros_like(p00)
+    x31 = tl.zeros_like(p00)
+    x32 = tl.zeros_like(p00)
+    x33 = tl.where(first, 1.0, 0.0)
+    xu0 = tl.zeros_like(p00)
+    xu1 = tl.zeros_like(p00)
+    xu2 = tl.zeros_like(p00)
+    xu3 = tl.zeros_like(p00)
+    for n in tl.static_range(1, n_coarse):
+        sel_d = offs_n[:, None] == n
+        sel_s = offs_n[:, None] == (n - 1)
+        x00 = tl.where(sel_d, tl.sum(tl.where(sel_s, g00, 0.0), 0)[None, :], x00)
+        x01 = tl.where(sel_d, tl.sum(tl.where(sel_s, g01, 0.0), 0)[None, :], x01)
+        x02 = tl.where(sel_d, tl.sum(tl.where(sel_s, g02, 0.0), 0)[None, :], x02)
+        x03 = tl.where(sel_d, tl.sum(tl.where(sel_s, g03, 0.0), 0)[None, :], x03)
+        x10 = tl.where(sel_d, tl.sum(tl.where(sel_s, g10, 0.0), 0)[None, :], x10)
+        x11 = tl.where(sel_d, tl.sum(tl.where(sel_s, g11, 0.0), 0)[None, :], x11)
+        x12 = tl.where(sel_d, tl.sum(tl.where(sel_s, g12, 0.0), 0)[None, :], x12)
+        x13 = tl.where(sel_d, tl.sum(tl.where(sel_s, g13, 0.0), 0)[None, :], x13)
+        x20 = tl.where(sel_d, tl.sum(tl.where(sel_s, g20, 0.0), 0)[None, :], x20)
+        x21 = tl.where(sel_d, tl.sum(tl.where(sel_s, g21, 0.0), 0)[None, :], x21)
+        x22 = tl.where(sel_d, tl.sum(tl.where(sel_s, g22, 0.0), 0)[None, :], x22)
+        x23 = tl.where(sel_d, tl.sum(tl.where(sel_s, g23, 0.0), 0)[None, :], x23)
+        x30 = tl.where(sel_d, tl.sum(tl.where(sel_s, g30, 0.0), 0)[None, :], x30)
+        x31 = tl.where(sel_d, tl.sum(tl.where(sel_s, g31, 0.0), 0)[None, :], x31)
+        x32 = tl.where(sel_d, tl.sum(tl.where(sel_s, g32, 0.0), 0)[None, :], x32)
+        x33 = tl.where(sel_d, tl.sum(tl.where(sel_s, g33, 0.0), 0)[None, :], x33)
+        xu0 = tl.where(sel_d, tl.sum(tl.where(sel_s, gu0, 0.0), 0)[None, :], xu0)
+        xu1 = tl.where(sel_d, tl.sum(tl.where(sel_s, gu1, 0.0), 0)[None, :], xu1)
+        xu2 = tl.where(sel_d, tl.sum(tl.where(sel_s, gu2, 0.0), 0)[None, :], xu2)
+        xu3 = tl.where(sel_d, tl.sum(tl.where(sel_s, gu3, 0.0), 0)[None, :], xu3)
+    xb00 = x00[:, None, :]
+    xb01 = x01[:, None, :]
+    xb02 = x02[:, None, :]
+    xb03 = x03[:, None, :]
+    xb10 = x10[:, None, :]
+    xb11 = x11[:, None, :]
+    xb12 = x12[:, None, :]
+    xb13 = x13[:, None, :]
+    xb20 = x20[:, None, :]
+    xb21 = x21[:, None, :]
+    xb22 = x22[:, None, :]
+    xb23 = x23[:, None, :]
+    xb30 = x30[:, None, :]
+    xb31 = x31[:, None, :]
+    xb32 = x32[:, None, :]
+    xb33 = x33[:, None, :]
+    xbu0 = xu0[:, None, :]
+    xbu1 = xu1[:, None, :]
+    xbu2 = xu2[:, None, :]
+    xbu3 = xu3[:, None, :]
+    (
+        o00,
+        o01,
+        o02,
+        o03,
+        o10,
+        o11,
+        o12,
+        o13,
+        o20,
+        o21,
+        o22,
+        o23,
+        o30,
+        o31,
+        o32,
+        o33,
+        ou0,
+        ou1,
+        ou2,
+        ou3,
+    ) = _compose_block4(
+        xb00,
+        xb01,
+        xb02,
+        xb03,
+        xb10,
+        xb11,
+        xb12,
+        xb13,
+        xb20,
+        xb21,
+        xb22,
+        xb23,
+        xb30,
+        xb31,
+        xb32,
+        xb33,
+        xbu0,
+        xbu1,
+        xbu2,
+        xbu3,
+        i00,
+        i01,
+        i02,
+        i03,
+        i10,
+        i11,
+        i12,
+        i13,
+        i20,
+        i21,
+        i22,
+        i23,
+        i30,
+        i31,
+        i32,
+        i33,
+        iu0,
+        iu1,
+        iu2,
+        iu3,
+    )
+    return (
+        tl.reshape(o00, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o01, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o02, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o03, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o10, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o11, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o12, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o13, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o20, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o21, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o22, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o23, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o30, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o31, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o32, [BLOCK_T, BLOCK_D]),
+        tl.reshape(o33, [BLOCK_T, BLOCK_D]),
+        tl.reshape(ou0, [BLOCK_T, BLOCK_D]),
+        tl.reshape(ou1, [BLOCK_T, BLOCK_D]),
+        tl.reshape(ou2, [BLOCK_T, BLOCK_D]),
+        tl.reshape(ou3, [BLOCK_T, BLOCK_D]),
+    )
+
+
+@triton.jit
+def _scan_select_block4(
+    j00,
+    j01,
+    j02,
+    j03,
+    j10,
+    j11,
+    j12,
+    j13,
+    j20,
+    j21,
+    j22,
+    j23,
+    j30,
+    j31,
+    j32,
+    j33,
+    r0,
+    r1,
+    r2,
+    r3,
+    BLOCK_T: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    SEQ: tl.constexpr,
+    THOMAS_C: tl.constexpr,
+):
+    """Tile scan: Thomas+PCR, serial prefix, or ``tl.associative_scan``."""
+    if THOMAS_C >= 2:
+        return _thomas_pcr_scan_block4(
+            j00,
+            j01,
+            j02,
+            j03,
+            j10,
+            j11,
+            j12,
+            j13,
+            j20,
+            j21,
+            j22,
+            j23,
+            j30,
+            j31,
+            j32,
+            j33,
+            r0,
+            r1,
+            r2,
+            r3,
+            BLOCK_T,
+            BLOCK_D,
+            THOMAS_C,
+        )
+    if SEQ:
+        return _seq_scan_block4(
+            j00,
+            j01,
+            j02,
+            j03,
+            j10,
+            j11,
+            j12,
+            j13,
+            j20,
+            j21,
+            j22,
+            j23,
+            j30,
+            j31,
+            j32,
+            j33,
+            r0,
+            r1,
+            r2,
+            r3,
+            BLOCK_T,
+            BLOCK_D,
+        )
+    return tl.associative_scan(
+        (
+            j00,
+            j01,
+            j02,
+            j03,
+            j10,
+            j11,
+            j12,
+            j13,
+            j20,
+            j21,
+            j22,
+            j23,
+            j30,
+            j31,
+            j32,
+            j33,
+            r0,
+            r1,
+            r2,
+            r3,
+        ),
+        0,
+        _compose_block4,
     )
 
 
@@ -650,6 +1189,7 @@ def _slstm_cell_local_scan_kernel(
     BLOCK_D: tl.constexpr,
     LOG: tl.constexpr,
     SEQ: tl.constexpr,
+    THOMAS_C: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -804,100 +1344,53 @@ def _slstm_cell_local_scan_kernel(
     j31 = tl.where(mask, j31, 0.0)
     j32 = tl.where(mask, j32, 0.0)
     j33 = tl.where(mask, j33, 1.0)
-    if SEQ:
-        (
-            s00,
-            s01,
-            s02,
-            s03,
-            s10,
-            s11,
-            s12,
-            s13,
-            s20,
-            s21,
-            s22,
-            s23,
-            s30,
-            s31,
-            s32,
-            s33,
-            u0,
-            u1,
-            u2,
-            u3,
-        ) = _seq_scan_block4(
-            j00,
-            j01,
-            j02,
-            j03,
-            j10,
-            j11,
-            j12,
-            j13,
-            j20,
-            j21,
-            j22,
-            j23,
-            j30,
-            j31,
-            j32,
-            j33,
-            r0,
-            r1,
-            r2,
-            r3,
-            BLOCK_T,
-            BLOCK_D,
-        )
-    else:
-        (
-            s00,
-            s01,
-            s02,
-            s03,
-            s10,
-            s11,
-            s12,
-            s13,
-            s20,
-            s21,
-            s22,
-            s23,
-            s30,
-            s31,
-            s32,
-            s33,
-            u0,
-            u1,
-            u2,
-            u3,
-        ) = tl.associative_scan(
-            (
-                j00,
-                j01,
-                j02,
-                j03,
-                j10,
-                j11,
-                j12,
-                j13,
-                j20,
-                j21,
-                j22,
-                j23,
-                j30,
-                j31,
-                j32,
-                j33,
-                r0,
-                r1,
-                r2,
-                r3,
-            ),
-            0,
-            _compose_block4,
-        )
+    (
+        s00,
+        s01,
+        s02,
+        s03,
+        s10,
+        s11,
+        s12,
+        s13,
+        s20,
+        s21,
+        s22,
+        s23,
+        s30,
+        s31,
+        s32,
+        s33,
+        u0,
+        u1,
+        u2,
+        u3,
+    ) = _scan_select_block4(
+        j00,
+        j01,
+        j02,
+        j03,
+        j10,
+        j11,
+        j12,
+        j13,
+        j20,
+        j21,
+        j22,
+        j23,
+        j30,
+        j31,
+        j32,
+        j33,
+        r0,
+        r1,
+        r2,
+        r3,
+        BLOCK_T,
+        BLOCK_D,
+        SEQ,
+        THOMAS_C,
+    )
     _store_j_lane(
         j_loc_ptr, s00, pid_b, offs_t, offs_d, 0, mask, stride_jb, stride_jt, stride_jk, stride_jd
     )
@@ -1765,6 +2258,402 @@ def _slstm_apply_update_kernel(
     )
 
 
+@triton.jit
+def _slstm_window_walk_kernel(
+    s_ptr,
+    wx_ptr,
+    r_ptr,
+    h0_ptr,
+    time,
+    d_h,
+    eps,
+    omega,
+    n_tiles,
+    stride_sb,
+    stride_st,
+    stride_ss,
+    stride_sd,
+    stride_h0b,
+    stride_h0s,
+    stride_h0d,
+    stride_wb,
+    stride_wt,
+    stride_wd,
+    stride_rg,
+    stride_rd,
+    SLOT_C: tl.constexpr,
+    SLOT_N: tl.constexpr,
+    SLOT_M: tl.constexpr,
+    SLOT_H: tl.constexpr,
+    BLOCK_T: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    SEQ: tl.constexpr,
+    THOMAS_C: tl.constexpr,
+    MAX_ITERS: tl.constexpr,
+):
+    """Windowed Newton: sequential ``BLOCK_T`` tiles, solved-state carry in DRAM.
+
+    Grid is ``(B, n_dtiles)``. Each program walks time; diag mix is per-feature
+    so tiles of different ``d`` do not share a carry. Same contract as
+    ``chunk_len=BLOCK_T``: K Newton steps on a tile, then the next tile reads
+    the solved last state as ``h_{t-1}``.
+    """
+    pid_b = tl.program_id(0)
+    pid_d = tl.program_id(1)
+    d0 = pid_d * BLOCK_D
+    offs_d = d0 + tl.arange(0, BLOCK_D)
+    dmask = offs_d < d_h
+    r_i = _load_r_gate(r_ptr, 0, offs_d, dmask, stride_rg, stride_rd)
+    r_f = _load_r_gate(r_ptr, 1, offs_d, dmask, stride_rg, stride_rd)
+    r_z = _load_r_gate(r_ptr, 2, offs_d, dmask, stride_rg, stride_rd)
+    r_o = _load_r_gate(r_ptr, 3, offs_d, dmask, stride_rg, stride_rd)
+    c0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_C, dmask, stride_h0b, stride_h0s, stride_h0d)
+    n0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_N, dmask, stride_h0b, stride_h0s, stride_h0d)
+    m0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_M, dmask, stride_h0b, stride_h0s, stride_h0d)
+    h0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_H, dmask, stride_h0b, stride_h0s, stride_h0d)
+    for pid_c in tl.range(n_tiles):
+        t0 = pid_c * BLOCK_T
+        offs_t = t0 + tl.arange(0, BLOCK_T)
+        mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
+        zi, zf, zz, zo = _load_wx(
+            wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd
+        )
+        for _it in tl.static_range(MAX_ITERS):
+            c = _load_state(
+                s_ptr,
+                pid_b,
+                offs_t,
+                offs_d,
+                SLOT_C,
+                mask,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+            n = _load_state(
+                s_ptr,
+                pid_b,
+                offs_t,
+                offs_d,
+                SLOT_N,
+                mask,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+            m = _load_state(
+                s_ptr,
+                pid_b,
+                offs_t,
+                offs_d,
+                SLOT_M,
+                mask,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+            h = _load_state(
+                s_ptr,
+                pid_b,
+                offs_t,
+                offs_d,
+                SLOT_H,
+                mask,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+            offs_tm1 = offs_t - 1
+            mask_prev = (
+                (offs_tm1[:, None] >= 0) & (offs_tm1[:, None] < time) & (offs_d[None, :] < d_h)
+            )
+            c_prev = _load_state(
+                s_ptr,
+                pid_b,
+                offs_tm1,
+                offs_d,
+                SLOT_C,
+                mask_prev,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+            n_prev = _load_state(
+                s_ptr,
+                pid_b,
+                offs_tm1,
+                offs_d,
+                SLOT_N,
+                mask_prev,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+            m_prev = _load_state(
+                s_ptr,
+                pid_b,
+                offs_tm1,
+                offs_d,
+                SLOT_M,
+                mask_prev,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+            h_prev = _load_state(
+                s_ptr,
+                pid_b,
+                offs_tm1,
+                offs_d,
+                SLOT_H,
+                mask_prev,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+            is_t0 = (offs_t == 0)[:, None]
+            c_prev = tl.where(is_t0, c0[None, :], c_prev)
+            n_prev = tl.where(is_t0, n0[None, :], n_prev)
+            m_prev = tl.where(is_t0, m0[None, :], m_prev)
+            h_prev = tl.where(is_t0, h0[None, :], h_prev)
+            (
+                c_new,
+                n_new,
+                m_new,
+                h_new,
+                j00,
+                j01,
+                j02,
+                j03,
+                j10,
+                j11,
+                j12,
+                j13,
+                j20,
+                j21,
+                j22,
+                j23,
+                j30,
+                j31,
+                j32,
+                j33,
+            ) = _slstm_pred_j(
+                c_prev, n_prev, m_prev, h_prev, zi, zf, zz, zo, r_i, r_f, r_z, r_o, eps
+            )
+            r0 = tl.where(mask, c_new - c, 0.0)
+            r1 = tl.where(mask, n_new - n, 0.0)
+            r2 = tl.where(mask, m_new - m, 0.0)
+            r3 = tl.where(mask, h_new - h, 0.0)
+            j00 = tl.where(mask, j00, 1.0)
+            j01 = tl.where(mask, j01, 0.0)
+            j02 = tl.where(mask, j02, 0.0)
+            j03 = tl.where(mask, j03, 0.0)
+            j10 = tl.where(mask, j10, 0.0)
+            j11 = tl.where(mask, j11, 1.0)
+            j12 = tl.where(mask, j12, 0.0)
+            j13 = tl.where(mask, j13, 0.0)
+            j20 = tl.where(mask, j20, 0.0)
+            j21 = tl.where(mask, j21, 0.0)
+            j22 = tl.where(mask, j22, 1.0)
+            j23 = tl.where(mask, j23, 0.0)
+            j30 = tl.where(mask, j30, 0.0)
+            j31 = tl.where(mask, j31, 0.0)
+            j32 = tl.where(mask, j32, 0.0)
+            j33 = tl.where(mask, j33, 1.0)
+            (
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                u0,
+                u1,
+                u2,
+                u3,
+            ) = _scan_select_block4(
+                j00,
+                j01,
+                j02,
+                j03,
+                j10,
+                j11,
+                j12,
+                j13,
+                j20,
+                j21,
+                j22,
+                j23,
+                j30,
+                j31,
+                j32,
+                j33,
+                r0,
+                r1,
+                r2,
+                r3,
+                BLOCK_T,
+                BLOCK_D,
+                SEQ,
+                THOMAS_C,
+            )
+            _store_state(
+                s_ptr,
+                c + omega * u0,
+                pid_b,
+                offs_t,
+                offs_d,
+                SLOT_C,
+                mask,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+            _store_state(
+                s_ptr,
+                n + omega * u1,
+                pid_b,
+                offs_t,
+                offs_d,
+                SLOT_N,
+                mask,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+            _store_state(
+                s_ptr,
+                m + omega * u2,
+                pid_b,
+                offs_t,
+                offs_d,
+                SLOT_M,
+                mask,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+            _store_state(
+                s_ptr,
+                h + omega * u3,
+                pid_b,
+                offs_t,
+                offs_d,
+                SLOT_H,
+                mask,
+                stride_sb,
+                stride_st,
+                stride_ss,
+                stride_sd,
+            )
+
+
+def _parse_scan_tile(scan_tile: str) -> tuple[int, bool]:
+    """Return ``(thomas_c, seq)``. ``thomas_c=0`` is assoc or seq."""
+    if scan_tile == "assoc":
+        return 0, False
+    if scan_tile == "seq":
+        return 0, True
+    if scan_tile in ("thomas", "thomas4"):
+        return 4, False
+    if scan_tile == "thomas2":
+        return 2, False
+    raise ValueError(f"unknown scan_tile {scan_tile!r}; use assoc, seq, thomas, thomas2, thomas4")
+
+
+def _slstm_fused_windows(
+    wx: Tensor,
+    r: Tensor,
+    states: Tensor,
+    h0: Tensor,
+    *,
+    max_iters: int,
+    omega: float,
+    eps: float,
+    scan_tile: str,
+    window_len: int,
+) -> Tensor:
+    """In-kernel windowed Newton: ``window_len`` tiles, solved-state DRAM carry.
+
+    Same contract as ``chunk_len=window_len``: each window is a full K-step
+    Newton; the next tile reads the solved last state as ``h_{t-1}``. One
+    launch walks T. ``window_len`` is Triton ``BLOCK_T`` (32 / 64 / 128).
+    """
+    if window_len not in FUSED_WINDOW_LENS:
+        raise ValueError(f"window_len must be one of {FUSED_WINDOW_LENS}, got {window_len}")
+    batch, time, _four = wx.shape
+    d_h = r.shape[-1]
+    n_chunks, n_dtiles = time_tiles(
+        time,
+        d_h,
+        window_len,
+        _BLOCK_D,
+        _CHUNK_PAD,
+        cap_suffix=(f" (T≤{window_len * _CHUNK_PAD}). Shrink CHUNK_D or raise CHUNK_PAD."),
+    )
+    thomas_c, seq = _parse_scan_tile(scan_tile)
+    log.debug(
+        "newton_slstm_fused_windows",
+        extra={
+            "seq_len": time,
+            "batch": batch,
+            "d_h": d_h,
+            "n_tiles": n_chunks,
+            "window_len": window_len,
+            "newton_iters": max_iters,
+            "scan_tile": scan_tile,
+            "device": str(wx.device),
+            "dtype": str(wx.dtype),
+        },
+    )
+    _slstm_window_walk_kernel[(batch, n_dtiles)](
+        states,
+        wx,
+        r,
+        h0,
+        time,
+        d_h,
+        float(eps),
+        float(omega),
+        n_chunks,
+        *states.stride(),
+        *h0.stride(),
+        *wx.stride(),
+        *r.stride(),
+        SLOT_C=SLSTM_CELL,
+        SLOT_N=SLSTM_NORMALIZER,
+        SLOT_M=SLSTM_STABILIZER,
+        SLOT_H=SLSTM_HIDDEN,
+        BLOCK_T=window_len,
+        BLOCK_D=_BLOCK_D,
+        SEQ=seq,
+        THOMAS_C=thomas_c,
+        MAX_ITERS=max_iters,
+    )
+    return states
+
+
 def newton_slstm_fused(
     wx: Tensor,
     r: Tensor,
@@ -1776,6 +2665,8 @@ def newton_slstm_fused(
     states: Tensor | None = None,
     log_coords: bool = False,
     scan_tile: str = "assoc",
+    time_loop: bool = False,
+    window_len: int | None = None,
 ) -> Tensor:
     """Alg. 1 for diag-mix ParaSLSTM. ``wx`` is ``W_x(x)`` with shape ``(B, T, 4 d_h)``.
 
@@ -1783,7 +2674,12 @@ def newton_slstm_fused(
     shape ``(B, 4, d_h)``. ``states`` is the Newton guess (zero-hidden init);
     if omitted, App. A ``f(0, x_t)`` is used. ``log_coords`` runs Newton in
     ``(u, log n, m, h)`` and returns native ``(c, n, m, h)``.
-    ``scan_tile='seq'`` is a serial ``tl.range`` prefix (ablation).
+    ``scan_tile``: ``'assoc'`` (default PCR), ``'seq'`` (serial tile prefix),
+    ``'thomas'`` / ``'thomas4'`` (C=4 sequential compose then PCR of T/C),
+    ``'thomas2'`` (C=2). Default stays assoc until a bench on this GPU
+    prefers Thomas. ``time_loop``: in-kernel windowed Newton (carry in DRAM).
+    ``window_len``: 32, 64 (default), or 128 — Triton scan length per window.
+    64 from T=1024 d_h=256 P=3 vs sequential ~2e-4 (this repo); 32 residual_high.
     """
     from pararnn.solvers.slstm_log import (
         slstm_clamp_log_coords,
@@ -1849,24 +2745,40 @@ def newton_slstm_fused(
         if log_coords:
             return slstm_decode_log(states, eps=float(eps))
         return states
+    work, h0_work = fp32_newton_work(states, h0)
+    if time_loop:
+        if log_coords:
+            raise TypeError("fused_time_loop is native coords only")
+        work = _slstm_fused_windows(
+            wx,
+            r,
+            work,
+            h0_work,
+            max_iters=max_iters,
+            omega=omega,
+            eps=eps,
+            scan_tile=scan_tile,
+            window_len=int(window_len) if window_len is not None else FUSED_WINDOW_DEFAULT,
+        )
+        if work.dtype != wx.dtype:
+            return work.to(dtype=wx.dtype)
+        return work
 
-    j_loc = states.new_empty(batch, time, 16, d_h)
-    r_loc = states.new_empty(batch, time, SLSTM_SLOTS, d_h)
+    j_loc = work.new_empty(batch, time, 16, d_h)
+    r_loc = work.new_empty(batch, time, SLSTM_SLOTS, d_h)
     agg_j = j_loc.new_empty(batch, n_chunks, 16, d_h)
     agg_r = r_loc.new_empty(batch, n_chunks, SLSTM_SLOTS, d_h)
     incl_r = r_loc.new_empty(batch, n_chunks, SLSTM_SLOTS, d_h) if n_chunks > 1 else None
     omega_f = float(omega)
-    states32, r32 = alloc_fp32_update(states, r_loc, n_chunks)
-    if scan_tile not in ("assoc", "seq"):
-        raise ValueError(f"unknown scan_tile {scan_tile!r}")
-    seq = scan_tile == "seq"
+    states32, r32 = alloc_fp32_update(work, r_loc, n_chunks)
+    thomas_c, seq = _parse_scan_tile(scan_tile)
 
     for it in range(max_iters):
         _slstm_cell_local_scan_kernel[grid_td](
-            states,
+            work,
             wx,
             r,
-            h0,
+            h0_work,
             j_loc,
             r_loc,
             agg_j,
@@ -1874,8 +2786,8 @@ def newton_slstm_fused(
             time,
             d_h,
             float(eps),
-            *states.stride(),
-            *h0.stride(),
+            *work.stride(),
+            *h0_work.stride(),
             *wx.stride(),
             *r.stride(),
             *j_loc.stride(),
@@ -1890,9 +2802,10 @@ def newton_slstm_fused(
             BLOCK_D=_BLOCK_D,
             LOG=log_coords,
             SEQ=seq,
+            THOMAS_C=thomas_c,
         )
         if states32 is not None and r32 is not None:
-            fp32_omega_add(states, r_loc, omega_f, states32, r32)
+            fp32_omega_add(work, r_loc, omega_f, states32, r32)
         else:
             _chunk_incl_kernel[(batch, n_dtiles_chunk)](
                 agg_j,
@@ -1907,14 +2820,14 @@ def newton_slstm_fused(
                 BLOCK_D=_CHUNK_D,
             )
             _slstm_apply_update_kernel[grid_td](
-                states,
+                work,
                 j_loc,
                 r_loc,
                 incl_r,
                 time,
                 d_h,
                 float(omega),
-                *states.stride(),
+                *work.stride(),
                 *j_loc.stride(),
                 *r_loc.stride(),
                 *incl_r.stride(),
@@ -1926,7 +2839,7 @@ def newton_slstm_fused(
                 BLOCK_D=_BLOCK_D,
             )
         if log_coords:
-            states = slstm_clamp_log_coords(states)
+            work = slstm_clamp_log_coords(work)
         log_fused_iter(
             log,
             "newton_slstm_fused_iter",
@@ -1946,7 +2859,10 @@ def newton_slstm_fused(
         n_chunks=n_chunks,
         log_coords=log_coords,
         scan_tile=scan_tile,
+        acc_dtype=str(work.dtype),
     )
     if log_coords:
-        states = slstm_decode_log(states, eps=float(eps))
-    return states
+        work = slstm_decode_log(work, eps=float(eps))
+    if work.dtype != wx.dtype:
+        return work.to(dtype=wx.dtype)
+    return work
