@@ -30,9 +30,9 @@ outputs/
 docs/papers/*.pdf
 third_party/ml-pararnn/
 
-# lab notes, paper drafts, reviewer audits (keep on disk, not in clones)
+# lab notes, paper drafts, reviewer audits, agent rules (keep on disk, not in clones)
 docs/internal/
-.cursor/rules/git-unsigned.mdc
+.cursor/
 
 # editor
 .idea/

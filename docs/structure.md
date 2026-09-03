@@ -19,7 +19,6 @@ Three layers, mapped to **existing** dirs (not a rename of working imports):
 
 ```
 ParaRNN/
-├── .cursor/rules/              # agent conventions (uv, MLflow, citations, Apple license)
 ├── docs/                       # public notes (see docs/README.md)
 │   ├── literature.md           # annotated bibliography
 │   ├── apple-ml-pararnn.md     # notes on the official repo

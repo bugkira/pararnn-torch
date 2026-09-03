@@ -88,4 +88,4 @@ Bibliography: [`docs/literature.md`](docs/literature.md). Layout / sLSTM notes: 
 
 ## License
 
-`src/`, `tests/`, `configs/` — MIT, [LICENSE](LICENSE). Do not copy `third_party/ml-pararnn` (Apple license, gitignored); clone with [`third_party/README.md`](third_party/README.md).
+`src/`, `tests/`, `configs/` — MIT, [LICENSE](LICENSE). Apple's CUDA at [`apple/ml-pararnn`](https://github.com/apple/ml-pararnn) is a separate custom license; do not copy it into this tree.

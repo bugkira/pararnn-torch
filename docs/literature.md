@@ -1,6 +1,6 @@
 # Literature
 
-PDFs: `bash scripts/fetch_papers.sh` → `docs/papers/`. This is the working set for cells, solvers, hybrid PC, and later evals. Hyperparameters in configs must point here (see `.cursor/rules/hyperparameters.mdc`).
+PDFs: `bash scripts/fetch_papers.sh` → `docs/papers/`. This is the working set for cells, solvers, hybrid PC, and later evals. Hyperparameters in configs must cite a paper or a measured ablation in this repo.
 
 ## Core algorithm
 
