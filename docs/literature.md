@@ -35,7 +35,7 @@ No paper found that already does **Mamba scan as Newton warm-start for a nonline
 
 ## Training-scale knobs (when we train LMs)
 
-From ParaRNN §5.2 and App. C (cite these, do not invent):
+From ParaRNN §5.2 and App. C:
 
 - Dataset: SlimPajama minus Books3.
 - Optimizer: AdamW, detached weight decay, cosine LR, 10% warmup, decay to **0** ([Bergsma et al. 2025](https://arxiv.org/abs/2502.15938)).
@@ -44,20 +44,12 @@ From ParaRNN §5.2 and App. C (cite these, do not invent):
 - Architecture: DCLM Transformer backbone, attention swapped for the RNN cell, plus Mamba causal conv + gated residual.
 - Synthetic tasks (parity, k-hop): AdamW \(\beta=(0.9,0.999)\), cosine LR \(5\times10^{-4}\), wd \(10^{-6}\), batch 16, \(L=100\), clip \(\|a\|,\|c\|\le 0.90\) except parity.
 
-Table 3 in the PDF has per-scale LR / wd / width / depth. Copy from the paper into `configs/` when we train, not from memory.
+Table 3 in the PDF has per-scale LR / wd / width / depth. Copy from the paper into `configs/` when training.
 
-## Use cases in the README (eval later, not v0)
+## Later eval
 
-| Topic | Pointer | Honest take |
+| Topic | Pointer | Take |
 |---|---|---|
-| Virtual analog / guitar amps | Wright-style LSTM snapshots; [2403.08559](https://arxiv.org/abs/2403.08559); NAM | Sequential LSTM-32 is already the production baseline (real-time, ESR). ParaRNN helps **training** long audio, not a free accuracy win. |
-| Nested / automata / code | Merrill 2024; Dyck literature | Nonlinear RNNs are the theoretically motivated tool; Transformers win needle-in-haystack. README star table must not claim 100k retrieval. This repo: Z2 tagging smoke in `examples/parity.py` (last-token 1.0 vs S4D-Real SSM chance; not A5). |
-| Robotics / Hodgkin–Huxley | Neural ODE + DEER | Same Newton-on-a-path idea; different cells. Out of v0. |
-
-## Corrections to the draft README
-
-1. Apple's Newton guess is \(f(0,x_l)\), not \(H=0\).
-2. Apple already ships ParaGRU/ParaLSTM + CUDA PCR. Our gap is HF, CPU/PyTorch prototype, logging, hybrid PC, IFT.
-3. `pip` / MIT wrapping of Apple code is wrong; we use **uv** and reimplement.
-4. 665× is vs **naive sequential**, not vs Mamba. Fused ParaGRU is ~2.6× vs Mamba at \(L=2^9\) (paper §5.1).
-5. **Multi-GPU:** data-parallel SGD works for sequential FlashRNN and for Newton. Sequence-parallel *time* tiles need an associative scan carry (this repo: `scan_diag_two_ranks`, two streams on one GPU — not a cluster result). Informal “FlashRNN cannot use many cards” is DDP-false.
+| Virtual analog / guitar amps | Wright-style LSTM snapshots; [2403.08559](https://arxiv.org/abs/2403.08559); NAM | Sequential LSTM-32 is the production baseline (real-time, ESR). ParaRNN helps **training** long audio. |
+| Nested / automata / code | Merrill 2024; Dyck literature | Nonlinear RNNs are the theoretically motivated tool; Transformers win needle-in-haystack. Z2 tagging smoke: `examples/parity.py`. |
+| Robotics / Hodgkin–Huxley | Neural ODE + DEER | Same Newton-on-a-path idea; different cells. |
