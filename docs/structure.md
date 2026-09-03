@@ -27,9 +27,6 @@ ParaRNN/
 │   ├── structure.md            # this file
 │   ├── papers/                 # PDFs via scripts/fetch_papers.sh (gitignored)
 │   └── internal/               # lab notes; gitignored, not in clones
-├── third_party/
-│   ├── README.md               # how to clone Apple's repo
-│   └── ml-pararnn/             # local clone, gitignored
 ├── src/pararnn/                # our package (import: pararnn)
 │   ├── cells/                  # ParaGRU (diag), ParaLSTM (CIFG), ParaSLSTM
 │   ├── layers/                 # ParaRNN nn.Module (train Newton / eval sequential)

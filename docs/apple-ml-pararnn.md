@@ -1,6 +1,6 @@
 # Official Apple repo (`apple/ml-pararnn`)
 
-Local clone: `third_party/ml-pararnn` (gitignored). Re-fetch: see `third_party/README.md`.
+Public reference: [github.com/apple/ml-pararnn](https://github.com/apple/ml-pararnn). This package reimplements the paper; it does not vendor their sources.
 
 ## License (blocking)
 

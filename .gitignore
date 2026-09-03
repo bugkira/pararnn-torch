@@ -26,9 +26,11 @@ mlflow.db
 wandb/
 outputs/
 
-# papers and Apple clone (local only)
+# papers (local only)
 docs/papers/*.pdf
-third_party/ml-pararnn/
+
+# Apple's official clone, if you keep one locally
+third_party/
 
 # lab notes, paper drafts, reviewer audits, agent rules (keep on disk, not in clones)
 docs/internal/

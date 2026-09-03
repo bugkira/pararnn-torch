@@ -2,7 +2,7 @@
 
 Where the eager PyTorch Newton+scan actually spends time and memory on this box, what is worth changing, and how sure we are. Effects are relative to this 2080 Ti prototype, **not** to Danieli et al. fig. 2/5 (A100 + fused CUDA).
 
-Do not switch to the 3060 to dodge OOM. Do not copy `third_party/ml-pararnn` kernels.
+Do not switch to the 3060 to dodge OOM. Do not copy kernels from Apple's repo.
 
 Rows are ordered by **priority**: (impact on training or honest numbers) × (confidence) × (cheapness). “Done” is the same rule, not chronological.
 

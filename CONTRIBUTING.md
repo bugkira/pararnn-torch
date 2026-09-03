@@ -23,9 +23,9 @@ CUDA-marked tests (`-m cuda`) exercise fused/Triton paths and require a GPU. A g
 
 Any command that records timings or memory must set `CUDA_DEVICE_ORDER=PCI_BUS_ID`. The CUDA runtime defaults to `FASTEST_FIRST`, so device index 0 in PyTorch may not match `nvidia-smi` index 0.
 
-## Apple reference code
+## Apple reference
 
-`third_party/ml-pararnn` is Apple's read-only reference ([custom license](https://github.com/apple/ml-pararnn)). Clone it per [`third_party/README.md`](third_party/README.md) for comparison only. Do not copy, translate, or paste Apple code into `src/`.
+This library is a reimplementation from [Danieli et al.](https://arxiv.org/abs/2510.21450), not a wrapper around [`apple/ml-pararnn`](https://github.com/apple/ml-pararnn) (custom license, not MIT). Do not copy, translate, or paste that code into `src/`.
 
 ## Numerics
 
