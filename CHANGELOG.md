@@ -4,6 +4,18 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Removed
+
+- Public `xLSTMBlock` (it was LayerNorm + residual around `ParaRNN(ParaSLSTM)`, not a second sLSTM cell). Use `ParaRNN(ParaSLSTM(...))` in the library; LN/FFN stacking is the caller's, or `examples/xlstm_hybrid.py` for an NX-AI `sLSTMBlock` around the same cell.
+
+### Added
+
+- `examples/xlstm_hybrid.py`: NX-AI pre-norm / skip / FFN with `ParaRNN(ParaSLSTM mix='diag')` in the recurrent slot. Install NX-AI `xlstm` separately (`uv add xlstm`; Python 3.11+).
+
+### Changed
+
+- `ParaSLSTM`: `mix='diag'` remains the fused default. `mix='head'` warns as an unfused ablation (`scan_dense`). `mix='dense'` raises if `hidden_size > 8` (Jacobian oracle for tests).
+
 ## [0.4.0] - 2026-09-03
 
 ### Added

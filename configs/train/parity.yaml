@@ -1,4 +1,4 @@
-# Running parity (Z2 word problem) smoke: stacked xLSTMBlock vs sequential
+# Running parity (Z2 word problem) smoke: stacked ParaSLSTM vs sequential
 # same cell vs a trained diagonal SSM. Not FlashRNN heads. Not TinyStories.
 #
 # Task: Merrill et al. 2024 §5 token-tagging — label at t is the product of
@@ -51,7 +51,7 @@ mlflow_experiment: state-tracking
 mlflow_run_name: parity-xlstm-vs-ssm
 
 why: |
-  Quality of mix=diag, not solver ms. Stacked xLSTMBlock (pre-norm + residual)
+  Quality of mix=diag, not solver ms. Stacked ParaSLSTM (local pre-norm + residual)
   on Z2 tagging (Merrill §5, running XOR). Newton vs sequential same cell vs
   a trained S4D-Real selective SSM (Gu & Dao Δ∈[1e-3,1e-1]; scan_diag eager
   for Autograd). Not mamba-ssm. Not FlashRNN. 2080 Ti. App. C synthetic

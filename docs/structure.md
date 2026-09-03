@@ -4,7 +4,7 @@ One trunk (`main`). Three layers:
 
 1. **Ops** — `src/pararnn/kernels/`: Triton fused Newton and scans, selected with `NewtonConfig(scan_backend=)`.
 2. **Modules** — `cells/` is \(f\) (`step`); `solvers/` is Alg. 1; `layers/ParaRNN` is the sequence `nn.Module` (Newton in `.train()`, sequential in `.eval()`).
-3. **Integrations** — `examples/`, `scripts/`, `models/xLSTMBlock` (pre-norm residual around ParaSLSTM).
+3. **Integrations** — `examples/`, `scripts/`. Residual / FFN stacking lives in examples (`parity.py`, `xlstm_hybrid.py`).
 
 ```
 ParaRNN/
@@ -17,8 +17,7 @@ ParaRNN/
 │   ├── solvers/                # sequential, Newton, scan, VJP
 │   ├── kernels/                # Triton scans + fused Newton
 │   ├── layout.py
-│   ├── weight_init.py          # App. C.1
-│   └── models/                 # xLSTMBlock
+│   └── weight_init.py          # App. C.1
 ├── examples/
 ├── tests/
 │   ├── unit/
@@ -31,7 +30,7 @@ ParaRNN/
 
 ## Current surface (0.4)
 
-`NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` and residual early-stop (`NewtonDivergenceError` if max|F|>1 after K). `ParaRNN` takes a cell or a list, `return_hidden`, LSTM `output_hidden`. **ParaSLSTM** `mix='diag'` (fused 4×4) and `mix='head'` (eager `scan_dense`). **xLSTMBlock**: pre-norm + residual, `solver="auto"|"newton"|"sequential"`. Examples: copy, Dyck-1, Z2 parity. Two-tile scan: `scan_diag_two_ranks`.
+`NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` and residual early-stop (`NewtonDivergenceError` if max|F|>1 after K). `ParaRNN` takes a cell or a list, `return_hidden`, LSTM `output_hidden`. **ParaSLSTM** `mix='diag'` is the fused 4×4 path; `mix='head'` is an unfused ablation (`scan_dense`); `mix='dense'` is a `d_h<=8` test oracle. Examples: copy, Dyck-1, Z2 parity, NX-AI `sLSTMBlock` hybrid. Two-tile scan: `scan_diag_two_ranks`.
 
 ## Naming
 

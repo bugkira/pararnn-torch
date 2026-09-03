@@ -4,9 +4,10 @@
     uv run python examples/slstm_vs_flashrnn.py --config configs/train/dyck_vs_flashrnn.yaml
     uv run python examples/slstm_vs_flashrnn.py --config configs/train/dyck_vs_flashrnn_head.yaml
 
-FlashRNN stays in this example / ``scripts/``, not ``xLSTMBlock``. Turing
-has no ``cuda_fused`` (CC 8.0); this run uses ``triton_fused``. Head config
-is mix=head, n_heads=1, K=4 — same 1×32 mixing as FlashRNN, not fused diag.
+FlashRNN stays in this example / ``scripts/``, not the library cell. Turing
+has no ``cuda_fused`` (CC 8.0); this run uses ``triton_fused``. The head
+config is an ablation: mix=head, n_heads=1, K=4 — same 1×32 mixing as
+FlashRNN, not the fused diag cell.
 """
 
 from __future__ import annotations

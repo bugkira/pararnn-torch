@@ -1,9 +1,12 @@
 """sLSTM (Beck et al. 2024) as a Newton cell.
 
 State ``(..., 4, hidden_size)`` = (c, n, m, h). Stabilizer ``max``, exp
-input/forget, normalizer ``n``, memory mixing ``R h``. ``mix='diag'`` is
-channelwise (fused Newton). ``mix='head'`` is dense ``R`` inside a head,
-block-diagonal across heads. ``mix='dense'`` mixes the full width.
+input/forget, normalizer ``n``, memory mixing ``R h``.
+
+``mix='diag'`` is the fused path: channelwise ``R``, 4×4 Jacobian per
+feature, Triton Newton. ``mix='head'`` is Beck-style dense ``R`` inside a
+head (unfused ``scan_dense``); kept as an ablation, not a training default.
+``mix='dense'`` is a full-width ``R`` oracle for tests (``hidden_size`` cap).
 
 Newton init is the ``R h = 0`` unroll (running ``m``/``n``). Recurrent mix
 is exactly one of ``R`` / ``R_dense`` / ``R_head``.
@@ -11,6 +14,8 @@ is exactly one of ``R`` / ``R_dense`` / ``R_head``.
 
 from __future__ import annotations
 
+import logging
+import warnings
 from typing import NamedTuple
 
 import torch
@@ -26,8 +31,17 @@ from pararnn.layout import (
 )
 from pararnn.weight_init import kaiming_uniform_linear_, xavier_gaussian_vec_
 
+log = logging.getLogger(__name__)
+
 _MIX = ("diag", "dense", "head")
 _JAC = {"diag": "block4", "dense": "dense", "head": "head"}
+# Full-width J is (4 d_h)×(4 d_h). Cap so mix='dense' stays a unit-test oracle
+# (autograd vs analytic), not a training width. Scan compose is O((4 d_h)³).
+DENSE_MAX_HIDDEN = 8
+_HEAD_ABLATION_WARN = (
+    "mix='head' is an unfused ablation (dense per-head R, scan_dense). "
+    "Fused training uses mix='diag'."
+)
 
 
 class ParaSLSTM(nn.Module):
@@ -35,7 +49,9 @@ class ParaSLSTM(nn.Module):
 
     ``max_recurrent_norm`` is an App. C.1 elementwise clamp of recurrent
     mix entries. ``eps`` floors ``n`` in
-    ``h = o * c / n``. ``mix='head'`` needs ``n_heads`` dividing ``hidden_size``.
+    ``h = o * c / n``. ``mix='head'`` needs ``n_heads`` dividing ``hidden_size``
+    and emits an ablation warning. ``mix='dense'`` requires
+    ``hidden_size <= DENSE_MAX_HIDDEN``.
     Recurrent mix: ``R`` (diag), ``R_head`` (head), or ``R_dense`` (dense).
     """
 
@@ -81,6 +97,12 @@ class ParaSLSTM(nn.Module):
         elif mix == "dense":
             if n_heads is not None:
                 raise ValueError("n_heads is only for mix='head'")
+            if hidden_size > DENSE_MAX_HIDDEN:
+                raise ValueError(
+                    "mix='dense' is a Jacobian oracle for tests "
+                    f"(hidden_size <= {DENSE_MAX_HIDDEN}); got hidden_size={hidden_size}. "
+                    "Use mix='diag'."
+                )
             self.R_dense = nn.Linear(hidden_size, 4 * hidden_size, bias=False, **factory_kwargs)
         else:
             if n_heads is None or n_heads < 1 or hidden_size % n_heads != 0:
@@ -91,6 +113,13 @@ class ParaSLSTM(nn.Module):
             self.d_head = hidden_size // n_heads
             self.R_head = nn.Parameter(
                 torch.empty(4, n_heads, self.d_head, self.d_head, **factory_kwargs)
+            )
+            warnings.warn(_HEAD_ABLATION_WARN, UserWarning, stacklevel=2)
+            log.warning(
+                "slstm_mix_head_ablation hidden_size=%d n_heads=%d d_head=%d",
+                hidden_size,
+                n_heads,
+                self.d_head,
             )
         self.reset_parameters()
 

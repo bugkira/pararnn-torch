@@ -1,5 +1,6 @@
-# Dyck-1 train: ParaSLSTM mix=head vs FlashRNN (same 1×32 mixing).
-# Not fused (head J is 4 d_head × 4 d_head, not 4×4 SRAM). Turing: auto →
+# Dyck-1 train: ParaSLSTM mix=head ablation vs FlashRNN (same 1×32 mixing).
+# Unfused: head J is 4 d_head × 4 d_head, not 4×4 SRAM. Production training
+# is mix='diag' (configs/train/dyck_vs_flashrnn.yaml). Turing: auto →
 # triton scan + step, or eager. FlashRNN stays sequential triton_fused.
 
 task: dyck1

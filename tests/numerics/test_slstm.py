@@ -42,6 +42,9 @@ from pararnn.solvers.slstm_picard import (
 
 log = logging.getLogger(__name__)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:mix='head' is an unfused ablation:UserWarning"
+)
 
 
 def _residual_vs_k(

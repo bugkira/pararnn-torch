@@ -39,6 +39,6 @@ mlflow_experiment: state-tracking
 mlflow_run_name: parity-t16-2k
 
 why: |
-  Fallback after T=32 / 300 steps stayed copy-only. Same stacked xLSTMBlock
+  Fallback after T=32 / 300 steps stayed copy-only. Same stacked ParaSLSTM
   mix=diag vs sequential vs S4D-Real SSM. T=16 (still P=1), 2000 steps,
   lr 1e-3 from the T=32 grid. Not a width search. Not FlashRNN. 2080 Ti.

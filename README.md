@@ -23,7 +23,7 @@ uv sync --group dev
 uv run pytest -q
 ```
 
-Place the module on a device like any `nn.Module` (`.to(device)`, or `device=` / `dtype=` on the cell, `ParaRNN`, and `xLSTMBlock`).
+Place the module on a device like any `nn.Module` (`.to(device)`, or `device=` / `dtype=` on the cell and `ParaRNN`).
 
 Fused/Triton bf16 requires CUDA compute capability ≥ 8.0. Below that, `scan_backend="auto"` falls back.
 
@@ -33,7 +33,7 @@ Fused/Triton bf16 requires CUDA compute capability ≥ 8.0. Below that, `scan_ba
 
 ```python
 import torch
-from pararnn import NewtonConfig, ParaGRU, ParaRNN, ParaSLSTM, xLSTMBlock
+from pararnn import NewtonConfig, ParaGRU, ParaRNN, ParaSLSTM
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 cell = ParaGRU(input_size=32, hidden_size=64, device=device)
@@ -46,13 +46,13 @@ y_train = model(x)
 model.eval()  # sequential cell.step
 y_eval = model(x)
 
-block = xLSTMBlock(64, solver="auto", device=device)  # LN → sLSTM → residual
-y = block(torch.randn(4, 128, 64, device=device))
+slstm = ParaRNN(ParaSLSTM(64, 64, mix="diag"), device=device)
+y = slstm(torch.randn(4, 128, 64, device=device))
 ```
 
 `d_in` / `d_h` are aliases for `input_size` / `hidden_size`. `solver='newton'` / `'sequential'` force that path regardless of `train()` / `eval()`.
 
-LSTM / sLSTM default output is the **hidden slot** `(B, T, hidden_size)`. Full state: `output_hidden=False`. Paper slot order is `(c, h)`; `return_hidden` last state is the last layer only (`(B, 2, hidden_size)` for LSTM). `hidden_layout="pytorch"` (ParaLSTM only) returns `(output, (h_n, c_n))` like `nn.LSTM`: `h_n` / `c_n` are `(num_layers, B, H)` regardless of `batch_first`, and `h0` slots are `(h, c)`. `dropout` is between layers, same as `nn.LSTM` (warns and is a no-op at `num_layers==1`). Unsupported: `bidirectional`, `proj_size`, packed sequences. `ParaRNN` stacks cells; LayerNorm and residual live on `xLSTMBlock` (`mix='diag'` fused, `mix='head'` on `step`).
+LSTM / sLSTM default output is the **hidden slot** `(B, T, hidden_size)`. Full state: `output_hidden=False`. Paper slot order is `(c, h)`; `return_hidden` last state is the last layer only (`(B, 2, hidden_size)` for LSTM). `hidden_layout="pytorch"` (ParaLSTM only) returns `(output, (h_n, c_n))` like `nn.LSTM`: `h_n` / `c_n` are `(num_layers, B, H)` regardless of `batch_first`, and `h0` slots are `(h, c)`. `dropout` is between layers, same as `nn.LSTM` (warns and is a no-op at `num_layers==1`). Unsupported: `bidirectional`, `proj_size`, packed sequences. `ParaRNN` stacks cells. sLSTM default is `mix='diag'` (fused 4×4 Newton). `mix='head'` is an unfused ablation vs Beck mixing; `mix='dense'` is a small-width Jacobian oracle. LayerNorm / residual / FFN are the caller's (or `examples/xlstm_hybrid.py` for an NX-AI `sLSTMBlock` around `ParaRNN(ParaSLSTM)`).
 
 Low-level solvers:
 
@@ -65,7 +65,7 @@ h = sequential_apply(cell, x)
 
 `NewtonConfig(scan_backend="auto")` picks fused Triton on CUDA for ParaGRU / ParaLSTM / ParaSLSTM `mix='diag'`, else a Triton scan + `step`, else eager Blelloch. Backward is paper eq. 2.6 (one reverse scan).
 
-Examples: `uv run python examples/toy_copy.py`, `examples/dyck_language.py`, `examples/parity.py`.
+Examples: `uv run python examples/toy_copy.py`, `examples/dyck_language.py`, `examples/parity.py`. NX-AI block around this cell: `uv add xlstm` then `examples/xlstm_hybrid.py`.
 
 ## Method
 

@@ -2,7 +2,6 @@ from importlib.metadata import PackageNotFoundError, version
 
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM, RNNCell
 from pararnn.layers import ParaRNN
-from pararnn.models import xLSTMBlock
 from pararnn.solvers import (
     NewtonConfig,
     NewtonDivergenceError,
@@ -22,7 +21,6 @@ __all__ = [
     "RNNCell",
     "newton_apply",
     "sequential_apply",
-    "xLSTMBlock",
 ]
 
 try:

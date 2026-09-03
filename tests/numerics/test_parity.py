@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from examples.parity import VOCAB, _eval_acc, _ParityNet, _S6Block, sample_parity
-from pararnn import NewtonConfig, xLSTMBlock
+from pararnn import NewtonConfig
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -61,9 +61,11 @@ def test_s6_block_residual_shape_and_grad():
     assert torch.isfinite(x.grad).all()
 
 
-def test_xlstm_block_forwards_parity_no_clip():
-    block = xLSTMBlock(8, solver="sequential", max_recurrent_norm=None, device=device)
-    assert block.cell.max_recurrent_norm is None
+def test_parity_residual_forwards_no_clip():
+    cfg = NewtonConfig(max_iters=3, scan_backend="eager")
+    net = _ParityNet(8, 1, "eager", cfg, None).to(device)
+    cell = net.blocks[0].rnn.layers[0]
+    assert cell.max_recurrent_norm is None
 
 
 def test_eval_acc_splits_copy_from_full_xor():

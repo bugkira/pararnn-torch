@@ -1,4 +1,4 @@
-"""Running parity (Z2 tagging): stacked xLSTMBlock vs sequential vs SSM.
+"""Running parity (Z2 tagging): stacked ParaSLSTM vs sequential vs SSM.
 
     uv run python examples/parity.py --config configs/train/parity_t16.yaml
 
@@ -28,7 +28,7 @@ import yaml
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from pararnn import NewtonConfig, xLSTMBlock
+from pararnn import NewtonConfig, ParaRNN, ParaSLSTM
 from pararnn.solvers.scan import scan_diag
 from utils.mlflow_helper import ROOT, git_commit, lock_hash, setup_logging, uv_export_hash
 
@@ -83,6 +83,35 @@ class _S6Block(nn.Module):
         return x + self.C_proj(h)
 
 
+class _ResidualSLSTM(nn.Module):
+    """Pre-norm residual around ``ParaRNN(ParaSLSTM)``. Local to this smoke."""
+
+    def __init__(
+        self,
+        d_h: int,
+        *,
+        solver: str,
+        newton_cfg: NewtonConfig,
+        max_recurrent_norm: float | None,
+    ) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(d_h)
+        self.rnn = ParaRNN(
+            ParaSLSTM(
+                d_h,
+                d_h,
+                mix="diag",
+                max_recurrent_norm=max_recurrent_norm,
+            ),
+            config=newton_cfg,
+            output_hidden=True,
+            solver=solver,
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        return x + self.rnn(self.norm(x))
+
+
 class _ParityNet(nn.Module):
     def __init__(
         self,
@@ -100,12 +129,11 @@ class _ParityNet(nn.Module):
         else:
             solver = "auto" if arm == "newton" else "sequential"
             self.blocks = nn.ModuleList(
-                xLSTMBlock(
+                _ResidualSLSTM(
                     d_h,
                     solver=solver,
-                    mix="diag",
+                    newton_cfg=newton_cfg,
                     max_recurrent_norm=max_recurrent_norm,
-                    config=newton_cfg,
                 )
                 for _ in range(num_layers)
             )
@@ -122,7 +150,7 @@ class _ParityNet(nn.Module):
         if self.arm != "newton":
             return out
         for block in self.blocks:
-            if not isinstance(block, xLSTMBlock):
+            if not isinstance(block, _ResidualSLSTM):
                 continue
             for st in block.rnn.last_stats:
                 out.append(st.max_residual)

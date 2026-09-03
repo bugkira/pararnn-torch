@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 from torch import Tensor, nn
 
@@ -193,6 +194,7 @@ def test_paraslstm_diag_packed_vjp_matches_autograd_vjp():
         torch.testing.assert_close(a, b, atol=5e-5, rtol=5e-5)
 
 
+@pytest.mark.filterwarnings("ignore:mix='head' is an unfused ablation:UserWarning")
 def test_paraslstm_head_packed_vjp_falls_back_to_autograd():
     torch.manual_seed(60)
     cell = ParaSLSTM(d_in=5, d_h=6, mix="head", n_heads=2).to(device)
