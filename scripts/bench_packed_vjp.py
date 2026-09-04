@@ -145,15 +145,15 @@ def _newton_fwd_bwd_time(cell: ParaSLSTM, x: Tensor, cfg: NewtonConfig, packed: 
     }
 
 
-def _dyck_train(device: torch.device, packed: bool) -> dict:
+def _dyck_train(device: torch.device, packed: bool, *, seed: int = 0) -> dict:
     _set_packed(packed)
-    torch.manual_seed(0)
-    torch.cuda.manual_seed_all(0)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
     cfg = NewtonConfig(max_iters=NEWTON_K, scan_backend="fused")
     model = _NewtonDyckLM(DYCK_DH, cfg).to(device)
     model.train()
     opt = torch.optim.AdamW(model.parameters(), lr=DYCK_LR, weight_decay=0.0)
-    gen = torch.Generator(device="cpu").manual_seed(0)
+    gen = torch.Generator(device="cpu").manual_seed(seed)
     losses: list[float] = []
     bwd_ms: list[float] = []
     for step in range(DYCK_STEPS):

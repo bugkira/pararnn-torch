@@ -18,6 +18,9 @@ htmlcov/
 *.safetensors
 data/
 datasets/
+checkpoints/
+results/*.json
+results/*.log
 
 # experiment tracking
 mlruns/

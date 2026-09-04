@@ -11,6 +11,7 @@ T=32 / 300 steps (`configs/train/parity.yaml`) stays copy-only; use T=16 /
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import sys
@@ -217,6 +218,9 @@ def _train_arm(
     warmup_frac = float(spec["warmup_frac"])
     losses: list[float] = []
     token_acc: list[float] = []
+    curve_steps: list[int] = []
+    eval_last_hist: list[float] = []
+    long_last_hist: list[float] = []
     n_params = sum(p.numel() for p in model.parameters())
     log.info("parity_arm=%s n_params=%d lr=%g", arm, n_params, lr)
 
@@ -243,6 +247,9 @@ def _train_arm(
             res = model.newton_residuals()
             ev = _eval_acc(model, eval_bits, eval_lab)
             lg = _eval_acc(model, long_bits, long_lab)
+            curve_steps.append(step)
+            eval_last_hist.append(ev["tok_last"])
+            long_last_hist.append(lg["tok_last"])
             log.info(
                 "arm=%s step=%03d ce=%.4f train_tok=%.3f "
                 "eval_tok=%.3f t0=%.3f last=%.3f exact=%.3f "
@@ -276,6 +283,9 @@ def _train_arm(
         "long_last": lg["tok_last"],
         "losses": losses,
         "token_acc": token_acc,
+        "curve_steps": curve_steps,
+        "eval_last_hist": eval_last_hist,
+        "long_last_hist": long_last_hist,
     }
 
 
@@ -344,6 +354,7 @@ def main(argv: list[str] | None = None) -> None:
         mlflow.log_artifact(str(args.config))
         mlflow.log_text(str(spec.get("why", "")).strip() + "\n", "why.txt")
 
+        curves: dict[str, dict] = {}
         lrs = [float(spec["lr"]), *[float(x) for x in spec.get("lr_fallback", [])]]
         for arm in spec["arms"]:
             used: dict | None = None
@@ -386,6 +397,24 @@ def main(argv: list[str] | None = None) -> None:
                 if i % 10 == 0 or i + 1 == len(used["losses"]):
                     mlflow.log_metric(f"{arm}/loss", ce, step=i)
                     mlflow.log_metric(f"{arm}/train_tok", acc, step=i)
+            for s, el, ll in zip(
+                used["curve_steps"],
+                used["eval_last_hist"],
+                used["long_last_hist"],
+                strict=True,
+            ):
+                mlflow.log_metric(f"{arm}/eval_last_t16", el, step=s)
+                mlflow.log_metric(f"{arm}/eval_last_t32", ll, step=s)
+            curves[arm] = {
+                "steps": used["curve_steps"],
+                "eval_last_t16": used["eval_last_hist"],
+                "eval_last_t32": used["long_last_hist"],
+                "n_params": used["n_params"],
+                "eval_last": used["eval_last"],
+                "long_last": used["long_last"],
+                "loss0": used["loss0"],
+                "loss_final": used["loss_final"],
+            }
             log.info(
                 "arm=%s done eval_tok=%.3f t0=%.3f last=%.3f exact=%.3f "
                 "long_tok=%.3f long_last=%.3f long_exact=%.3f",
@@ -398,6 +427,14 @@ def main(argv: list[str] | None = None) -> None:
                 used["long_last"],
                 used["long_exact"],
             )
+        curve_path = ROOT / "docs" / "internal" / "paper" / "data" / "parity_curves.json"
+        curve_path.parent.mkdir(parents=True, exist_ok=True)
+        curve_path.write_text(
+            json.dumps({"gpu": torch.cuda.get_device_name(device), "arms": curves}, indent=2)
+            + "\n"
+        )
+        mlflow.log_artifact(str(curve_path))
+        log.info("wrote last-token curves %s", curve_path)
 
 
 if __name__ == "__main__":

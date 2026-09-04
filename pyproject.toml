@@ -45,6 +45,10 @@ train = ["mlflow"]
 flashrnn = [
     "flashrnn>=1.0.6",
 ]
+lm = [
+    "datasets>=3.0",
+    "tokenizers>=0.21",
+]
 
 [build-system]
 requires = ["uv_build>=0.9.7,<0.10.0"]
@@ -57,6 +61,10 @@ dev = [
     "pyyaml>=6.0.3",
     "ruff>=0.9",
 ]
+
+[tool.uv]
+# PyTorch cu128 index also hosts an old `requests`; datasets needs a current one from PyPI.
+index-strategy = "unsafe-best-match"
 
 [[tool.uv.index]]
 url = "https://download.pytorch.org/whl/cu128"
