@@ -1,4 +1,4 @@
-# Data parallel (DDP / FSDP)
+# Data parallel (DDP / FSDP) and tensor parallel
 
 `ParaRNN` is an `nn.Module`. After `init_process_group`, wrap it or a parent
 that contains it:
@@ -61,6 +61,38 @@ to fp32.
 - CUDA, two visible devices: after one SGD step the DDP parameters match
   across ranks. FSDP2 runs one backward. Skip when `device_count() < 2`
   (a shell with `CUDA_VISIBLE_DEVICES=1` hides the 3060).
+
+## Tensor parallel along \(d_h\)
+
+Channelwise-diagonal cells (ParaGRU, ParaLSTM, `ParaSLSTM mix='diag'`) keep
+features independent through Newton+scan. Rank \(r\) owns \(d_h/N\)
+channels. The cell's `W_x` is already column-parallel (replicated `x`,
+sharded gate rows). The fused kernel runs on that slice with zero NCCL.
+`RowParallelLinear` maps \(d_h/N \to d_{\mathrm{out}}\) and AllReduces once
+per layer. Backward of that AllReduce is identity (replicated loss on the
+shared output).
+
+```python
+from pararnn.tensor_parallel import tensor_parallel_diag_block
+
+# d_h=32, world=2 → each rank holds 16 channels
+block = tensor_parallel_diag_block("gru", d_in=32, d_h=32, d_out=32, config=cfg)
+y = block(x)  # (B, T, 32), one AllReduce
+```
+
+`d_h` must divide the tensor-parallel size. Factory kinds: `gru`, `lstm`,
+`slstm` (`mix='diag'`).
+
+Smoke:
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0,1 \
+  uv run torchrun --nproc_per_node=2 examples/tensor_parallel.py
+```
+
+CPU gloo: sharded Newton + row-parallel grads match a full `Linear(d_h, d_out)`
+(`tests/numerics/test_tp_allreduce.py`). CUDA: both ranks hold the same
+AllReduced `y`.
 
 Sequence-parallel scan over NCCL is a separate catalog row
 (`pararnn.solvers.seq_parallel` is two CUDA streams on one device).

@@ -19,6 +19,7 @@ ParaRNN/
 │   ├── solvers/                # sequential, Newton, scan, VJP
 │   ├── kernels/                # Triton scans + fused Newton
 │   ├── distributed.py          # warmup + unwrap for DDP/FSDP
+│   ├── tensor_parallel.py      # Megatron TP along d_h
 │   ├── layout.py
 │   └── weight_init.py          # App. C.1
 ├── examples/
@@ -33,7 +34,7 @@ ParaRNN/
 
 ## Current surface (0.4)
 
-`NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` and residual early-stop (`NewtonDivergenceError` if max|F|>1 after K). `ParaRNN` takes a cell or a list, `return_hidden`, LSTM `output_hidden`. **ParaSLSTM** `mix='diag'` is the fused 4×4 path; `mix='head'` is an unfused ablation (`scan_dense`); `mix='dense'` is a `d_h<=8` test oracle. Examples: copy, Dyck-1, Z2 parity, NX-AI `sLSTMBlock` hybrid, DDP/FSDP2 smoke. Two-tile scan: `scan_diag_two_ranks`. Data parallel: wrap `ParaRNN` with DDP or `fully_shard` (`docs/distributed.md`).
+`NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` and residual early-stop (`NewtonDivergenceError` if max|F|>1 after K). `ParaRNN` takes a cell or a list, `return_hidden`, LSTM `output_hidden`. **ParaSLSTM** `mix='diag'` is the fused 4×4 path; `mix='head'` is an unfused ablation (`scan_dense`); `mix='dense'` is a `d_h<=8` test oracle. Examples: copy, Dyck-1, Z2 parity, NX-AI `sLSTMBlock` hybrid, DDP/FSDP2 smoke, tensor-parallel diag block. Two-tile scan: `scan_diag_two_ranks`. Data parallel: wrap `ParaRNN` with DDP or `fully_shard`. Tensor parallel: `tensor_parallel_diag_block` (`docs/distributed.md`).
 
 ## Naming
 
