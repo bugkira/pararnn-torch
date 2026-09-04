@@ -111,10 +111,13 @@ def _scan(
     *,
     backend: str = "eager",
     structure: str | None = None,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     if structure is not None:
-        return _scan_named(jac, residual, backend=backend, structure=structure)
-    return _scan_infer(jac, residual, backend=backend)
+        return _scan_named(
+            jac, residual, backend=backend, structure=structure, cu_seqlens=cu_seqlens
+        )
+    return _scan_infer(jac, residual, backend=backend, cu_seqlens=cu_seqlens)
 
 
 def _reverse_scan(
@@ -123,19 +126,29 @@ def _reverse_scan(
     *,
     backend: str = "eager",
     structure: str | None = None,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     if structure is not None:
-        return _reverse_scan_named(jac, partial, backend=backend, structure=structure)
-    return _reverse_scan_infer(jac, partial, backend=backend)
+        return _reverse_scan_named(
+            jac, partial, backend=backend, structure=structure, cu_seqlens=cu_seqlens
+        )
+    return _reverse_scan_infer(jac, partial, backend=backend, cu_seqlens=cu_seqlens)
 
 
-def _scan_named(jac: Tensor, residual: Tensor, *, backend: str, structure: str) -> Tensor:
+def _scan_named(
+    jac: Tensor,
+    residual: Tensor,
+    *,
+    backend: str,
+    structure: str,
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     if structure == "diag":
-        return scan_diag(jac, residual, backend=backend)
+        return scan_diag(jac, residual, backend=backend, cu_seqlens=cu_seqlens)
     if structure == "block2":
-        return scan_block2(jac, residual, backend=backend)
+        return scan_block2(jac, residual, backend=backend, cu_seqlens=cu_seqlens)
     if structure == "block4":
-        return scan_block4(jac, residual, backend=backend)
+        return scan_block4(jac, residual, backend=backend, cu_seqlens=cu_seqlens)
     if structure == "head":
         packed_h = _head_slot_pack(jac, residual)
         if packed_h is None:
@@ -143,24 +156,31 @@ def _scan_named(jac: Tensor, residual: Tensor, *, backend: str, structure: str) 
                 f"jac_structure='head' but jac {tuple(jac.shape)} residual {tuple(residual.shape)}"
             )
         jac_f, res_f, shape, n_heads, d_head = packed_h
-        delta = scan_dense(jac_f, res_f, backend=backend)
+        delta = scan_dense(jac_f, res_f, backend=backend, cu_seqlens=cu_seqlens)
         return _head_slot_unpack(delta, shape, n_heads, d_head)
     if structure == "dense":
         packed = _dense_slot_pack(jac, residual)
         if packed is not None:
             jac_f, res_f, shape = packed
-            return scan_dense(jac_f, res_f, backend=backend).reshape(shape)
-        return scan_dense(jac, residual, backend=backend)
+            return scan_dense(jac_f, res_f, backend=backend, cu_seqlens=cu_seqlens).reshape(shape)
+        return scan_dense(jac, residual, backend=backend, cu_seqlens=cu_seqlens)
     raise ValueError(f"unknown jac_structure {structure!r}")
 
 
-def _reverse_scan_named(jac: Tensor, partial: Tensor, *, backend: str, structure: str) -> Tensor:
+def _reverse_scan_named(
+    jac: Tensor,
+    partial: Tensor,
+    *,
+    backend: str,
+    structure: str,
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     if structure == "diag":
-        return reverse_scan_diag(jac, partial, backend=backend)
+        return reverse_scan_diag(jac, partial, backend=backend, cu_seqlens=cu_seqlens)
     if structure == "block2":
-        return reverse_scan_block2(jac, partial, backend=backend)
+        return reverse_scan_block2(jac, partial, backend=backend, cu_seqlens=cu_seqlens)
     if structure == "block4":
-        return reverse_scan_block4(jac, partial, backend=backend)
+        return reverse_scan_block4(jac, partial, backend=backend, cu_seqlens=cu_seqlens)
     if structure == "head":
         packed_h = _head_slot_pack(jac, partial)
         if packed_h is None:
@@ -168,61 +188,75 @@ def _reverse_scan_named(jac: Tensor, partial: Tensor, *, backend: str, structure
                 f"jac_structure='head' but jac {tuple(jac.shape)} partial {tuple(partial.shape)}"
             )
         jac_f, part_f, shape, n_heads, d_head = packed_h
-        mu = reverse_scan_dense(jac_f, part_f, backend=backend)
+        mu = reverse_scan_dense(jac_f, part_f, backend=backend, cu_seqlens=cu_seqlens)
         return _head_slot_unpack(mu, shape, n_heads, d_head)
     if structure == "dense":
         packed = _dense_slot_pack(jac, partial)
         if packed is not None:
             jac_f, part_f, shape = packed
-            return reverse_scan_dense(jac_f, part_f, backend=backend).reshape(shape)
-        return reverse_scan_dense(jac, partial, backend=backend)
+            return reverse_scan_dense(
+                jac_f, part_f, backend=backend, cu_seqlens=cu_seqlens
+            ).reshape(shape)
+        return reverse_scan_dense(jac, partial, backend=backend, cu_seqlens=cu_seqlens)
     raise ValueError(f"unknown jac_structure {structure!r}")
 
 
-def _scan_infer(jac: Tensor, residual: Tensor, *, backend: str) -> Tensor:
+def _scan_infer(
+    jac: Tensor,
+    residual: Tensor,
+    *,
+    backend: str,
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     packed = _dense_slot_pack(jac, residual)
     if packed is not None:
         jac_f, res_f, shape = packed
-        delta = scan_dense(jac_f, res_f, backend=backend)
+        delta = scan_dense(jac_f, res_f, backend=backend, cu_seqlens=cu_seqlens)
         return delta.reshape(shape)
     packed_h = _head_slot_pack(jac, residual)
     if packed_h is not None:
         jac_f, res_f, shape, n_heads, d_head = packed_h
-        delta = scan_dense(jac_f, res_f, backend=backend)
+        delta = scan_dense(jac_f, res_f, backend=backend, cu_seqlens=cu_seqlens)
         return _head_slot_unpack(delta, shape, n_heads, d_head)
     if jac.dim() == residual.dim():
-        return scan_diag(jac, residual, backend=backend)
+        return scan_diag(jac, residual, backend=backend, cu_seqlens=cu_seqlens)
     if jac.dim() == 4:
-        return scan_dense(jac, residual, backend=backend)
+        return scan_dense(jac, residual, backend=backend, cu_seqlens=cu_seqlens)
     if jac.dim() == 5 and jac.shape[-3] == 4:
-        return scan_block4(jac, residual, backend=backend)
+        return scan_block4(jac, residual, backend=backend, cu_seqlens=cu_seqlens)
     if jac.dim() == 5 and jac.shape[-3] == 2:
-        return scan_block2(jac, residual, backend=backend)
+        return scan_block2(jac, residual, backend=backend, cu_seqlens=cu_seqlens)
     raise ValueError(
         f"cannot dispatch scan for jac {tuple(jac.shape)} residual "
         f"{tuple(residual.shape)}; set NewtonConfig.jac_structure"
     )
 
 
-def _reverse_scan_infer(jac: Tensor, partial: Tensor, *, backend: str) -> Tensor:
+def _reverse_scan_infer(
+    jac: Tensor,
+    partial: Tensor,
+    *,
+    backend: str,
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     packed = _dense_slot_pack(jac, partial)
     if packed is not None:
         jac_f, part_f, shape = packed
-        mu = reverse_scan_dense(jac_f, part_f, backend=backend)
+        mu = reverse_scan_dense(jac_f, part_f, backend=backend, cu_seqlens=cu_seqlens)
         return mu.reshape(shape)
     packed_h = _head_slot_pack(jac, partial)
     if packed_h is not None:
         jac_f, part_f, shape, n_heads, d_head = packed_h
-        mu = reverse_scan_dense(jac_f, part_f, backend=backend)
+        mu = reverse_scan_dense(jac_f, part_f, backend=backend, cu_seqlens=cu_seqlens)
         return _head_slot_unpack(mu, shape, n_heads, d_head)
     if jac.dim() == partial.dim():
-        return reverse_scan_diag(jac, partial, backend=backend)
+        return reverse_scan_diag(jac, partial, backend=backend, cu_seqlens=cu_seqlens)
     if jac.dim() == 4:
-        return reverse_scan_dense(jac, partial, backend=backend)
+        return reverse_scan_dense(jac, partial, backend=backend, cu_seqlens=cu_seqlens)
     if jac.dim() == 5 and jac.shape[-3] == 4:
-        return reverse_scan_block4(jac, partial, backend=backend)
+        return reverse_scan_block4(jac, partial, backend=backend, cu_seqlens=cu_seqlens)
     if jac.dim() == 5 and jac.shape[-3] == 2:
-        return reverse_scan_block2(jac, partial, backend=backend)
+        return reverse_scan_block2(jac, partial, backend=backend, cu_seqlens=cu_seqlens)
     raise ValueError(
         f"cannot dispatch reverse scan for jac {tuple(jac.shape)} partial "
         f"{tuple(partial.shape)}; set NewtonConfig.jac_structure"
@@ -231,22 +265,37 @@ def _reverse_scan_infer(jac: Tensor, partial: Tensor, *, backend: str) -> Tensor
 
 def _t0_state_vjp(jac: Tensor, mu: Tensor) -> Tensor:
     """``J_0^T μ_0`` — adjoint of paper ``h_0``. Layout matches ``_scan``."""
+    t0 = torch.zeros(1, dtype=torch.long, device=jac.device)
+    return _state_vjp_at_times(jac, mu, t0)[:, 0]
+
+
+def _state_vjp_at_times(jac: Tensor, mu: Tensor, times: Tensor) -> Tensor:
+    """``J_t^T μ_t`` at each index in ``times``. Result time-axis is ``len(times)``."""
     packed = _dense_slot_pack(jac, mu)
     if packed is not None:
         jac_f, mu_f, shape = packed
-        g = torch.matmul(jac_f[:, 0].transpose(-1, -2), mu_f[:, 0].unsqueeze(-1)).squeeze(-1)
-        return g.reshape(shape[0], *shape[2:])
+        g = torch.matmul(
+            jac_f[:, times].transpose(-1, -2),
+            mu_f[:, times].unsqueeze(-1),
+        ).squeeze(-1)
+        return g.reshape(shape[0], times.numel(), *shape[2:])
     packed_h = _head_slot_pack(jac, mu)
     if packed_h is not None:
         jac_f, mu_f, shape, n_heads, d_head = packed_h
-        g = torch.matmul(jac_f[:, 0].transpose(-1, -2), mu_f[:, 0].unsqueeze(-1)).squeeze(-1)
-        packed_h0 = g.reshape(shape[0], n_heads, 4 * d_head)
-        return slstm_unpack_heads(packed_h0, n_heads, d_head)
+        g = torch.matmul(
+            jac_f[:, times].transpose(-1, -2),
+            mu_f[:, times].unsqueeze(-1),
+        ).squeeze(-1)
+        packed_hs = g.reshape(shape[0], n_heads, times.numel(), 4 * d_head).permute(0, 2, 1, 3)
+        return slstm_unpack_heads(packed_hs, n_heads, d_head)
     if jac.dim() == mu.dim():
-        return jac[:, 0] * mu[:, 0]
+        return jac[:, times] * mu[:, times]
     if jac.dim() == 4:
-        return torch.matmul(jac[:, 0].transpose(-1, -2), mu[:, 0].unsqueeze(-1)).squeeze(-1)
-    return torch.einsum("boid,bod->bid", jac[:, 0], mu[:, 0])
+        return torch.matmul(
+            jac[:, times].transpose(-1, -2),
+            mu[:, times].unsqueeze(-1),
+        ).squeeze(-1)
+    return torch.einsum("btoid,btod->btid", jac[:, times], mu[:, times])
 
 
 def _dense_slot_pack(jac: Tensor, vec: Tensor) -> tuple[Tensor, Tensor, tuple[int, ...]] | None:

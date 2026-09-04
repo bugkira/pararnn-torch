@@ -5,6 +5,12 @@ Work-efficient Blelloch scan on the monoid
 Pad time to the next power of two with the identity ``(I, 0)``.
 Indices: ``pararnn.layout`` (0-based ``t``).
 
+Ragged: ``cu_seqlens`` packs sequences into ``(1, N, …)``. Combine is
+segmented — a head flag drops the left carry (CUB-style). Same monoid.
+Eager: log-depth Hillis–Steele over packed ``N``. Triton: ``cu_seqlens``
+starts compared to ``offs_t`` in the tile (``J=0`` at heads), then PCR.
+Fused ParaGRU does the same heads in-kernel.
+
 2×2 / 4×4: elementwise mul. Reverse scan is paper eq. 2.6
 (Jacobian transpose, unroll backwards).
 """
@@ -16,58 +22,83 @@ from collections.abc import Callable
 import torch
 from torch import Tensor
 
+from pararnn.layout import segment_start_flags, validate_cu_seqlens
+
 _Compose = Callable[[Tensor, Tensor, Tensor, Tensor], tuple[Tensor, Tensor]]
 _FillIdent = Callable[[Tensor], None]
 
 
-def scan_diag(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tensor:
+def scan_diag(
+    jac: Tensor,
+    residual: Tensor,
+    *,
+    backend: str = "eager",
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     """Solve ``δ_t = jac_t * δ_{t-1} + residual_t`` with ``δ_{<0} = 0``.
 
     ``jac`` and ``residual``: (batch, time, d). ``jac`` is the diagonal of J.
     ``backend``: ``eager`` (default) or ``triton`` (CUDA float16/float32).
+    ``cu_seqlens`` packs ragged time; carry resets at heads.
     """
+    if backend not in ("eager", "triton"):
+        raise ValueError(f"unknown scan backend {backend!r}")
     if backend == "triton":
         from pararnn.kernels import scan_diag_triton
 
-        return scan_diag_triton(jac, residual)
-    if backend != "eager":
-        raise ValueError(f"unknown scan backend {backend!r}")
-    return _scan_acc(jac, residual, _compose_diag, _fill_ident_diag)
+        return scan_diag_triton(jac, residual, cu_seqlens=cu_seqlens)
+    return _scan_acc(jac, residual, _compose_diag, _fill_ident_diag, cu_seqlens=cu_seqlens)
 
 
-def scan_block2(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tensor:
+def scan_block2(
+    jac: Tensor,
+    residual: Tensor,
+    *,
+    backend: str = "eager",
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     """Same recurrence with 2×2 blocks per feature.
 
     ``jac``: (batch, time, 2, 2, d) with ``[..., out, in, d]``.
     ``residual`` / result: (batch, time, 2, d).
-    ``backend``: ``eager`` (default) or ``triton`` (CUDA float16/float32).
     """
+    if backend not in ("eager", "triton"):
+        raise ValueError(f"unknown scan backend {backend!r}")
     if backend == "triton":
         from pararnn.kernels.scan_lstm_block import scan_block2_triton
 
-        return scan_block2_triton(jac, residual)
-    if backend != "eager":
-        raise ValueError(f"unknown scan backend {backend!r}")
-    return _scan_acc(jac, residual, _compose_block2, _fill_ident_block2)
+        return scan_block2_triton(_jac_drop_left(jac, cu_seqlens), residual)
+    return _scan_acc(jac, residual, _compose_block2, _fill_ident_block2, cu_seqlens=cu_seqlens)
 
 
-def scan_block4(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tensor:
+def scan_block4(
+    jac: Tensor,
+    residual: Tensor,
+    *,
+    backend: str = "eager",
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     """Same recurrence with 4x4 blocks per feature (sLSTM channelwise).
 
     ``jac``: (batch, time, 4, 4, d) with ``[..., out, in, d]``.
     ``residual`` / result: (batch, time, 4, d).
-    ``backend``: ``eager`` or ``triton`` (CUDA float16/float32).
     """
+    if backend not in ("eager", "triton"):
+        raise ValueError(f"unknown scan backend {backend!r}")
     if backend == "triton":
         from pararnn.kernels.scan_slstm_block import scan_block4_triton
 
-        return scan_block4_triton(jac, residual)
-    if backend != "eager":
-        raise ValueError(f"unknown scan backend {backend!r}")
-    return _scan_acc(jac, residual, _compose_block4, _fill_ident_block4)
+        return scan_block4_triton(_jac_drop_left(jac, cu_seqlens), residual)
+    return _scan_acc(jac, residual, _compose_block4, _fill_ident_block4, cu_seqlens=cu_seqlens)
 
 
-def scan_dense(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tensor:
+def scan_dense(
+    jac: Tensor,
+    residual: Tensor,
+    *,
+    backend: str = "eager",
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     """Exact Newton scan for a full ``d_h × d_h`` Jacobian (DEER).
 
     ``jac``: (batch, time, d, d) with ``[..., out, in]``. ``residual``: (batch, time, d).
@@ -76,10 +107,16 @@ def scan_dense(jac: Tensor, residual: Tensor, *, backend: str = "eager") -> Tens
     """
     if backend not in ("eager", "triton"):
         raise ValueError(f"unknown scan backend {backend!r}")
-    return _scan_acc(jac, residual, _compose_dense, _fill_ident_dense)
+    return _scan_acc(jac, residual, _compose_dense, _fill_ident_dense, cu_seqlens=cu_seqlens)
 
 
-def reverse_scan_diag(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Tensor:
+def reverse_scan_diag(
+    jac: Tensor,
+    partial: Tensor,
+    *,
+    backend: str = "eager",
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     """Total adjoint ``∇_{h_t} L`` from direct ``∂_{h_t} L`` (eq. 2.6, diagonal).
 
     ``∇_{h_{t-1}} L = J_t ∇_{h_t} L + ∂_{h_{t-1}} L``, ``∇_{h_{T-1}} L = ∂_{h_{T-1}} L``.
@@ -87,31 +124,78 @@ def reverse_scan_diag(jac: Tensor, partial: Tensor, *, backend: str = "eager") -
     """
     j_rev = jac.new_zeros(jac.shape)
     j_rev[:, 1:] = jac.flip(1)[:, :-1]
-    return scan_diag(j_rev, partial.flip(1), backend=backend).flip(1)
+    cs_rev = _reverse_cu_seqlens(cu_seqlens, jac.shape[1]) if cu_seqlens is not None else None
+    return scan_diag(j_rev, partial.flip(1), backend=backend, cu_seqlens=cs_rev).flip(1)
 
 
-def reverse_scan_block2(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Tensor:
+def reverse_scan_block2(
+    jac: Tensor,
+    partial: Tensor,
+    *,
+    backend: str = "eager",
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     """Eq. 2.6 with 2×2 blocks: uses ``J^T`` (swap ``out``/``in``)."""
     j_t = jac.transpose(-3, -2)
     j_rev = j_t.new_zeros(j_t.shape)
     j_rev[:, 1:] = j_t.flip(1)[:, :-1]
-    return scan_block2(j_rev, partial.flip(1), backend=backend).flip(1)
+    cs_rev = _reverse_cu_seqlens(cu_seqlens, jac.shape[1]) if cu_seqlens is not None else None
+    return scan_block2(j_rev, partial.flip(1), backend=backend, cu_seqlens=cs_rev).flip(1)
 
 
-def reverse_scan_block4(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Tensor:
+def reverse_scan_block4(
+    jac: Tensor,
+    partial: Tensor,
+    *,
+    backend: str = "eager",
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     """Eq. 2.6 with 4×4 blocks: uses ``J^T`` (swap ``out``/``in``)."""
     j_t = jac.transpose(-3, -2)
     j_rev = j_t.new_zeros(j_t.shape)
     j_rev[:, 1:] = j_t.flip(1)[:, :-1]
-    return scan_block4(j_rev, partial.flip(1), backend=backend).flip(1)
+    cs_rev = _reverse_cu_seqlens(cu_seqlens, jac.shape[1]) if cu_seqlens is not None else None
+    return scan_block4(j_rev, partial.flip(1), backend=backend, cu_seqlens=cs_rev).flip(1)
 
 
-def reverse_scan_dense(jac: Tensor, partial: Tensor, *, backend: str = "eager") -> Tensor:
+def reverse_scan_dense(
+    jac: Tensor,
+    partial: Tensor,
+    *,
+    backend: str = "eager",
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
     """Eq. 2.6 with a full matrix: uses ``J^T``."""
     j_t = jac.transpose(-1, -2)
     j_rev = j_t.new_zeros(j_t.shape)
     j_rev[:, 1:] = j_t.flip(1)[:, :-1]
-    return scan_dense(j_rev, partial.flip(1), backend=backend).flip(1)
+    cs_rev = _reverse_cu_seqlens(cu_seqlens, jac.shape[1]) if cu_seqlens is not None else None
+    return scan_dense(j_rev, partial.flip(1), backend=backend, cu_seqlens=cs_rev).flip(1)
+
+
+def _jac_drop_left(jac: Tensor, cu_seqlens: Tensor | None) -> Tensor:
+    """Head flags: ``δ_t = r_t`` by zeroing ``J_t`` (left annihilator).
+
+    The Triton PCR scan is rectangular. A segment start with ``J=0`` drops
+    the incoming carry; later tiles still compose through ``r``.
+    """
+    if cu_seqlens is None:
+        return jac
+    flags = segment_start_flags(cu_seqlens, jac.shape[1], batch=jac.shape[0]).to(
+        device=jac.device
+    )
+    extra = (1,) * (jac.dim() - 2)
+    return jac.masked_fill(flags.view(*flags.shape, *extra), 0)
+
+
+def _reverse_cu_seqlens(cu_seqlens: Tensor, time: int) -> Tensor:
+    """Head flags of the time-reversed packed stream (eq. 2.6)."""
+    cs = validate_cu_seqlens(cu_seqlens, time)
+    lengths = cs[1:] - cs[:-1]
+    return torch.cat(
+        (cs.new_zeros(1), torch.cumsum(lengths.flip(0), dim=0)),
+        dim=0,
+    )
 
 
 def _scan_acc(
@@ -119,12 +203,68 @@ def _scan_acc(
     residual: Tensor,
     compose: _Compose,
     fill_ident: _FillIdent,
+    *,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     """Blelloch in fp32 when DRAM is fp16 (Newton accumulators)."""
+    flags = None
+    if cu_seqlens is not None:
+        flags = segment_start_flags(cu_seqlens, jac.shape[1], batch=jac.shape[0]).to(
+            device=jac.device
+        )
     if jac.dtype == torch.float16:
-        out = _blelloch_inclusive(jac.float(), residual.float(), compose, fill_ident)
+        out = _inclusive_scan(jac.float(), residual.float(), compose, fill_ident, flags=flags)
         return out.to(dtype=torch.float16)
+    return _inclusive_scan(jac, residual, compose, fill_ident, flags=flags)
+
+
+def _inclusive_scan(
+    jac: Tensor,
+    residual: Tensor,
+    compose: _Compose,
+    fill_ident: _FillIdent,
+    *,
+    flags: Tensor | None = None,
+) -> Tensor:
+    if flags is not None:
+        return _hillis_steele_seg_inclusive(jac, residual, compose, flags)
     return _blelloch_inclusive(jac, residual, compose, fill_ident)
+
+
+def _hillis_steele_seg_inclusive(
+    jac: Tensor,
+    residual: Tensor,
+    compose: _Compose,
+    flags: Tensor,
+) -> Tensor:
+    """Log-depth inclusive scan; a head flag drops the left operand.
+
+    The r-component of the inclusive ``(J, r)`` prefix is ``δ_t``.
+
+    Work is ``O(T log T)``: each doubling composes ~``T`` sites and clones
+    ``(J, r, flags)``. Rectangular Blelloch composes ``O(T)`` tree sites.
+    ``where`` on the head flag is length-``T`` every round (head count
+    does not change the kernel shape).
+    """
+    time = residual.shape[1]
+    if time <= 1:
+        return residual.clone()
+    j = jac.clone()
+    r = residual.clone()
+    f = flags.clone()
+    step = 1
+    while step < time:
+        j_l, r_l, f_l = j[:, :-step], r[:, :-step], f[:, :-step]
+        j_r, r_r, f_r = j[:, step:], r[:, step:], f[:, step:]
+        j_c, r_c, f_c = _compose_seg(compose, j_r, r_r, f_r, j_l, r_l, f_l)
+        j = j.clone()
+        r = r.clone()
+        f = f.clone()
+        j[:, step:] = j_c
+        r[:, step:] = r_c
+        f[:, step:] = f_c
+        step *= 2
+    return r
 
 
 def _blelloch_inclusive(
@@ -145,7 +285,6 @@ def _blelloch_inclusive(
         fill_ident(j[:, time:])
         r[:, time:] = 0
     _blelloch_exclusive_(j, r, compose, fill_ident)
-    # exclusive r-component at t is δ_{t-1}; inclusive δ_t = J_t δ_{t-1} + r_t
     prefix = r[:, :time]
     if jac.dim() == residual.dim():
         return jac * prefix + residual
@@ -154,6 +293,31 @@ def _blelloch_inclusive(
     if jac.shape[-3] == 4:
         return _mv4(jac, prefix) + residual
     return _mv2(jac, prefix) + residual
+
+
+def _flag_as(flag: Tensor, ref: Tensor) -> Tensor:
+    extra = (1,) * (ref.dim() - flag.dim())
+    return flag.reshape(*flag.shape, *extra)
+
+
+def _compose_seg(
+    compose: _Compose,
+    j_r: Tensor,
+    r_r: Tensor,
+    f_r: Tensor,
+    j_l: Tensor,
+    r_l: Tensor,
+    f_l: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Later ⊕ earlier; a head flag on the later node drops the left carry."""
+    j_c, r_c = compose(j_r, r_r, j_l, r_l)
+    take_r = _flag_as(f_r, j_r)
+    take_rr = _flag_as(f_r, r_r)
+    return (
+        torch.where(take_r, j_r, j_c),
+        torch.where(take_rr, r_r, r_c),
+        f_r | f_l,
+    )
 
 
 def _blelloch_exclusive_(

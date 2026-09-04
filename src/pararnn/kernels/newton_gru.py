@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 
+import torch
 import triton
 import triton.language as tl
 from torch import Tensor
@@ -17,6 +18,8 @@ from pararnn.kernels._fused_common import (
     _tanh,
     alloc_fp32_update,
     fp32_omega_add,
+    gather_h0_heads,
+    is_seg_head,
     log_fused_done,
     log_fused_iter,
     prepare_h0,
@@ -80,10 +83,13 @@ def _gru_init_kernel(
     stride_hd,
     stride_h0b,
     stride_h0d,
+    cs_ptr,
+    n_seq,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    HAS_CU: tl.constexpr,
 ):
-    """App. A: ``h_t = f(h_{t-1}, x_t)`` in parallel; only t=0 sees ``h0``."""
+    """App. A: ``h_t = f(h_{t-1}, x_t)`` in parallel; heads see packed ``h0``."""
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
     pid_d = tl.program_id(2)
@@ -97,8 +103,22 @@ def _gru_init_kernel(
     az = load_acc(az_ptr + offs_d, dmask, 0.0)
     ar = load_acc(ar_ptr + offs_d, dmask, 0.0)
     an = load_acc(an_ptr + offs_d, dmask, 0.0)
-    h0 = load_acc(h0_ptr + pid_b * stride_h0b + offs_d * stride_h0d, dmask, 0.0)
-    h_prev = tl.where((offs_t == 0)[:, None], h0[None, :], 0.0)
+    if HAS_CU:
+        h_prev = gather_h0_heads(
+            h0_ptr,
+            offs_t,
+            offs_d,
+            dmask,
+            cs_ptr,
+            n_seq,
+            stride_h0b,
+            stride_h0d,
+            BLOCK_T,
+            BLOCK_D,
+        )
+    else:
+        h0 = load_acc(h0_ptr + pid_b * stride_h0b + offs_d * stride_h0d, dmask, 0.0)
+        h_prev = tl.where((offs_t == 0)[:, None], h0[None, :], 0.0)
     h_new, _ = _gru_pred_j(h_prev, zx, rx, nx, az, ar, an)
     store_acc(
         h_ptr + pid_b * stride_hb + offs_t[:, None] * stride_ht + offs_d[None, :] * stride_hd,
@@ -141,8 +161,11 @@ def _gru_cell_local_scan_kernel(
     stride_arb,
     stride_arc,
     stride_ard,
+    cs_ptr,
+    n_seq,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    HAS_CU: tl.constexpr,
 ):
     """One Newton linearization: cell+J+residual, then local inclusive scan."""
     pid_b = tl.program_id(0)
@@ -168,13 +191,34 @@ def _gru_cell_local_scan_kernel(
         0.0,
     )
     h0 = load_acc(h0_ptr + pid_b * stride_h0b + offs_d * stride_h0d, dmask, 0.0)
-    h_prev = tl.where((offs_t == 0)[:, None], h0[None, :], h_prev)
+    if HAS_CU:
+        head = is_seg_head(offs_t, cs_ptr, n_seq)
+        h_prev = tl.where(
+            head[:, None],
+            gather_h0_heads(
+                h0_ptr,
+                offs_t,
+                offs_d,
+                dmask,
+                cs_ptr,
+                n_seq,
+                stride_h0b,
+                stride_h0d,
+                BLOCK_T,
+                BLOCK_D,
+            ),
+            h_prev,
+        )
+    else:
+        h_prev = tl.where((offs_t == 0)[:, None], h0[None, :], h_prev)
     zx, rx, nx = _load_wx(wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd)
     az = load_acc(az_ptr + offs_d, dmask, 0.0)
     ar = load_acc(ar_ptr + offs_d, dmask, 0.0)
     an = load_acc(an_ptr + offs_d, dmask, 0.0)
     h_new, j = _gru_pred_j(h_prev, zx, rx, nx, az, ar, an)
     residual = h_new - h
+    if HAS_CU:
+        j = tl.where(head[:, None], 0.0, j)
     j = tl.where(mask, j, 1.0)
     residual = tl.where(mask, residual, 0.0)
     j_s, r_s = tl.associative_scan((j, residual), 0, _compose_diag)
@@ -281,10 +325,12 @@ def newton_gru_fused(
     max_iters: int,
     omega: float,
     h0: Tensor | None = None,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     """Alg. 1 for diagonal ParaGRU. ``wx`` is ``W_x(x)`` with shape ``(B, T, 3 d_h)``.
 
-    ``h0`` is paper ``h_0`` (default zeros), shape ``(B, d_h)``.
+    ``h0`` is paper ``h_0`` (default zeros), shape ``(B, d_h)``. Packed
+    ``cu_seqlens`` uses ``wx`` of batch 1 and ``h0`` of shape ``(S, d_h)``.
     """
     wx = wx.contiguous()
     a_z = a_z.contiguous()
@@ -294,7 +340,21 @@ def newton_gru_fused(
     d_h = a_z.numel()
     if three_d != 3 * d_h:
         raise ValueError(f"wx last dim {three_d} != 3 * d_h={3 * d_h}")
-    h0 = prepare_h0(wx, h0, (batch, d_h))
+    has_cu = cu_seqlens is not None
+    if has_cu:
+        if batch != 1:
+            raise ValueError(f"cu_seqlens packs wx with batch=1, got batch={batch}")
+        cs = cu_seqlens.to(device=wx.device, dtype=torch.int32).contiguous()
+        if cs.dim() != 1 or int(cs[0]) != 0 or int(cs[-1]) != time:
+            raise ValueError(
+                f"cu_seqlens must be (S+1,) with [0]=0 and [-1]=time={time}, got {tuple(cs.shape)}"
+            )
+        n_seq = int(cs.numel()) - 1
+        h0 = prepare_h0(wx, h0, (n_seq, d_h))
+    else:
+        cs = a_z
+        n_seq = 0
+        h0 = prepare_h0(wx, h0, (batch, d_h))
     validate_cuda_tensors(wx, a_z, a_r, a_n, h0, name="newton_gru_fused")
     n_chunks, n_dtiles = time_tiles(time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD, cap=False)
     h = wx.new_empty(batch, time, d_h)
@@ -312,8 +372,11 @@ def newton_gru_fused(
         *h.stride(),
         h0.stride(0),
         h0.stride(1),
+        cs,
+        n_seq,
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
+        HAS_CU=has_cu,
     )
     if max_iters <= 0:
         return h
@@ -348,8 +411,11 @@ def newton_gru_fused(
             *r_loc.stride(),
             *agg_j.stride(),
             *agg_r.stride(),
+            cs,
+            n_seq,
             BLOCK_T=_BLOCK_T,
             BLOCK_D=_BLOCK_D,
+            HAS_CU=has_cu,
         )
         if h32 is not None and r32 is not None:
             fp32_omega_add(h, r_loc, omega_f, h32, r32)

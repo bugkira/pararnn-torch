@@ -4,8 +4,8 @@ Optional CUDA backend for ``scan_diag``. Same monoid as
 ``pararnn.solvers.scan``, via ``tl.associative_scan``.
 
 ``(J_r, r_r) ⊕ (J_l, r_l) = (J_r J_l, J_r r_l + r_r)``.
-Tile time; pad with identity ``(1, 0)``. CUDA float16/float32, and bf16 on
-compute capability ≥ 8.0; algebra in fp32. DRAM is the tensor dtype.
+Head flags (packed ``cu_seqlens``) are tested against ``offs_t`` inside the
+local tile (no dense ``(B, T)`` mask). A hit zeros ``J`` so ``δ_t = r_t``.
 
 Hierarchy (Blelloch / PCR on this monoid):
 
@@ -30,6 +30,7 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
+from pararnn.kernels._fused_common import is_seg_head
 from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
 
 log = logging.getLogger(__name__)
@@ -77,8 +78,11 @@ def _local_scan_kernel(
     stride_arb,
     stride_arc,
     stride_ard,
+    cs_ptr,
+    n_seq,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    HAS_CU: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -98,6 +102,8 @@ def _local_scan_kernel(
         mask,
         0.0,
     )
+    if HAS_CU:
+        j = tl.where(is_seg_head(offs_t, cs_ptr, n_seq)[:, None], 0.0, j)
     j_s, r_s = tl.associative_scan((j, r), 0, _compose_diag)
     store_acc(
         j_out_ptr
@@ -324,14 +330,31 @@ def scan_chunk_aggregates(agg_j: Tensor, agg_r: Tensor) -> Tensor:
     return incl_r
 
 
-def scan_diag_triton(jac: Tensor, residual: Tensor) -> Tensor:
-    """Same contract as ``scan_diag``: ``δ_t = jac_t * δ_{t-1} + residual_t``."""
+def scan_diag_triton(
+    jac: Tensor, residual: Tensor, *, cu_seqlens: Tensor | None = None
+) -> Tensor:
+    """Same contract as ``scan_diag``: ``δ_t = jac_t * δ_{t-1} + residual_t``.
+
+    ``cu_seqlens`` is ``(S+1,)`` packed starts. The local tile zeros ``J`` at
+    those heads. ``None`` is the rectangular scan.
+    """
     if jac.shape != residual.shape or jac.dim() != 3:
         raise ValueError("jac and residual must be (batch, time, d)")
     validate_cuda_tensors(jac, residual, name="scan_diag_triton")
     batch, time, d_h = residual.shape
     if time <= 1:
         return residual.clone()
+    has_cu = cu_seqlens is not None
+    if has_cu:
+        cs = cu_seqlens.to(device=jac.device, dtype=torch.int32).contiguous()
+        if cs.dim() != 1 or int(cs[0]) != 0 or int(cs[-1]) != time:
+            raise ValueError(
+                f"cu_seqlens must be (S+1,) with [0]=0 and [-1]=time={time}, got {tuple(cs.shape)}"
+            )
+        n_seq = int(cs.numel()) - 1
+    else:
+        cs = jac
+        n_seq = 0
 
     n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
@@ -368,8 +391,11 @@ def scan_diag_triton(jac: Tensor, residual: Tensor) -> Tensor:
         agg_r.stride(0),
         agg_r.stride(1),
         agg_r.stride(2),
+        cs,
+        n_seq,
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
+        HAS_CU=has_cu,
     )
 
     if n_chunks == 1:

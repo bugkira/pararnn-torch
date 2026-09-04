@@ -14,7 +14,7 @@ from torch import Tensor, nn
 
 from pararnn.cells.para_lstm import ParaLSTM
 from pararnn.cells.protocol import check_cell
-from pararnn.layout import LSTM_CELL, LSTM_HIDDEN, swap_lstm_ch
+from pararnn.layout import LSTM_CELL, LSTM_HIDDEN, swap_lstm_ch, validate_cu_seqlens
 from pararnn.solvers.newton import NewtonConfig, NewtonStats, newton_apply
 from pararnn.solvers.sequential import sequential_apply
 
@@ -42,8 +42,9 @@ class ParaRNN(nn.Module):
     multi-slot layers still feed only the hidden slot into the next layer.
 
     ``dropout`` is between layers, same as ``nn.LSTM`` (a no-op at
-    ``num_layers==1`` besides the warning). Not supported: bidirectional,
-    ``proj_size``, packed sequences.
+    ``num_layers==1`` besides the warning). Packed sequences: ``cu_seqlens``
+    on ``forward``, ``x`` shaped ``(1, N, …)`` (batch-first), ``h0`` is
+    ``(S, …)``. ``bidirectional`` and ``proj_size`` are outside the API.
 
     ``hidden_layout='pytorch'`` swaps LSTM ``h0`` slots and returns
     ``(output, (h_n, c_n))`` with ``h_n``/``c_n`` shaped ``(num_layers, B, H)``
@@ -127,13 +128,23 @@ class ParaRNN(nn.Module):
         return "newton" if self._use_newton() else "sequential"
 
     def forward(
-        self, x: Tensor, h0: Tensor | Sequence[Tensor] | None = None
+        self,
+        x: Tensor,
+        h0: Tensor | Sequence[Tensor] | None = None,
+        cu_seqlens: Tensor | None = None,
     ) -> Tensor | tuple[Tensor, Tensor] | tuple[Tensor, tuple[Tensor, Tensor]]:
         _validate_input(x, self.layers[0], batch_first=self.batch_first)
         if not self.batch_first:
             x = x.transpose(0, 1)
         h0s = _split_h0(h0, len(self.layers))
-        _validate_h0s(h0s, self.layers, batch=x.shape[0])
+        cs = None
+        h0_batch = x.shape[0]
+        if cu_seqlens is not None:
+            if x.shape[0] != 1:
+                raise ValueError(f"cu_seqlens packs x with batch=1, got batch={x.shape[0]}")
+            cs = validate_cu_seqlens(cu_seqlens, x.shape[1])
+            h0_batch = int(cs.numel()) - 1
+        _validate_h0s(h0s, self.layers, batch=h0_batch)
         if self.hidden_layout == "pytorch":
             h0s = [None if h is None else swap_lstm_ch(h) for h in h0s]
         h = x
@@ -152,15 +163,16 @@ class ParaRNN(nn.Module):
                     "num_layers": n,
                     "batch": x.shape[0],
                     "seq_len": x.shape[1],
+                    "n_seq": None if cs is None else int(cs.numel()) - 1,
                 },
             )
         for i, cell in enumerate(self.layers):
             if use_newton:
                 st = NewtonStats()
-                h = newton_apply(cell, h, self.config, h0=h0s[i], stats=st)
+                h = newton_apply(cell, h, self.config, h0=h0s[i], stats=st, cu_seqlens=cs)
                 self.last_stats.append(st)
             else:
-                h = sequential_apply(cell, h, h0s[i])
+                h = sequential_apply(cell, h, h0s[i], cu_seqlens=cs)
             if collect_lasts:
                 lasts.append(h[:, -1])
             if i + 1 < n:

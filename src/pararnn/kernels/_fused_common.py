@@ -6,6 +6,7 @@ import logging
 
 import torch
 import triton
+import triton.language as tl
 from torch import Tensor
 from triton.language.extra.cuda.libdevice import tanh as _nv_tanh
 
@@ -16,6 +17,37 @@ from pararnn.kernels.precision import load_acc, store_acc
 def _tanh(x):
     """CUDA libdevice tanh — same family as torch.tanh."""
     return _nv_tanh(x)
+
+
+@triton.jit
+def is_seg_head(offs_t, cs_ptr, n_seq):
+    """True where ``offs_t`` equals a packed start (``cu_seqlens[:-1]``)."""
+    head = (offs_t * 0) != 0
+    for s in range(n_seq):
+        head = head | (offs_t == tl.load(cs_ptr + s))
+    return head
+
+
+@triton.jit
+def gather_h0_heads(
+    h0_ptr,
+    offs_t,
+    offs_d,
+    dmask,
+    cs_ptr,
+    n_seq,
+    stride_h0b,
+    stride_h0d,
+    BLOCK_T: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    """``h0[s]`` at packed heads, zeros elsewhere. Shape ``(BLOCK_T, BLOCK_D)``."""
+    acc = tl.zeros((BLOCK_T, BLOCK_D), dtype=tl.float32)
+    for s in range(n_seq):
+        start = tl.load(cs_ptr + s)
+        h0s = load_acc(h0_ptr + s * stride_h0b + offs_d * stride_h0d, dmask, 0.0)
+        acc = tl.where((offs_t == start)[:, None], h0s[None, :], acc)
+    return acc
 
 
 @triton.jit

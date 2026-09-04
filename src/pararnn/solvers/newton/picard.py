@@ -80,6 +80,7 @@ def _newton_forward_picard_adapt(
     *,
     h0: Tensor | None,
     stats: NewtonStats | None,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     """Re-run Alg. 1 at the next P rung when the guess was outside the basin."""
     from pararnn.solvers.newton import _fill_stats, _newton_solve
@@ -88,7 +89,7 @@ def _newton_forward_picard_adapt(
     while True:
         st = stats if stats is not None else NewtonStats()
         quiet = replace(cfg, residual_fail=None)
-        states = _newton_solve(cell, x, quiet, h0=h0, stats=st)
+        states = _newton_solve(cell, x, quiet, h0=h0, stats=st, cu_seqlens=cu_seqlens)
         res = st.max_residual
         nxt = slstm_picard_next(int(cfg.picard_iters or 0))
         if _picard_retry_needed(res, config) and nxt is not None:
@@ -119,6 +120,7 @@ def _newton_forward_picard_adapt(
                 stats=st,
                 residual_history=st.residual_history,
                 known_residual=res,
+                cu_seqlens=cu_seqlens,
             )
         return states
 
@@ -130,6 +132,7 @@ def _slstm_newton_guess(
     *,
     h0: Tensor | None,
     wx: Tensor | None,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     """Zero-hidden, or extra frozen-gate Picard scans. Still O(log T)."""
     pre = wx if wx is not None else cell.W_x(x)
@@ -144,5 +147,7 @@ def _slstm_newton_guess(
                     "d_h": cell.d_h,
                 },
             )
-        return slstm_picard_init(cell, pre, h0=h0, n_picard=config.picard_iters)
-    return slstm_zero_hidden_init(pre, eps=cell.eps, h0=h0)
+        return slstm_picard_init(
+            cell, pre, h0=h0, n_picard=config.picard_iters, cu_seqlens=cu_seqlens
+        )
+    return slstm_zero_hidden_init(pre, eps=cell.eps, h0=h0, cu_seqlens=cu_seqlens)

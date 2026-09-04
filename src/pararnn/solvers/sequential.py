@@ -9,6 +9,7 @@ import torch
 from torch import Tensor, nn
 
 from pararnn.cells.para_lstm import ParaLSTM
+from pararnn.layout import validate_cu_seqlens
 
 _compiled_steps: dict[tuple[int, str], Callable[[Tensor, Tensor], Tensor]] = {}
 
@@ -19,6 +20,7 @@ def sequential_apply(
     h0: Tensor | None = None,
     *,
     step: Callable[[Tensor, Tensor], Tensor] | None = None,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     """Unroll ``cell.step`` along time. ``x`` is (batch, time, d_in).
 
@@ -26,10 +28,15 @@ def sequential_apply(
     Eager Python loop: correctness oracle. For a timing baseline see
     ``sequential_apply_compiled``. When ``cell`` has ``W_x``, compute it once
     over ``(B, T)`` (eq. 3.1). Custom ``step`` is unchanged.
+
+    ``cu_seqlens`` packs sequences into ``x`` of shape ``(1, N, …)``; ``h0``
+    is ``(S, …)``. Each packed span is an independent unroll.
     """
     batch, time, _ = x.shape
     if time < 1:
         raise ValueError(f"sequential_apply needs time >= 1, got {time}")
+    if cu_seqlens is not None:
+        return _sequential_ragged(cell, x, h0, step=step, cu_seqlens=cu_seqlens)
     h = h0 if h0 is not None else _zero_state(cell, batch, x)
     step_fn = step or cell.step
     wx_all = None
@@ -42,6 +49,28 @@ def sequential_apply(
         h = step_fn(h, x[:, t]) if wx_all is None else step_fn(h, x[:, t], wx=wx_all[:, t])
         outs.append(h)
     return torch.stack(outs, dim=1)
+
+
+def _sequential_ragged(
+    cell: nn.Module,
+    x: Tensor,
+    h0: Tensor | None,
+    *,
+    step: Callable[[Tensor, Tensor], Tensor] | None,
+    cu_seqlens: Tensor,
+) -> Tensor:
+    if x.shape[0] != 1:
+        raise ValueError(f"cu_seqlens packs x with batch=1, got batch={x.shape[0]}")
+    cs = validate_cu_seqlens(cu_seqlens, x.shape[1])
+    n_seq = int(cs.numel()) - 1
+    if h0 is not None and h0.shape[0] != n_seq:
+        raise ValueError(f"h0 batch {h0.shape[0]} != n_seq {n_seq}")
+    parts = []
+    for s in range(n_seq):
+        t0, t1 = int(cs[s]), int(cs[s + 1])
+        h0s = None if h0 is None else h0[s : s + 1]
+        parts.append(sequential_apply(cell, x[:, t0:t1], h0s, step=step))
+    return torch.cat(parts, dim=1)
 
 
 def sequential_apply_compiled(

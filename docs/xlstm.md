@@ -58,9 +58,16 @@ LSTM and sLSTM default output is the **hidden slot** `(B, T, hidden_size)`.
 - `ParaRNN` accepts one cell or a list of cells (multi-layer stack).
 - `dropout` applies between layers, same convention as `nn.LSTM`. A warning is emitted when `num_layers==1` (no-op).
 
-### Unsupported `nn.LSTM` options
+### Packed sequences
 
-`bidirectional`, `proj_size`, and packed sequences are outside the current API.
+`ParaRNN.forward(..., cu_seqlens=)` packs ragged time into `x` of shape
+`(1, N, …)` (FlashAttention-style exclusive prefix). `h0` is `(S, …)`.
+The Newton inner solve is a segmented scan on the `(J, r)` monoid (head
+flag at each `cu_seqlens[:-1]`). Triton `scan_diag` and fused ParaGRU
+compare those starts to `offs_t` in-tile. LSTM/sLSTM packed fused uses
+the Triton scan path. Eager Hillis–Steele remains the CPU / fallback scan.
+
+`bidirectional` and `proj_size` are outside the current API.
 
 ### Scan backend
 
@@ -69,6 +76,7 @@ LSTM and sLSTM default output is the **hidden slot** `(B, T, hidden_size)`.
 1. Fused Triton on CUDA for `ParaGRU`, `ParaLSTM`, and `ParaSLSTM` with `mix='diag'`.
 2. Triton associative scan + per-step `step` when fused kernels are unavailable.
 3. Eager Blelloch scan as the CPU / fallback path.
+4. Ragged `cu_seqlens`: fused ParaGRU in-kernel; otherwise Triton or eager segmented scan.
 
 See also [`structure.md`](structure.md) for kernel file layout.
 

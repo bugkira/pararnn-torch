@@ -26,6 +26,7 @@ def fused_newton(
     scan_tile: str = "assoc",
     fused_time_loop: bool = False,
     fused_window_len: int | None = None,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     if isinstance(cell, ParaGRU):
         if log_coords:
@@ -39,7 +40,16 @@ def fused_newton(
         from pararnn.kernels.newton_gru import newton_gru_fused
 
         a_z, a_r, a_n = cell.clipped_a()
-        return newton_gru_fused(wx, a_z, a_r, a_n, max_iters=max_iters, omega=omega, h0=h0)
+        return newton_gru_fused(
+            wx,
+            a_z,
+            a_r,
+            a_n,
+            max_iters=max_iters,
+            omega=omega,
+            h0=h0,
+            cu_seqlens=cu_seqlens,
+        )
     if isinstance(cell, ParaLSTM):
         if log_coords:
             raise TypeError("fused log coords is ParaSLSTM only")

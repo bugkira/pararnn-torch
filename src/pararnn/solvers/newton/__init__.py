@@ -5,6 +5,8 @@ starts from the zero-hidden unroll. Backward is eq. 2.6 (one reverse scan).
 
 ``scan_backend='fused'`` is a handwritten Triton kernel for ParaGRU, ParaLSTM,
 and ParaSLSTM ``mix='diag'``. ``'auto'`` picks fused on CUDA for those cells.
+Packed ``cu_seqlens``: fused ParaGRU stays in-kernel; LSTM/sLSTM fused falls
+back to Triton scan with ``J=0`` at segment heads.
 """
 
 from __future__ import annotations
@@ -16,9 +18,10 @@ from dataclasses import replace
 import torch
 from torch import Tensor, nn
 
+from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
 from pararnn.cells.para_slstm import ParaSLSTM
-from pararnn.layout import prepend_state
+from pararnn.layout import prepend_state, prepend_state_ragged, validate_cu_seqlens
 from pararnn.solvers.jacobian import step_and_jacobian
 from pararnn.solvers.newton import config, dispatch, picard
 from pararnn.solvers.newton.config import (
@@ -29,7 +32,13 @@ from pararnn.solvers.newton.config import (
     NewtonStats,
     _validate_config,
 )
-from pararnn.solvers.newton.dispatch import _resolve_backend, _reverse_scan, _scan, _t0_state_vjp
+from pararnn.solvers.newton.dispatch import (
+    _resolve_backend,
+    _reverse_scan,
+    _scan,
+    _state_vjp_at_times,
+    _t0_state_vjp,
+)
 from pararnn.solvers.newton.picard import _newton_forward_picard_adapt, _slstm_newton_guess
 from pararnn.solvers.slstm_log import (
     SLSTMLogCoords,
@@ -69,10 +78,16 @@ def newton_apply(
     *,
     h0: Tensor | None = None,
     stats: NewtonStats | None = None,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     """Parallel forward: Newton on F(H)=0, inner solve via associative scan.
 
     ``h0`` is the paper's ``h_0`` (default 0). Fused kernels prepend ``h0``.
+
+    ``cu_seqlens`` packs sequences into ``x`` of shape ``(1, N, …)``; ``h0``
+    is then ``(S, …)``. The inner scan is segmented (head flags). Fused
+    ParaGRU walks packed heads in-kernel. LSTM/sLSTM ``fused`` falls back to
+    Triton scan with ``J=0`` at heads. ``eager`` keeps Hillis–Steele.
 
     If gradients are enabled, the backward is eq. 2.6 (one reverse scan).
     ``chunk_len`` windows that scan as well: each window is a local reverse
@@ -82,13 +97,18 @@ def newton_apply(
     config = config or NewtonConfig()
     _validate_config(config)
     config = _resolve_backend(cell, x, config)
+    cs = None
+    if cu_seqlens is not None:
+        if config.scan_backend == "fused" and not isinstance(cell, ParaGRU):
+            config = replace(config, scan_backend="triton")
+        cs = _prepare_ragged(x, h0, config, cu_seqlens)
     params = tuple(cell.parameters())
     has_h0 = h0 is not None
     needs_grad = torch.is_grad_enabled() and (
         x.requires_grad or (has_h0 and h0.requires_grad) or any(p.requires_grad for p in params)
     )
     if not needs_grad:
-        return _newton_forward(cell, x, config, h0=h0, stats=stats)
+        return _newton_forward(cell, x, config, h0=h0, stats=stats, cu_seqlens=cs)
 
     # Nested Autograd.Function.apply takes tensors. cell/config/stats close
     # over this frame; a module-level class storing them is racy under
@@ -102,19 +122,22 @@ def newton_apply(
             del param_tensors
             h0_fwd = h0_in if has_h0 else None
             with torch.no_grad():
-                states = _newton_forward(cell, x_in, config, h0=h0_fwd, stats=stats)
+                states = _newton_forward(cell, x_in, config, h0=h0_fwd, stats=stats, cu_seqlens=cs)
             ctx.has_h0 = has_h0
             ctx.scan_backend = "triton" if config.scan_backend == "fused" else config.scan_backend
             ctx.jacobian = config.jacobian
             ctx.jac_structure = config.jac_structure
             ctx.chunk_len = config.chunk_len
-            ctx.save_for_backward(states, x_in, h0_in)
+            ctx.has_cu_seqlens = cs is not None
+            saved_cs = cs if cs is not None else x_in.new_zeros(0, dtype=torch.long)
+            ctx.save_for_backward(states, x_in, h0_in, saved_cs)
             return states
 
         @staticmethod
         def backward(ctx, grad_states: Tensor):
-            states, x_in, h0_in = ctx.saved_tensors
+            states, x_in, h0_in, saved_cs = ctx.saved_tensors
             h0_fwd = h0_in if ctx.has_h0 else None
+            cs_bwd = saved_cs if ctx.has_cu_seqlens else None
             if ctx.chunk_len is not None:
                 grad_x, param_grads, grad_h0 = _eq26_vjp_chunked(
                     cell,
@@ -137,6 +160,7 @@ def newton_apply(
                     jacobian=ctx.jacobian,
                     jac_structure=ctx.jac_structure,
                     h0=h0_fwd,
+                    cu_seqlens=cs_bwd,
                 )
             if not x_in.requires_grad:
                 grad_x = None
@@ -147,6 +171,35 @@ def newton_apply(
     return _NewtonFixedPoint.apply(x, h0_leaf, *params)
 
 
+def _prepare_ragged(
+    x: Tensor,
+    h0: Tensor | None,
+    config: NewtonConfig,
+    cu_seqlens: Tensor,
+) -> Tensor:
+    if x.shape[0] != 1:
+        raise ValueError(f"cu_seqlens packs x with batch=1, got batch={x.shape[0]}")
+    if config.chunk_len is not None:
+        raise ValueError("chunk_len cannot be combined with cu_seqlens")
+    if config.fused_time_loop:
+        raise ValueError("fused_time_loop cannot be combined with cu_seqlens")
+    cs = validate_cu_seqlens(cu_seqlens, x.shape[1])
+    n_seq = int(cs.numel()) - 1
+    if h0 is not None and h0.shape[0] != n_seq:
+        raise ValueError(f"h0 batch {h0.shape[0]} != n_seq {n_seq}")
+    if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
+        log.debug(
+            "newton_ragged",
+            extra={
+                "n_seq": n_seq,
+                "packed_len": int(x.shape[1]),
+                "scan_backend": config.scan_backend,
+                "requested_backend": config.scan_backend,
+            },
+        )
+    return cs
+
+
 def _newton_forward(
     cell: nn.Module,
     x: Tensor,
@@ -154,12 +207,15 @@ def _newton_forward(
     *,
     h0: Tensor | None = None,
     stats: NewtonStats | None = None,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     if config.chunk_len is not None:
         return _newton_chunked(cell, x, config, h0=h0, stats=stats)
     if config.picard_adapt and isinstance(cell, ParaSLSTM) and not torch.compiler.is_compiling():
-        return _newton_forward_picard_adapt(cell, x, config, h0=h0, stats=stats)
-    return _newton_solve(cell, x, config, h0=h0, stats=stats)
+        return _newton_forward_picard_adapt(
+            cell, x, config, h0=h0, stats=stats, cu_seqlens=cu_seqlens
+        )
+    return _newton_solve(cell, x, config, h0=h0, stats=stats, cu_seqlens=cu_seqlens)
 
 
 def _newton_solve(
@@ -169,6 +225,7 @@ def _newton_solve(
     *,
     h0: Tensor | None = None,
     stats: NewtonStats | None = None,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     if config.chunk_len is not None:
         return _newton_chunked(cell, x, config, h0=h0, stats=stats)
@@ -177,15 +234,24 @@ def _newton_solve(
             "fused_time_loop requires scan_backend='fused' (or auto on CUDA ParaSLSTM)"
         )
     if config.scan_backend == "fused":
-        states = _newton_fused(cell, x, config, h0=h0)
+        states = _newton_fused(cell, x, config, h0=h0, cu_seqlens=cu_seqlens)
         # Fused kernels run exactly max_iters (no residual early-stop).
-        _fill_stats(cell, x, states, h0, config, iters=config.max_iters, stats=stats)
+        _fill_stats(
+            cell,
+            x,
+            states,
+            h0,
+            config,
+            iters=config.max_iters,
+            stats=stats,
+            cu_seqlens=cu_seqlens,
+        )
         return states
     wx = _wx_if_analytic(cell, x, config.jacobian)
     if isinstance(cell, ParaSLSTM):
-        states = _slstm_newton_guess(cell, x, config, h0=h0, wx=wx)
+        states = _slstm_newton_guess(cell, x, config, h0=h0, wx=wx, cu_seqlens=cu_seqlens)
     else:
-        h_prev0 = _init_h_prev(cell, x, h0)
+        h_prev0 = _init_h_prev(cell, x, h0, cu_seqlens=cu_seqlens)
         states, _ = step_and_jacobian(
             cell,
             h_prev0,
@@ -201,8 +267,9 @@ def _newton_solve(
         eps = native.eps
         states = slstm_encode_log(states, eps=eps)
         if h0 is None:
+            n_h0 = int(cu_seqlens.numel()) - 1 if cu_seqlens is not None else x.shape[0]
             h0_loop = slstm_encode_log(
-                x.new_zeros(x.shape[0], native.state_slots, native.d_h),
+                x.new_zeros(n_h0, native.state_slots, native.d_h),
                 eps=eps,
             )
         else:
@@ -221,7 +288,7 @@ def _newton_solve(
     residual_is_current = False
     atol = config.residual_atol
     for it in range(config.max_iters):
-        h_prev = prepend_state(states, h0_loop)
+        h_prev = _prepend(states, h0_loop, cu_seqlens)
         pred, jac = step_and_jacobian(
             cell,
             h_prev,
@@ -262,7 +329,9 @@ def _newton_solve(
                     },
                 )
             break
-        delta = _scan(jac, residual, backend=config.scan_backend, structure=structure)
+        delta = _scan(
+            jac, residual, backend=config.scan_backend, structure=structure, cu_seqlens=cu_seqlens
+        )
         if states.dtype == torch.float16:
             states = (states.float() + config.omega * delta.float()).to(states.dtype)
         else:
@@ -285,6 +354,7 @@ def _newton_solve(
         stats=stats,
         residual_history=history,
         known_residual=last_res if residual_is_current else None,
+        cu_seqlens=cu_seqlens,
     )
     return states
 
@@ -330,11 +400,12 @@ def _fill_stats(
     stats: NewtonStats | None,
     residual_history: list[float] | tuple[float, ...] = (),
     known_residual: float | None = None,
+    cu_seqlens: Tensor | None = None,
 ) -> None:
     if stats is None and config.residual_fail is None:
         return
     if known_residual is None:
-        pred = cell.step(prepend_state(states, h0), x)
+        pred = cell.step(_prepend(states, h0, cu_seqlens), x)
         res = float((pred - states).detach().abs().amax())
     else:
         res = known_residual
@@ -380,6 +451,7 @@ def _newton_fused(
     config: NewtonConfig,
     *,
     h0: Tensor | None = None,
+    cu_seqlens: Tensor | None = None,
 ) -> Tensor:
     """Alg. 1 with cell+J+scan in Triton. ``W_x(x)`` is still one PyTorch GEMM."""
     wx = _input_affine(cell, x)
@@ -417,6 +489,7 @@ def _newton_fused(
         scan_tile=config.scan_tile,
         fused_time_loop=config.fused_time_loop,
         fused_window_len=window,
+        cu_seqlens=cu_seqlens,
     )
 
 
@@ -430,13 +503,14 @@ def _eq26_vjp(
     jacobian: str = "auto",
     jac_structure: str | None = None,
     h0: Tensor | None = None,
+    cu_seqlens: Tensor | None = None,
 ) -> tuple[Tensor | None, tuple[Tensor | None, ...], Tensor | None]:
     """``∇_x L``, per-parameter grads, and ``∇_{h0} L`` (eq. 2.6 + cell VJP).
 
     ``∇_{h0} L = J_0^T μ_0``. Reverse scan over ``H`` starts at t=0; ``J_0``
-    is the h0 adjoint.
+    is the h0 adjoint. Ragged: one adjoint per sequence start.
     """
-    h_prev = prepend_state(states, h0)
+    h_prev = _prepend(states, h0, cu_seqlens)
     wx = _wx_if_analytic(cell, x, jacobian)
     structure = jac_structure or getattr(cell, "jac_structure", None)
     with torch.no_grad():
@@ -448,10 +522,16 @@ def _eq26_vjp(
             jacobian=jacobian,
             jac_structure=jac_structure,
         )
-        mu = _reverse_scan(jac, partial, backend=backend, structure=structure)
+        mu = _reverse_scan(
+            jac, partial, backend=backend, structure=structure, cu_seqlens=cu_seqlens
+        )
     packed = uses_packed_vjp(cell)
     grad_x, param_grads = cell_vjp(cell, h_prev, x, mu, packed=packed)
-    h0_vjp = _t0_state_vjp(jac, mu)
+    if cu_seqlens is None:
+        h0_vjp = _t0_state_vjp(jac, mu)
+    else:
+        starts = validate_cu_seqlens(cu_seqlens, states.shape[1])[:-1]
+        h0_vjp = _state_vjp_at_times(jac, mu, starts.to(device=jac.device))[0]
     grad_h0 = None if h0 is None else h0_vjp
     return grad_x, param_grads, grad_h0
 
@@ -512,12 +592,28 @@ def _eq26_vjp_chunked(
     return acc_x, tuple(acc_params), grad_h0
 
 
-def _init_h_prev(cell: nn.Module, x: Tensor, h0: Tensor | None) -> Tensor:
-    """App. A: ``H^0_t = f(h_{t-1}, x_t)`` in parallel; only t=0 sees ``h0``."""
+def _init_h_prev(
+    cell: nn.Module,
+    x: Tensor,
+    h0: Tensor | None,
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
+    """App. A: ``H^0_t = f(h_{t-1}, x_t)`` in parallel; only starts see ``h0``."""
     h_prev0 = _zero_state_like_input(cell, x)
+    if cu_seqlens is None:
+        if h0 is not None:
+            h_prev0[:, 0] = h0
+        return h_prev0
+    starts = validate_cu_seqlens(cu_seqlens, x.shape[1])[:-1]
     if h0 is not None:
-        h_prev0[:, 0] = h0
+        h_prev0[0, starts] = h0
     return h_prev0
+
+
+def _prepend(states: Tensor, h0: Tensor | None, cu_seqlens: Tensor | None) -> Tensor:
+    if cu_seqlens is None:
+        return prepend_state(states, h0)
+    return prepend_state_ragged(states, h0, cu_seqlens)
 
 
 def _wx_if_analytic(cell: nn.Module, x: Tensor, jacobian: str) -> Tensor | None:

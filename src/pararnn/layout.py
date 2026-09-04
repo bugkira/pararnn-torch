@@ -16,7 +16,9 @@ cells, solvers, and kernels.
     δh_t = J_t δh_{t-1} + (f(h_{t-1}, x_t) - h_t),  δh_{<0} = 0
 
 Work-efficient Blelloch exclusive scan on 0-based ``t``, pad to ``2^k``
-with identity ``(I, 0)``.
+with identity ``(I, 0)``. Ragged batches pack time to ``N = cu_seqlens[-1]``
+with ``x`` shaped ``(1, N, …)``; the scan is segmented (head flags at
+``cu_seqlens[:-1]``).
 
 ``ParaRNN`` only: ``batch_first=False`` permutes ``x`` and the output like
 ``nn.LSTM``; ``h0`` stays batch-leading. ``hidden_layout='pytorch'`` swaps
@@ -85,4 +87,52 @@ def prepend_state(states: torch.Tensor, h0: torch.Tensor | None) -> torch.Tensor
     else:
         out[:, 0] = h0
     out[:, 1:] = states[:, :-1]
+    return out
+
+
+def validate_cu_seqlens(cu_seqlens: torch.Tensor, time: int) -> torch.Tensor:
+    """FlashAttention-style exclusive prefix: ``(S+1,)``, ``[0] = 0``, last = ``time``."""
+    if cu_seqlens.dim() != 1 or cu_seqlens.numel() < 2:
+        raise ValueError(f"cu_seqlens must be (S+1,), got {tuple(cu_seqlens.shape)}")
+    cs = cu_seqlens.to(dtype=torch.long)
+    if int(cs[0]) != 0:
+        raise ValueError(f"cu_seqlens[0] must be 0, got {int(cs[0])}")
+    if int(cs[-1]) != int(time):
+        raise ValueError(f"cu_seqlens[-1] must equal time={time}, got {int(cs[-1])}")
+    if torch.any(cs[1:] <= cs[:-1]):
+        raise ValueError("cu_seqlens must be strictly increasing")
+    return cs
+
+
+def segment_start_flags(cu_seqlens: torch.Tensor, time: int, *, batch: int = 1) -> torch.Tensor:
+    """Bool ``(batch, time)``: True at the first token of each packed sequence."""
+    cs = validate_cu_seqlens(cu_seqlens, time)
+    flags = torch.zeros(batch, time, dtype=torch.bool, device=cs.device)
+    flags[:, cs[:-1]] = True
+    return flags
+
+
+def prepend_state_ragged(
+    states: torch.Tensor,
+    h0: torch.Tensor | None,
+    cu_seqlens: torch.Tensor,
+) -> torch.Tensor:
+    """Like ``prepend_state``, but ``h0[s]`` is the previous state at ``cu_seqlens[s]``.
+
+    Packed ``states`` is ``(1, N, …)``. ``h0`` is ``(S, …)`` or ``None`` (zeros).
+    """
+    if states.shape[0] != 1:
+        raise ValueError(f"ragged prepend needs packed batch 1, got batch={states.shape[0]}")
+    time = states.shape[1]
+    cs = validate_cu_seqlens(cu_seqlens, time)
+    out = states.new_empty(states.shape)
+    out[:, 1:] = states[:, :-1]
+    starts = cs[:-1]
+    if h0 is None:
+        out[:, starts] = 0
+    else:
+        n_seq = int(cs.numel()) - 1
+        if h0.shape[0] != n_seq:
+            raise ValueError(f"h0 batch {h0.shape[0]} != n_seq {n_seq}")
+        out[0, starts] = h0
     return out
