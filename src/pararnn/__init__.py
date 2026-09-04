@@ -9,8 +9,10 @@ from pararnn.solvers import (
     newton_apply,
     sequential_apply,
 )
+from pararnn.speculative import LinearDraftResult, verify_linear_draft
 
 __all__ = [
+    "LinearDraftResult",
     "NewtonConfig",
     "NewtonDivergenceError",
     "NewtonStats",
@@ -21,6 +23,7 @@ __all__ = [
     "RNNCell",
     "newton_apply",
     "sequential_apply",
+    "verify_linear_draft",
 ]
 
 try:
