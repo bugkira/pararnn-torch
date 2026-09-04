@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- `PagedStatePool` / `paged_apply`: O(1) GPU slot per request (sLSTM `(c,n,m,h)`, LSTM `(c,h)`, GRU `h`). Host free-list, `index_select` / `index_copy_`, mixed packed prefill+decode via `cu_seqlens`. Triton indirect `block_table` loads and CPU↔GPU page swap are a later pass (`examples/paged_cache.py`).
+
 ## [0.6.0] - 2026-09-04
 
 Ragged time, data/tensor/context parallel, and greedy linear-draft verify.

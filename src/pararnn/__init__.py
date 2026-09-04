@@ -2,6 +2,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM, RNNCell
 from pararnn.layers import ParaRNN
+from pararnn.paged import PagedStatePool, paged_apply
 from pararnn.solvers import (
     NewtonConfig,
     NewtonDivergenceError,
@@ -16,12 +17,14 @@ __all__ = [
     "NewtonConfig",
     "NewtonDivergenceError",
     "NewtonStats",
+    "PagedStatePool",
     "ParaGRU",
     "ParaLSTM",
     "ParaRNN",
     "ParaSLSTM",
     "RNNCell",
     "newton_apply",
+    "paged_apply",
     "sequential_apply",
     "verify_linear_draft",
 ]

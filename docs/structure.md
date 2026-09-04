@@ -21,6 +21,7 @@ ParaRNN/
 │   ├── distributed.py          # warmup + unwrap for DDP/FSDP
 │   ├── tensor_parallel.py      # Megatron TP along d_h
 │   ├── speculative.py          # linear-draft verify (one Newton scan)
+│   ├── paged.py                # O(1) state slot pool (continuous batching)
 │   ├── layout.py
 │   └── weight_init.py          # App. C.1
 ├── examples/
@@ -35,7 +36,7 @@ ParaRNN/
 
 ## Current surface (0.4)
 
-`NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` and residual early-stop (`NewtonDivergenceError` if max|F|>1 after K). `ParaRNN` takes a cell or a list, `return_hidden`, LSTM `output_hidden`. **ParaSLSTM** `mix='diag'` is the fused 4×4 path; `mix='head'` is an unfused ablation (`scan_dense`); `mix='dense'` is a `d_h<=8` test oracle. Examples: copy, Dyck-1, Z2 parity, NX-AI `sLSTMBlock` hybrid, DDP/FSDP2, tensor-parallel diag block, context-parallel scan, linear-draft verify. Two-tile scan: `scan_diag_two_ranks` (streams). NCCL time split: `scan_diag_context_parallel`. `verify_linear_draft`: one Newton scan of a K-token chain, first mismatch \(k^\star\). Data / tensor / context parallel: `docs/distributed.md`.
+`NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` and residual early-stop (`NewtonDivergenceError` if max|F|>1 after K). `ParaRNN` takes a cell or a list, `return_hidden`, LSTM `output_hidden`. **ParaSLSTM** `mix='diag'` is the fused 4×4 path; `mix='head'` is an unfused ablation (`scan_dense`); `mix='dense'` is a `d_h<=8` test oracle. Examples: copy, Dyck-1, Z2 parity, NX-AI `sLSTMBlock` hybrid, DDP/FSDP2, tensor-parallel diag block, context-parallel scan, linear-draft verify, paged state pool. Two-tile scan: `scan_diag_two_ranks` (streams). NCCL time split: `scan_diag_context_parallel`. `verify_linear_draft`: one Newton scan of a K-token chain, first mismatch \(k^\star\). `PagedStatePool`: slot allocator + gather/scatter of `(c,n,m,h)`. Data / tensor / context parallel: `docs/distributed.md`.
 
 ## Naming
 
