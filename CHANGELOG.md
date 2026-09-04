@@ -6,7 +6,17 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Added
 
-- `PagedStatePool` / `paged_apply`: O(1) GPU slot per request (sLSTM `(c,n,m,h)`, LSTM `(c,h)`, GRU `h`). Host free-list, `index_select` / `index_copy_`, mixed packed prefill+decode via `cu_seqlens`. Triton indirect `block_table` loads and CPU↔GPU page swap are a later pass (`examples/paged_cache.py`).
+- `PagedStatePool` / `paged_apply`: O(1) GPU slot per request (sLSTM
+  `(c,n,m,h)`, LSTM `(c,h)`, GRU `h`). Host free-list, `index_select` /
+  `index_copy_`, mixed packed prefill+decode via `cu_seqlens`. T=1 sequential
+  CUDA writes slots in-kernel through `block_table`. CPU↔GPU page swap is a
+  later pass (`examples/paged_cache.py`).
+- `decode_step`: T=1 Triton kernel for the recurrent step (gates + mix in one
+  SRAM trip). `decode_wx` fills `W_x(x)` into a buffer. `out=` reuses storage;
+  `block_table` indexes a pool `(C, …)`. App. C.1 clip is in-kernel so a CUDA
+  graph of GEMM → step does not allocate. `sequential_apply` / `ParaRNN.eval()`
+  take this path on CUDA when `T=1` and gradients are off
+  (`examples/decode_step.py`).
 
 ## [0.6.0] - 2026-09-04
 

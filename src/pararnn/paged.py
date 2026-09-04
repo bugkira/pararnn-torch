@@ -5,9 +5,9 @@ share one GPU pool: a request owns a **slot** (one page). ``block_table``
 is that slot id. Gather ``h0`` by slot, run Newton or ``step``, scatter
 the last state back.
 
-Triton kernels still index ``batch * stride``. Indirect loads through
-``block_table[req_id]`` and CPU↔GPU page swap are a later pass. This
-module is the host allocator plus ``index_select`` / ``index_copy_``.
+Triton decode_step can index the pool through ``block_table`` (slot ids).
+CPU↔GPU page swap is a later pass. This module is the host allocator plus
+``index_select`` / ``index_copy_``; T=1 sequential CUDA writes slots in-kernel.
 """
 
 from __future__ import annotations
@@ -16,8 +16,9 @@ import logging
 from collections.abc import Sequence
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 
+from pararnn.kernels.decode import can_decode_step, decode_step, decode_wx
 from pararnn.layers.para_rnn import (
     ParaRNN,
     _hidden_slot,
@@ -55,8 +56,7 @@ class SlotAllocator:
             raise ValueError(f"allocate n must be >= 1, got {n}")
         if n > len(self._free):
             raise RuntimeError(
-                f"paged cache OOM: need {n} slots, free {len(self._free)}, "
-                f"capacity {self.capacity}"
+                f"paged cache OOM: need {n} slots, free {len(self._free)}, capacity {self.capacity}"
             )
         ids = [self._free.pop() for _ in range(n)]
         self._used.update(ids)
@@ -177,6 +177,15 @@ def paged_apply(
     elif x.shape[0] != n_req:
         raise ValueError(f"x batch {x.shape[0]} != slot_ids {n_req}")
 
+    if (
+        solver == "sequential"
+        and cu_seqlens is None
+        and x.shape[1] == 1
+        and not torch.is_grad_enabled()
+        and all(can_decode_step(c, x) for c in model.layers)
+    ):
+        return _paged_decode_t1(pool, ids, x)
+
     h0s = pool.gather(ids)
     if isinstance(h0s, Tensor):
         h0_list: list[Tensor] = [h0s]
@@ -208,6 +217,29 @@ def paged_apply(
             },
         )
     return y
+
+
+def _paged_decode_t1(pool: PagedStatePool, ids: Tensor, x: Tensor) -> Tensor:
+    """T=1 sequential: Triton decode writes pool slots via ``block_table``."""
+    h_in = x[:, 0]
+    for i, cell in enumerate(pool.model.layers):
+        wx = decode_wx(cell, h_in)
+        decode_step(cell, pool.buffers[i], wx=wx, block_table=ids)
+        h_in = _gather_hidden(pool.buffers[i], ids, cell)
+    if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
+        log.debug(
+            "paged_decode_t1",
+            extra={"n_req": int(ids.numel()), "n_used": pool.allocator.n_used},
+        )
+    return h_in.unsqueeze(1)
+
+
+def _gather_hidden(buf: Tensor, ids: Tensor, cell: nn.Module) -> Tensor:
+    st = buf.index_select(0, ids)
+    slot = _hidden_slot(cell)
+    if slot is None:
+        return st
+    return st[:, slot, :]
 
 
 def _last_states(traj: Tensor, cu_seqlens: Tensor | None) -> Tensor:

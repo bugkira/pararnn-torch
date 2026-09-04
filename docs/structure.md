@@ -17,7 +17,7 @@ ParaRNN/
 │   ├── cells/                  # ParaGRU, ParaLSTM, ParaSLSTM
 │   ├── layers/                 # ParaRNN
 │   ├── solvers/                # sequential, Newton, scan, VJP
-│   ├── kernels/                # Triton scans + fused Newton
+│   ├── kernels/                # Triton scans + fused Newton + T=1 decode_step
 │   ├── distributed.py          # warmup + unwrap for DDP/FSDP
 │   ├── tensor_parallel.py      # Megatron TP along d_h
 │   ├── speculative.py          # linear-draft verify (one Newton scan)
@@ -36,7 +36,7 @@ ParaRNN/
 
 ## Current surface (0.4)
 
-`NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` and residual early-stop (`NewtonDivergenceError` if max|F|>1 after K). `ParaRNN` takes a cell or a list, `return_hidden`, LSTM `output_hidden`. **ParaSLSTM** `mix='diag'` is the fused 4×4 path; `mix='head'` is an unfused ablation (`scan_dense`); `mix='dense'` is a `d_h<=8` test oracle. Examples: copy, Dyck-1, Z2 parity, NX-AI `sLSTMBlock` hybrid, DDP/FSDP2, tensor-parallel diag block, context-parallel scan, linear-draft verify, paged state pool. Two-tile scan: `scan_diag_two_ranks` (streams). NCCL time split: `scan_diag_context_parallel`. `verify_linear_draft`: one Newton scan of a K-token chain, first mismatch \(k^\star\). `PagedStatePool`: slot allocator + gather/scatter of `(c,n,m,h)`. Data / tensor / context parallel: `docs/distributed.md`.
+`NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` and residual early-stop (`NewtonDivergenceError` if max|F|>1 after K). `ParaRNN` takes a cell or a list, `return_hidden`, LSTM `output_hidden`. **ParaSLSTM** `mix='diag'` is the fused 4×4 path; `mix='head'` is an unfused ablation (`scan_dense`); `mix='dense'` is a `d_h<=8` test oracle. Examples: copy, Dyck-1, Z2 parity, NX-AI `sLSTMBlock` hybrid, DDP/FSDP2, tensor-parallel diag block, context-parallel scan, linear-draft verify, paged state pool, T=1 decode-step. Two-tile scan: `scan_diag_two_ranks` (streams). NCCL time split: `scan_diag_context_parallel`. `verify_linear_draft`: one Newton scan of a K-token chain, first mismatch \(k^\star\). `PagedStatePool`: slot allocator + gather/scatter of `(c,n,m,h)`. `decode_step`: T=1 Triton recurrent step (gates + mix; `W_x` is a GEMM). `out=` and `block_table` for serving. Data / tensor / context parallel: `docs/distributed.md`.
 
 ## Naming
 

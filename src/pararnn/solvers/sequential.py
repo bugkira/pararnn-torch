@@ -1,4 +1,9 @@
-"""Sequential unroll — the numerical oracle for Newton+scan."""
+"""Sequential unroll — the numerical oracle for Newton+scan.
+
+``T=1`` on CUDA (no grad) uses the decode Triton kernel: one SRAM trip for
+the recurrent step. ``W_x`` is still a GEMM. Longer eval unrolls stay the
+eager ``cell.step`` loop (or ``sequential_apply_compiled``).
+"""
 
 from __future__ import annotations
 
@@ -31,6 +36,10 @@ def sequential_apply(
 
     ``cu_seqlens`` packs sequences into ``x`` of shape ``(1, N, …)``; ``h0``
     is ``(S, …)``. Each packed span is an independent unroll.
+
+    On CUDA, ``T=1`` with gradients disabled uses ``decode_step`` (one Triton
+    launch for the recurrent step). ``W_x`` is still a GEMM. Custom ``step``
+    and ``T>1`` stay on this Python loop.
     """
     batch, time, _ = x.shape
     if time < 1:
@@ -44,6 +53,11 @@ def sequential_apply(
         lin = getattr(cell, "W_x", None)
         if lin is not None:
             wx_all = lin(x)
+    if step is None and time == 1 and not torch.is_grad_enabled() and _can_decode_triton(cell, x):
+        from pararnn.kernels.decode import decode_step
+
+        wx_t = None if wx_all is None else wx_all[:, 0]
+        return decode_step(cell, h, x[:, 0], wx=wx_t).unsqueeze(1)
     outs = []
     for t in range(time):
         h = step_fn(h, x[:, t]) if wx_all is None else step_fn(h, x[:, t], wx=wx_all[:, t])
@@ -117,6 +131,12 @@ def _zero_state(cell: nn.Module, batch: int, ref: Tensor) -> Tensor:
     if slots == 1:
         return ref.new_zeros(batch, d_h)
     return ref.new_zeros(batch, slots, d_h)
+
+
+def _can_decode_triton(cell: nn.Module, x: Tensor) -> bool:
+    from pararnn.kernels.decode import can_decode_step
+
+    return can_decode_step(cell, x)
 
 
 def _accepts_wx(fn: Callable) -> bool:

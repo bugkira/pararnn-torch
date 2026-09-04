@@ -1,3 +1,4 @@
+from pararnn.kernels.decode import can_decode_step, decode_step, decode_wx
 from pararnn.solvers.newton import (
     LIBRARY_NEWTON_ITERS,
     NewtonConfig,
@@ -27,6 +28,9 @@ __all__ = [
     "NewtonDivergenceError",
     "NewtonStats",
     "SLSTMLogCoords",
+    "can_decode_step",
+    "decode_step",
+    "decode_wx",
     "newton_apply",
     "sequential_apply",
     "slstm_auto_picard",

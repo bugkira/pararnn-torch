@@ -19,7 +19,7 @@ from pararnn import NewtonConfig, ParaRNN, ParaSLSTM
 
 cell = ParaSLSTM(64, 64)  # mix='diag'
 model = ParaRNN(cell, config=NewtonConfig(max_iters=3), solver="auto")
-# .train() → Newton; .eval() → sequential step
+# .train() → Newton; .eval() → sequential step (T=1 CUDA: decode_step)
 ```
 
 `ParaRNN` is the Newton/sequential wrapper for any cell (GRU, LSTM, sLSTM).
@@ -37,6 +37,9 @@ LayerNorm, residual, and FFN live outside the library cell. The Z₂ parity smok
 - `d_in` / `d_h` are aliases for `input_size` / `hidden_size` on cells.
 - `solver='newton'` or `solver='sequential'` on `ParaRNN` forces that path regardless of `.train()` / `.eval()`.
 - Default `solver='auto'`: Newton in train mode, sequential in eval mode.
+  On CUDA, eval at `T=1` with gradients off uses `decode_step` (one Triton
+  launch for the recurrent step; `W_x` is a GEMM). `out=` reuses a buffer
+  for CUDA graphs; `block_table` indexes a paged pool.
 
 ### Outputs
 
