@@ -296,9 +296,7 @@ def newton_gru_fused(
         raise ValueError(f"wx last dim {three_d} != 3 * d_h={3 * d_h}")
     h0 = prepare_h0(wx, h0, (batch, d_h))
     validate_cuda_tensors(wx, a_z, a_r, a_n, h0, name="newton_gru_fused")
-    n_chunks, n_dtiles = time_tiles(
-        time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD, cap=False
-    )
+    n_chunks, n_dtiles = time_tiles(time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD, cap=False)
     h = wx.new_empty(batch, time, d_h)
     grid_td = (batch, n_chunks, n_dtiles)
     _gru_init_kernel[grid_td](

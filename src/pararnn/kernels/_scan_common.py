@@ -58,9 +58,7 @@ def incl_block_aggregates(
     batch, n_chunks, _, d_h = agg_r.shape
     n_jac = n_state * n_state
     if agg_j.shape != (batch, n_chunks, n_jac, d_h):
-        raise ValueError(
-            f"agg_j shape {tuple(agg_j.shape)} != {(batch, n_chunks, n_jac, d_h)}"
-        )
+        raise ValueError(f"agg_j shape {tuple(agg_j.shape)} != {(batch, n_chunks, n_jac, d_h)}")
     if n_chunks <= chunk_pad:
         incl_r = agg_r.new_empty(batch, n_chunks, n_state, d_h)
         n_dtiles_chunk = (d_h + block_d - 1) // block_d
@@ -128,9 +126,7 @@ def run_block_scan_triton(
     if time <= 1:
         return residual.clone()
 
-    n_chunks, n_dtiles = time_tiles(
-        time, d_h, block_t, block_d, chunk_pad, cap=False
-    )
+    n_chunks, n_dtiles = time_tiles(time, d_h, block_t, block_d, chunk_pad, cap=False)
     n_jac = n_state * n_state
     j_flat = jac.view(batch, time, n_jac, d_h)
     r_flat = residual

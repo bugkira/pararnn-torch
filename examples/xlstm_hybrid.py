@@ -37,9 +37,7 @@ def require_xlstm():
         from xlstm.blocks.slstm.layer import sLSTMLayerConfig
         from xlstm.components.feedforward import FeedForwardConfig
     except ImportError as exc:
-        raise RuntimeError(
-            f"NX-AI xlstm is not installed. Install with: {_INSTALL}"
-        ) from exc
+        raise RuntimeError(f"NX-AI xlstm is not installed. Install with: {_INSTALL}") from exc
     return sLSTMBlock, sLSTMBlockConfig, sLSTMLayerConfig, FeedForwardConfig
 
 

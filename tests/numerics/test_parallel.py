@@ -315,9 +315,7 @@ def test_triton_scan_diag_matches_eager(cuda_device: torch.device) -> None:
 @pytest.mark.cuda
 @torch.no_grad()
 @pytest.mark.parametrize("time", [8192, 8193, 16384])
-def test_triton_scan_diag_three_level_matches_eager(
-    cuda_device: torch.device, time: int
-) -> None:
+def test_triton_scan_diag_three_level_matches_eager(cuda_device: torch.device, time: int) -> None:
     """8192 is two-level (64 tiles); 8193+ uses superchunk scan of those pads."""
     torch.manual_seed(31)
     jac = torch.randn(1, time, 8, device=cuda_device) * 0.3

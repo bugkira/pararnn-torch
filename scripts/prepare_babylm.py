@@ -1,6 +1,6 @@
 """Prepare BabyLM 10M tokens + 16k BPE cache.
 
-    uv run --extra lm python scripts/prepare_babylm.py --config configs/train/babylm.yaml
+uv run --extra lm python scripts/prepare_babylm.py --config configs/train/babylm.yaml
 """
 
 from __future__ import annotations

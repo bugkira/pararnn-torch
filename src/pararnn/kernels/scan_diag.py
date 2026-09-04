@@ -256,9 +256,7 @@ def _incl_pad64(agg_j: Tensor, agg_r: Tensor) -> tuple[Tensor, Tensor]:
     r = agg_r.contiguous()
     batch, n_chunks, d_h = r.shape
     if n_chunks > _CHUNK_PAD:
-        raise ValueError(
-            f"leaf chunk scan n_chunks={n_chunks} exceeds CHUNK_PAD={_CHUNK_PAD}"
-        )
+        raise ValueError(f"leaf chunk scan n_chunks={n_chunks} exceeds CHUNK_PAD={_CHUNK_PAD}")
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
     incl_j = j.new_empty(batch, n_chunks, d_h)
     incl_r = r.new_empty(batch, n_chunks, d_h)

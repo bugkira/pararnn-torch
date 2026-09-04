@@ -1,7 +1,7 @@
 """BabyLM Strict-Small mixing ablation (dense head / diag seq / fused diag).
 
-    uv run --extra lm python scripts/train_babylm.py --cell_type diag_fused
-    uv run --extra lm python scripts/train_babylm.py --summarize
+uv run --extra lm python scripts/train_babylm.py --cell_type diag_fused
+uv run --extra lm python scripts/train_babylm.py --summarize
 """
 
 from __future__ import annotations

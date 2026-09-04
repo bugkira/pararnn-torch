@@ -430,8 +430,7 @@ def main(argv: list[str] | None = None) -> None:
         curve_path = ROOT / "docs" / "internal" / "paper" / "data" / "parity_curves.json"
         curve_path.parent.mkdir(parents=True, exist_ok=True)
         curve_path.write_text(
-            json.dumps({"gpu": torch.cuda.get_device_name(device), "arms": curves}, indent=2)
-            + "\n"
+            json.dumps({"gpu": torch.cuda.get_device_name(device), "arms": curves}, indent=2) + "\n"
         )
         mlflow.log_artifact(str(curve_path))
         log.info("wrote last-token curves %s", curve_path)

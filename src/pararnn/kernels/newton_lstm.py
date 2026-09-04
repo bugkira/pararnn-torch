@@ -666,9 +666,7 @@ def newton_lstm_fused(
         raise ValueError(f"wx last dim {three_d} != 3 * d_h={3 * d_h}")
     h0 = prepare_h0(wx, h0, (batch, 2, d_h))
     validate_cuda_tensors(wx, a_f, a_z, a_o, c_f, c_o, h0, name="newton_lstm_fused")
-    n_chunks, n_dtiles = time_tiles(
-        time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD, cap=False
-    )
+    n_chunks, n_dtiles = time_tiles(time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD, cap=False)
     states = wx.new_empty(batch, time, 2, d_h)
     grid_td = (batch, n_chunks, n_dtiles)
     _lstm_init_kernel[grid_td](

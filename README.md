@@ -63,7 +63,7 @@ y_train = model(x)  # Newton + associative scan
 y_train.sum().backward()
 
 model.eval()
-y_eval = model(x)   # sequential cell.step
+y_eval = model(x)  # sequential cell.step
 ```
 
 - `.train()` with `solver='auto'` selects the parallel Newton path.
@@ -98,7 +98,7 @@ All scripts read YAML from `configs/train/`. Smoke runs log to MLflow when the `
 ```python
 from pararnn.solvers import newton_apply, sequential_apply
 
-h = newton_apply(cell, x)      # (B, T, hidden_size)
+h = newton_apply(cell, x)  # (B, T, hidden_size)
 h = sequential_apply(cell, x)
 ```
 
