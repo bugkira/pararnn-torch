@@ -41,6 +41,8 @@ class NewtonConfig:
     max_iters: int = LIBRARY_NEWTON_ITERS
     omega: float = 1.0  # 1 = vanilla Newton; <1 damps (Gonzalez et al. ELK)
     # auto: fused CUDA GRU/LSTM/sLSTM-diag; else Triton scan + step; else eager Blelloch.
+    # context_parallel: diag scan shards T across the default process group (Newton
+    # trajectory stays replicated; scan work is T/N). Requires init_process_group.
     scan_backend: str = "auto"
     # auto: analytic J if step_with_jacobian else Autograd. analytic: require it.
     jacobian: str = "auto"
@@ -85,7 +87,7 @@ FUSED_WINDOW_DEFAULT = 64
 
 
 def _validate_config(config: NewtonConfig) -> None:
-    if config.scan_backend not in ("auto", "eager", "triton", "fused"):
+    if config.scan_backend not in ("auto", "eager", "triton", "fused", "context_parallel"):
         raise ValueError(f"unknown scan backend {config.scan_backend!r}")
     if config.jacobian not in ("auto", "analytic", "autograd"):
         raise ValueError(f"unknown jacobian {config.jacobian!r}")

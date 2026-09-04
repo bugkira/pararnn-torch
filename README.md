@@ -85,6 +85,7 @@ All scripts read YAML from `configs/train/`. Smoke runs log to MLflow when the `
 | [`examples/toy_copy.py`](examples/toy_copy.py) | GRU smoke: CE + AdamW + MLflow | `uv run python examples/toy_copy.py --config configs/train/toy.yaml` | — |
 | [`examples/ddp_fsdp.py`](examples/ddp_fsdp.py) | DDP / FSDP2 one-step wrap of `ParaRNN` | `uv run torchrun --nproc_per_node=2 examples/ddp_fsdp.py` | two visible GPUs for NCCL |
 | [`examples/tensor_parallel.py`](examples/tensor_parallel.py) | Megatron TP along \(d_h\): local scan, one AllReduce | `uv run torchrun --nproc_per_node=2 examples/tensor_parallel.py` | two visible GPUs for NCCL |
+| [`examples/context_parallel.py`](examples/context_parallel.py) | Sequence-parallel diag scan: split \(T\), AllGather \((P,δ)\) | `uv run torchrun --nproc_per_node=2 examples/context_parallel.py` | two visible GPUs for NCCL |
 | [`examples/dyck_language.py`](examples/dyck_language.py) | ParaSLSTM Newton grads, fail-loud on divergence | `uv run python examples/dyck_language.py --config configs/train/dyck.yaml` | — |
 | [`examples/parity.py`](examples/parity.py) | Z₂ prefix tagging vs linear SSM | `uv run python examples/parity.py --config configs/train/parity_t16.yaml` | pins lab GPU in script |
 | [`examples/xlstm_hybrid.py`](examples/xlstm_hybrid.py) | NX-AI `sLSTMBlock` around fused `ParaSLSTM` | `uv add xlstm && uv run python examples/xlstm_hybrid.py` | `xlstm` |

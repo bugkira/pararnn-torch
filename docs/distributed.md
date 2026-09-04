@@ -94,5 +94,35 @@ CPU gloo: sharded Newton + row-parallel grads match a full `Linear(d_h, d_out)`
 (`tests/numerics/test_tp_allreduce.py`). CUDA: both ranks hold the same
 AllReduced `y`.
 
-Sequence-parallel scan over NCCL is a separate catalog row
-(`pararnn.solvers.seq_parallel` is two CUDA streams on one device).
+Sequence-parallel scan over NCCL splits **time** (`scan_diag_context_parallel`
+in `pararnn.solvers.seq_parallel`). Each rank holds `T/N` steps, scans
+locally, and AllGathers the tile monoid `(P_end, δ_end)` of shape `(B, d)`.
+The exclusive prefix of that monoid is the carry. Rank 0's incoming carry
+is 0; Rank 1 applying the AllGather carry is the numeric check.
+`NewtonConfig(scan_backend="context_parallel")` shards the diag scan of a
+**replicated** Newton trajectory (`H` stays full on every rank; scan work
+is `T/N`). Eq. 2.6 reverse scan sends `(μ, J)` at the tile head Rank N-1 → 0.
+Standalone `scan_diag_context_parallel` VJP uses eager local scans and
+`torch.distributed.nn.functional.all_gather` of the monoid (Triton has no
+scan autograd). Two CUDA streams on one device remain `scan_diag_two_ranks`
+(virtual ranks).
+
+```python
+from pararnn.solvers.seq_parallel import scan_diag_context_parallel, time_shard_bounds
+
+start, end = time_shard_bounds(T, rank, world)
+delta_local = scan_diag_context_parallel(jac[:, start:end], residual[:, start:end])
+```
+
+Smoke:
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0,1 \
+  uv run torchrun --nproc_per_node=2 examples/context_parallel.py
+```
+
+CPU gloo: each rank's tile matches `scan_diag` of the full system, including
+remainder `T=17`. Rank 1 `max_abs` is the carry path (`<1e-4`). Local-tile
+`grad_jac` / `grad_residual` match a full eager scan. Newton forward and
+eq. 2.6 grads match `scan_backend="eager"`. CUDA NCCL: concat of the two
+eager tiles matches CPU `scan_diag` (`tests/numerics/test_context_parallel.py`).

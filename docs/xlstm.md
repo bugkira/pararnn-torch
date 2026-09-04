@@ -87,7 +87,8 @@ before the first NCCL step.
 ### Tensor parallel
 
 Channelwise \(d_h\) shards across ranks (`pararnn.tensor_parallel`): local
-fused scan, one AllReduce on the output projection. Recipe:
+fused scan, one AllReduce on the output projection. Context parallel splits
+time (`scan_diag_context_parallel`). Recipe:
 [`docs/distributed.md`](distributed.md).
 
 See also [`structure.md`](structure.md) for kernel file layout.

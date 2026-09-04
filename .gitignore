@@ -41,6 +41,7 @@ docs/internal/
 
 # LLM dumps dropped at repo root before they get moved under docs/internal/
 /review1.md
+/IDEAS.md
 
 # editor
 .idea/

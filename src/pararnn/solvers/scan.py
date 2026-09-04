@@ -38,11 +38,19 @@ def scan_diag(
     """Solve ``δ_t = jac_t * δ_{t-1} + residual_t`` with ``δ_{<0} = 0``.
 
     ``jac`` and ``residual``: (batch, time, d). ``jac`` is the diagonal of J.
-    ``backend``: ``eager`` (default) or ``triton`` (CUDA float16/float32).
-    ``cu_seqlens`` packs ragged time; carry resets at heads.
+    ``backend``: ``eager`` (default), ``triton`` (CUDA float16/float32), or
+    ``context_parallel`` (shard ``T`` across an initialized process group,
+    AllGather the full ``δ``). ``cu_seqlens`` packs ragged time; carry resets
+    at heads. ``context_parallel`` does not take ``cu_seqlens``.
     """
-    if backend not in ("eager", "triton"):
+    if backend not in ("eager", "triton", "context_parallel"):
         raise ValueError(f"unknown scan backend {backend!r}")
+    if backend == "context_parallel":
+        if cu_seqlens is not None:
+            raise ValueError("scan_backend='context_parallel' cannot combine with cu_seqlens")
+        from pararnn.solvers.seq_parallel import scan_diag_context_parallel_full
+
+        return scan_diag_context_parallel_full(jac, residual, backend="auto")
     if backend == "triton":
         from pararnn.kernels import scan_diag_triton
 
@@ -121,7 +129,14 @@ def reverse_scan_diag(
 
     ``∇_{h_{t-1}} L = J_t ∇_{h_t} L + ∂_{h_{t-1}} L``, ``∇_{h_{T-1}} L = ∂_{h_{T-1}} L``.
     Diagonal ``J`` is symmetric. Reverse scan starts at t=0 (eq. 2.6).
+    ``context_parallel`` shards ``T`` and sends the adjoint carry Rank N-1 → 0.
     """
+    if backend == "context_parallel":
+        if cu_seqlens is not None:
+            raise ValueError("scan_backend='context_parallel' cannot combine with cu_seqlens")
+        from pararnn.solvers.seq_parallel import reverse_scan_diag_context_parallel_full
+
+        return reverse_scan_diag_context_parallel_full(jac, partial, backend="auto")
     j_rev = jac.new_zeros(jac.shape)
     j_rev[:, 1:] = jac.flip(1)[:, :-1]
     cs_rev = _reverse_cu_seqlens(cu_seqlens, jac.shape[1]) if cu_seqlens is not None else None
