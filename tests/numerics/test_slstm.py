@@ -216,7 +216,48 @@ def test_triton_scan_block4_tile_boundaries(cuda_device: torch.device) -> None:
         torch.testing.assert_close(tri, eager, atol=1e-5, rtol=1e-5)
 
 
-def test_reverse_scan_block4_matches_backward_substitution():
+@pytest.mark.cuda
+@torch.no_grad()
+def test_triton_scan_block4_past_two_level_matches_eager(cuda_device: torch.device) -> None:
+    """2048 is 64 tiles of 32; 2049 scans tile reductions with eager Blelloch."""
+    torch.manual_seed(211)
+    jac = torch.randn(1, 2049, 4, 4, 4, device=cuda_device) * 0.12
+    residual = torch.randn(1, 2049, 4, 4, device=cuda_device)
+    eager = scan_block4(jac, residual)
+    tri = scan_block4(jac, residual, backend="triton")
+    torch.testing.assert_close(tri, eager, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_fused_slstm_past_two_level_matches_eager(cuda_device: torch.device) -> None:
+    """16385 is 513 tiles of 32; fused pad is 512. P=5 is the paper rung for T>2048."""
+    torch.manual_seed(212)
+    cell = ParaSLSTM(d_in=4, d_h=8).to(cuda_device)
+    x = torch.randn(1, 16385, 4, device=cuda_device)
+    fused = newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=3,
+            scan_backend="fused",
+            picard_iters=5,
+            residual_atol=None,
+            residual_fail=None,
+        ),
+    )
+    eager = newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=3,
+            scan_backend="eager",
+            picard_iters=5,
+            residual_atol=None,
+            residual_fail=None,
+        ),
+    )
+    torch.testing.assert_close(fused, eager, atol=1e-4, rtol=1e-4)
     torch.manual_seed(202)
     b, t, d = 2, 7, 4
     jac = torch.randn(b, t, 4, 4, d, device=device) * 0.15

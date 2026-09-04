@@ -3,7 +3,7 @@
     uv run python examples/dyck_language.py --config configs/train/dyck.yaml
 
 Library contract: K=3, Picard P from T (here P=1). Fail-loud if Newton
-diverges. Device is ``cuda`` if available, else CPU — not a lab GPU name.
+diverges. Device is ``cuda`` if available, else CPU.
 """
 
 from __future__ import annotations
@@ -216,7 +216,7 @@ def _train(
 
 
 def _check_grads_finite(model: _DyckLM, device: torch.device, *, seq_len: int) -> None:
-    """One backward: all grads finite. Eq. 2.6, not autograd through K."""
+    """One backward: all grads finite (eq. 2.6 adjoint)."""
     tokens = sample_dyck1(4, seq_len, generator=torch.Generator().manual_seed(0)).to(device)
     model.zero_grad(set_to_none=True)
     logits = model(tokens[:, :-1])

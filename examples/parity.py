@@ -2,8 +2,8 @@
 
     uv run python examples/parity.py --config configs/train/parity_t16.yaml
 
-Merrill et al. 2024 §5: token-tagging, label at t is the prefix product.
-Here the group is Z2 (XOR). Not A5. Not FlashRNN. Lab GPU: 2080 Ti by name.
+Merrill et al. 2024 §5: token-tagging, label at t is the prefix product
+on Z₂ (XOR). Lab GPU: 2080 Ti by name.
 T=32 / 300 steps (`configs/train/parity.yaml`) stays copy-only; use T=16 /
 2000 steps for the quality smoke.
 """
@@ -59,7 +59,7 @@ def _cosine_lr(step: int, total: int, base: float, warmup_frac: float) -> float:
 
 
 class _S6Block(nn.Module):
-    """Pre-norm residual diagonal selective SSM. Not mamba-ssm.
+    """Pre-norm residual diagonal selective SSM (S4D-Real).
 
     h_t = exp(-Δ_t A) ⊙ h_{t-1} + (B_t ⊙ x_t). A is S4D-Real (n+1).
     Δ range Gu & Dao 2023 [1e-3, 1e-1]. ``scan_diag`` eager so Autograd

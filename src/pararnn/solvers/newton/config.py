@@ -53,6 +53,7 @@ class NewtonConfig:
     # native | log. log: ParaSLSTM LSE cell in (u, log n, m, h).
     coords: str = "native"
     # None = one Newton over T. int: sequential chunks; 64 from T=64 K=3 at d_h=256.
+    # Backward windows the eq. 2.6 reverse scan the same way (carry μ via ∇_{h0}).
     chunk_len: int | None = None
     # None = auto P ∈ {1, 3, 5} from T for ParaSLSTM. Explicit 0 is zero-hidden.
     picard_iters: int | None = None

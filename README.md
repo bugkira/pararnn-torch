@@ -4,6 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/pararnn-torch/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Paper](https://img.shields.io/static/v1?label=Paper&message=2510.21450&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2510.21450)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22302587.svg)](https://doi.org/10.5281/zenodo.22302587)
 
 PyTorch sequence module for parallel *training* of nonlinear RNNs (GRU, LSTM, sLSTM). Decode is the usual sequential unroll.
 
@@ -59,6 +60,7 @@ x = torch.randn(4, 128, 32, device=device)
 
 model.train()
 y_train = model(x)  # Newton + associative scan
+y_train.sum().backward()
 
 model.eval()
 y_eval = model(x)   # sequential cell.step
@@ -111,6 +113,7 @@ GRU/LSTM warm-start follows App. A: \(h_l^{(0)} = f(0, x_l)\). sLSTM starts from
 ## References
 
 - Danieli, Rodríguez, Sarabia, Suau, Zappella. *ParaRNN: Unlocking Parallel Training of Nonlinear RNNs for Large Language Models*. ICLR 2026 (Oral). [arXiv:2510.21450](https://arxiv.org/abs/2510.21450). Official CUDA: [apple/ml-pararnn](https://github.com/apple/ml-pararnn).
+- Sereda. *ParaSLSTM: Work-Efficient Parallel Training of Nonlinear sLSTM via Tropical Warm-Starts*. [doi:10.5281/zenodo.22302587](https://doi.org/10.5281/zenodo.22302587).
 - Beck et al. *xLSTM*. [arXiv:2405.04517](https://arxiv.org/abs/2405.04517).
 - Lim et al. *DEER*. ICLR 2024. [arXiv:2309.12252](https://arxiv.org/abs/2309.12252).
 - Merrill et al. *The Illusion of State in State-Space Models*. [arXiv:2404.08819](https://arxiv.org/abs/2404.08819).

@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 _BLOCK_T = 32
 _BLOCK_D = 16
 _CHUNK_D = 8
-_CHUNK_PAD = 64  # 64 * 32 = 2048. Raise BLOCK_T before lengthening the pad.
+_CHUNK_PAD = 64  # leaf: 64 × 32 = 2048. Past that, eager Blelloch on aggregates.
 
 
 @triton.jit

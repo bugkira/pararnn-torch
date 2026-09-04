@@ -6,6 +6,19 @@ Optional CUDA backend for ``scan_diag``. Same monoid as
 ``(J_r, r_r) ⊕ (J_l, r_l) = (J_r J_l, J_r r_l + r_r)``.
 Tile time; pad with identity ``(1, 0)``. CUDA float16/float32, and bf16 on
 compute capability ≥ 8.0; algebra in fp32. DRAM is the tensor dtype.
+
+Hierarchy (Blelloch / PCR on this monoid):
+
+1. Local ``tl.associative_scan`` inside tiles of ``BLOCK_T=128``.
+2. Inclusive scan of up to ``CHUNK_PAD=64`` tile reductions (compile-time
+   pad: ``tl.arange(0, CHUNK_PAD)`` has to fit SRAM with scan temps).
+3. Superchunks of 64 tiles when ``n_chunks > 64``. Each superchunk runs
+   level 2; superchunk reductions are scanned with the same helper
+   (recurses if ``n_super > 64``). Exclusive super-carry uses the monoid
+   ``r' = J_loc r_carry + r_loc``.
+
+Two levels hold ``T ≤ 64 × 128 = 8192``. One extra rank holds
+``T ≤ 64² × 128 = 524288``. Recursion continues past that.
 """
 
 from __future__ import annotations
@@ -24,7 +37,10 @@ log = logging.getLogger(__name__)
 # Tile SRAM: 128 × 32 × 2 × 4 B = 32 KiB plus scan temps (~64 KiB shared).
 _BLOCK_T = 128
 _BLOCK_D = 32
-_CHUNK_PAD = 64  # 64 * 128 = 8192. Raise BLOCK_T before lengthening the pad.
+# Leaf pad: 64 × BLOCK_D × 2 × 4 B = 16 KiB for (J, r) before scan temps.
+# Danieli et al. do not pick this pad; it is the constexpr SRAM bound for
+# ``_chunk_incl_kernel``. Raise BLOCK_T before lengthening the pad.
+_CHUNK_PAD = 64
 
 
 @triton.jit
@@ -119,6 +135,7 @@ def _local_scan_kernel(
 def _chunk_incl_kernel(
     agg_j_ptr,
     agg_r_ptr,
+    incl_j_ptr,
     incl_r_ptr,
     n_chunks,
     d_h,
@@ -128,9 +145,12 @@ def _chunk_incl_kernel(
     stride_arb,
     stride_arc,
     stride_ard,
-    stride_ib,
-    stride_ic,
-    stride_id,
+    stride_ijb,
+    stride_ijc,
+    stride_ijd,
+    stride_irb,
+    stride_irc,
+    stride_ird,
     CHUNK_PAD: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
@@ -155,9 +175,20 @@ def _chunk_incl_kernel(
         mask,
         0.0,
     )
-    _, r_s = tl.associative_scan((j, r), 0, _compose_diag)
+    j_s, r_s = tl.associative_scan((j, r), 0, _compose_diag)
     store_acc(
-        incl_r_ptr + pid_b * stride_ib + offs_c[:, None] * stride_ic + offs_d[None, :] * stride_id,
+        incl_j_ptr
+        + pid_b * stride_ijb
+        + offs_c[:, None] * stride_ijc
+        + offs_d[None, :] * stride_ijd,
+        j_s,
+        mask,
+    )
+    store_acc(
+        incl_r_ptr
+        + pid_b * stride_irb
+        + offs_c[:, None] * stride_irc
+        + offs_d[None, :] * stride_ird,
         r_s,
         mask,
     )
@@ -219,6 +250,82 @@ def _apply_carry_kernel(
     )
 
 
+def _incl_pad64(agg_j: Tensor, agg_r: Tensor) -> tuple[Tensor, Tensor]:
+    """Inclusive scan of ``n_chunks ≤ CHUNK_PAD`` tile aggregates."""
+    j = agg_j.contiguous()
+    r = agg_r.contiguous()
+    batch, n_chunks, d_h = r.shape
+    if n_chunks > _CHUNK_PAD:
+        raise ValueError(
+            f"leaf chunk scan n_chunks={n_chunks} exceeds CHUNK_PAD={_CHUNK_PAD}"
+        )
+    n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
+    incl_j = j.new_empty(batch, n_chunks, d_h)
+    incl_r = r.new_empty(batch, n_chunks, d_h)
+    _chunk_incl_kernel[(batch, n_dtiles)](
+        j,
+        r,
+        incl_j,
+        incl_r,
+        n_chunks,
+        d_h,
+        *j.stride(),
+        *r.stride(),
+        *incl_j.stride(),
+        *incl_r.stride(),
+        CHUNK_PAD=_CHUNK_PAD,
+        BLOCK_D=_BLOCK_D,
+    )
+    return incl_j, incl_r
+
+
+def scan_chunk_aggregates(agg_j: Tensor, agg_r: Tensor) -> Tensor:
+    """Inclusive scan of diagonal tile aggregates along dim=1.
+
+    ``agg_j`` / ``agg_r``: ``(batch, n_chunks, d_h)``. Returns ``incl_r``
+    of the same shape (the r-component of the inclusive prefix).
+    """
+    if agg_j.shape != agg_r.shape or agg_j.dim() != 3:
+        raise ValueError("agg_j and agg_r must be (batch, n_chunks, d_h)")
+    batch, n_chunks, d_h = agg_r.shape
+    if n_chunks <= _CHUNK_PAD:
+        _, incl_r = _incl_pad64(agg_j, agg_r)
+        return incl_r
+
+    pad = _CHUNK_PAD
+    n_super = (n_chunks + pad - 1) // pad
+    incl_j = agg_j.new_empty(batch, n_chunks, d_h)
+    incl_r = agg_r.new_empty(batch, n_chunks, d_h)
+    super_j = agg_j.new_empty(batch, n_super, d_h)
+    super_r = agg_r.new_empty(batch, n_super, d_h)
+    for s in range(n_super):
+        t0 = s * pad
+        t1 = min(t0 + pad, n_chunks)
+        loc_j, loc_r = _incl_pad64(agg_j[:, t0:t1], agg_r[:, t0:t1])
+        incl_j[:, t0:t1] = loc_j
+        incl_r[:, t0:t1] = loc_r
+        super_j[:, s] = loc_j[:, -1]
+        super_r[:, s] = loc_r[:, -1]
+    super_incl_r = scan_chunk_aggregates(super_j, super_r)
+    for s in range(1, n_super):
+        t0 = s * pad
+        t1 = min(t0 + pad, n_chunks)
+        carry = super_incl_r[:, s - 1].float().unsqueeze(1)
+        loc_j = incl_j[:, t0:t1].float()
+        loc_r = incl_r[:, t0:t1].float()
+        incl_r[:, t0:t1] = (loc_j * carry + loc_r).to(dtype=incl_r.dtype)
+    log.debug(
+        "scan_chunk_aggregates_l3",
+        extra={
+            "batch": batch,
+            "n_chunks": n_chunks,
+            "n_super": n_super,
+            "d_h": d_h,
+        },
+    )
+    return incl_r
+
+
 def scan_diag_triton(jac: Tensor, residual: Tensor) -> Tensor:
     """Same contract as ``scan_diag``: ``δ_t = jac_t * δ_{t-1} + residual_t``."""
     if jac.shape != residual.shape or jac.dim() != 3:
@@ -229,11 +336,6 @@ def scan_diag_triton(jac: Tensor, residual: Tensor) -> Tensor:
         return residual.clone()
 
     n_chunks = (time + _BLOCK_T - 1) // _BLOCK_T
-    if n_chunks > _CHUNK_PAD:
-        raise ValueError(
-            f"T={time} needs {n_chunks} tiles of {_BLOCK_T}; cap is {_CHUNK_PAD}. "
-            "Increase BLOCK_T or CHUNK_PAD."
-        )
     n_dtiles = (d_h + _BLOCK_D - 1) // _BLOCK_D
 
     j_loc = torch.empty_like(jac)
@@ -279,25 +381,7 @@ def scan_diag_triton(jac: Tensor, residual: Tensor) -> Tensor:
         )
         return r_loc
 
-    incl_r = residual.new_empty(batch, n_chunks, d_h)
-    _chunk_incl_kernel[(batch, n_dtiles)](
-        agg_j,
-        agg_r,
-        incl_r,
-        n_chunks,
-        d_h,
-        agg_j.stride(0),
-        agg_j.stride(1),
-        agg_j.stride(2),
-        agg_r.stride(0),
-        agg_r.stride(1),
-        agg_r.stride(2),
-        incl_r.stride(0),
-        incl_r.stride(1),
-        incl_r.stride(2),
-        CHUNK_PAD=_CHUNK_PAD,
-        BLOCK_D=_BLOCK_D,
-    )
+    incl_r = scan_chunk_aggregates(agg_j, agg_r)
     out = torch.empty_like(residual)
     _apply_carry_kernel[(batch, n_chunks, n_dtiles)](
         j_loc,

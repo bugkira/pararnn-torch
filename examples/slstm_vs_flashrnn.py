@@ -4,10 +4,9 @@
     uv run python examples/slstm_vs_flashrnn.py --config configs/train/dyck_vs_flashrnn.yaml
     uv run python examples/slstm_vs_flashrnn.py --config configs/train/dyck_vs_flashrnn_head.yaml
 
-FlashRNN stays in this example / ``scripts/``, not the library cell. Turing
+FlashRNN is a sequential baseline in this example and ``scripts/``. Turing
 has no ``cuda_fused`` (CC 8.0); this run uses ``triton_fused``. The head
-config is an ablation: mix=head, n_heads=1, K=4 — same 1×32 mixing as
-FlashRNN, not the fused diag cell.
+YAML is an ablation: mix=head, n_heads=1, K=4 (1×32 mixing).
 """
 
 from __future__ import annotations
@@ -72,7 +71,7 @@ class _NewtonDyckLM(nn.Module):
 
 
 class _FlashRNNDyckLM(nn.Module):
-    """Sequential sLSTM via FlashRNN. Not a library cell. Head mix, not diag."""
+    """Sequential sLSTM via FlashRNN (head mixing)."""
 
     def __init__(self, d_h: int, n_heads: int, d_head: int, backend: str) -> None:
         super().__init__()
@@ -333,7 +332,7 @@ def _train(
 
 def _validate_spec(spec: dict) -> None:
     if spec.get("dtype") != "float32":
-        raise ValueError("this smoke is float32 (Turing; not bf16)")
+        raise ValueError("this smoke is float32 (Turing; fp32 for FlashRNN glue)")
     if spec.get("cell") != "para_slstm":
         raise ValueError("this smoke uses ParaSLSTM")
     if int(spec.get("seq_len", 0)) % 2:
@@ -345,12 +344,12 @@ def _validate_spec(spec: dict) -> None:
             raise ValueError("diag mix: library contract is newton_iters=3")
     elif mix == "head":
         if k != 4:
-            raise ValueError("mix=head snaps at K=4 (para-slstm.md), not the GRU K=3 default")
+            raise ValueError("mix=head snaps at K=4 (para-slstm.md); GRU default is K=3")
         heads = spec.get("n_heads")
         if heads is None or int(spec["d_h"]) % int(heads):
             raise ValueError("mix=head needs n_heads dividing d_h")
         # Auto P is 1 at T<=64. Head mix left that basin at step 20 (max|F|=1.9).
-        # Library fallback is raise P, not K (slstm_auto_picard).
+        # Library fallback raises Picard P (slstm_auto_picard).
         p = spec.get("picard_iters")
         if p is None or int(p) < 3:
             raise ValueError("mix=head train needs picard_iters>=3 (P=1 residual_fail)")

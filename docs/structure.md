@@ -10,7 +10,8 @@ One trunk (`main`). Three layers:
 ParaRNN/
 ├── docs/
 │   ├── xlstm.md
-│   └── structure.md
+│   ├── structure.md
+│   └── backward-scan-cap.md
 ├── src/pararnn/
 │   ├── cells/                  # ParaGRU, ParaLSTM, ParaSLSTM
 │   ├── layers/                 # ParaRNN

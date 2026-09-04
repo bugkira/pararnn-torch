@@ -63,10 +63,11 @@ def time_tiles(
     block_d: int,
     chunk_pad: int,
     *,
+    cap: bool = True,
     cap_suffix: str = ". Increase BLOCK_T or CHUNK_PAD.",
 ) -> tuple[int, int]:
     n_chunks = (time + block_t - 1) // block_t
-    if n_chunks > chunk_pad:
+    if cap and n_chunks > chunk_pad:
         raise ValueError(
             f"T={time} needs {n_chunks} tiles of {block_t}; cap is {chunk_pad}{cap_suffix}"
         )

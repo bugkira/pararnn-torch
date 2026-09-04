@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 # 6 scan lanes × 64 × 16 × 4 B = 24 KiB before scan temps (~64 KiB shared).
 _BLOCK_T = 64
 _BLOCK_D = 16
-_CHUNK_PAD = 64  # 64 * 64 = 4096. Raise BLOCK_T before lengthening the pad.
+_CHUNK_PAD = 64  # leaf: 64 × 64 = 4096. Past that, eager Blelloch on aggregates.
 
 
 @triton.jit

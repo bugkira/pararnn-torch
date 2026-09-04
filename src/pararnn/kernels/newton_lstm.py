@@ -23,6 +23,7 @@ from pararnn.kernels._fused_common import (
     prepare_h0,
     time_tiles,
 )
+from pararnn.kernels._scan_common import incl_block_aggregates
 from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
 from pararnn.layout import LSTM_CELL, LSTM_HIDDEN
 
@@ -31,7 +32,8 @@ log = logging.getLogger(__name__)
 # Same tiles as scan_block2 (6 scan lanes).
 _BLOCK_T = 64
 _BLOCK_D = 16
-_CHUNK_PAD = 64  # 64 * 64 = 4096.
+# Leaf pad: 64 tiles × BLOCK_T = 4096. Past that, eager Blelloch on aggregates.
+_CHUNK_PAD = 64
 
 
 @triton.jit
@@ -664,7 +666,9 @@ def newton_lstm_fused(
         raise ValueError(f"wx last dim {three_d} != 3 * d_h={3 * d_h}")
     h0 = prepare_h0(wx, h0, (batch, 2, d_h))
     validate_cuda_tensors(wx, a_f, a_z, a_o, c_f, c_o, h0, name="newton_lstm_fused")
-    n_chunks, n_dtiles = time_tiles(time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD)
+    n_chunks, n_dtiles = time_tiles(
+        time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD, cap=False
+    )
     states = wx.new_empty(batch, time, 2, d_h)
     grid_td = (batch, n_chunks, n_dtiles)
     _lstm_init_kernel[grid_td](
@@ -728,17 +732,18 @@ def newton_lstm_fused(
         if states32 is not None and r32 is not None:
             fp32_omega_add(states, r_loc, omega_f, states32, r32)
         else:
-            _chunk_incl_kernel[(batch, n_dtiles)](
-                agg_j,
-                agg_r,
-                incl_r,
-                n_chunks,
-                d_h,
-                *agg_j.stride(),
-                *agg_r.stride(),
-                *incl_r.stride(),
-                CHUNK_PAD=_CHUNK_PAD,
-                BLOCK_D=_BLOCK_D,
+            if incl_r is None:
+                raise RuntimeError("fused LSTM scan buffer missing for n_chunks>1")
+            incl_r.copy_(
+                incl_block_aggregates(
+                    agg_j,
+                    agg_r,
+                    n_state=2,
+                    chunk_incl_kernel=_chunk_incl_kernel,
+                    chunk_pad=_CHUNK_PAD,
+                    block_d=_BLOCK_D,
+                    logger=log,
+                )
             )
             _lstm_apply_update_kernel[grid_td](
                 states,

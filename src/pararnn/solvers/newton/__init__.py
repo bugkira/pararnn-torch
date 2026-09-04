@@ -75,6 +75,9 @@ def newton_apply(
     ``h0`` is the paper's ``h_0`` (default 0). Fused kernels prepend ``h0``.
 
     If gradients are enabled, the backward is eq. 2.6 (one reverse scan).
+    ``chunk_len`` windows that scan as well: each window is a local reverse
+    scan, and ``∇_{h0}`` of window ``i+1`` adds into the last step of window
+    ``i`` (the forward carry).
     """
     config = config or NewtonConfig()
     _validate_config(config)
@@ -104,6 +107,7 @@ def newton_apply(
             ctx.scan_backend = "triton" if config.scan_backend == "fused" else config.scan_backend
             ctx.jacobian = config.jacobian
             ctx.jac_structure = config.jac_structure
+            ctx.chunk_len = config.chunk_len
             ctx.save_for_backward(states, x_in, h0_in)
             return states
 
@@ -111,16 +115,29 @@ def newton_apply(
         def backward(ctx, grad_states: Tensor):
             states, x_in, h0_in = ctx.saved_tensors
             h0_fwd = h0_in if ctx.has_h0 else None
-            grad_x, param_grads, grad_h0 = _eq26_vjp(
-                cell,
-                states,
-                x_in,
-                grad_states,
-                backend=ctx.scan_backend,
-                jacobian=ctx.jacobian,
-                jac_structure=ctx.jac_structure,
-                h0=h0_fwd,
-            )
+            if ctx.chunk_len is not None:
+                grad_x, param_grads, grad_h0 = _eq26_vjp_chunked(
+                    cell,
+                    states,
+                    x_in,
+                    grad_states,
+                    chunk_len=int(ctx.chunk_len),
+                    backend=ctx.scan_backend,
+                    jacobian=ctx.jacobian,
+                    jac_structure=ctx.jac_structure,
+                    h0=h0_fwd,
+                )
+            else:
+                grad_x, param_grads, grad_h0 = _eq26_vjp(
+                    cell,
+                    states,
+                    x_in,
+                    grad_states,
+                    backend=ctx.scan_backend,
+                    jacobian=ctx.jacobian,
+                    jac_structure=ctx.jac_structure,
+                    h0=h0_fwd,
+                )
             if not x_in.requires_grad:
                 grad_x = None
             if not ctx.has_h0 or not h0_in.requires_grad:
@@ -434,8 +451,65 @@ def _eq26_vjp(
         mu = _reverse_scan(jac, partial, backend=backend, structure=structure)
     packed = uses_packed_vjp(cell)
     grad_x, param_grads = cell_vjp(cell, h_prev, x, mu, packed=packed)
-    grad_h0 = None if h0 is None else _t0_state_vjp(jac, mu)
+    h0_vjp = _t0_state_vjp(jac, mu)
+    grad_h0 = None if h0 is None else h0_vjp
     return grad_x, param_grads, grad_h0
+
+
+def _eq26_vjp_chunked(
+    cell: nn.Module,
+    states: Tensor,
+    x: Tensor,
+    partial: Tensor,
+    *,
+    chunk_len: int,
+    backend: str = "eager",
+    jacobian: str = "auto",
+    jac_structure: str | None = None,
+    h0: Tensor | None = None,
+) -> tuple[Tensor | None, tuple[Tensor | None, ...], Tensor | None]:
+    """Eq. 2.6 on the same windows as ``_newton_chunked``.
+
+    Reverse order: ``∇_{h0}`` of window ``i+1`` adds to ``∂L/∂S`` at the last
+    step of window ``i`` (that step is the next window's ``h0``).
+    """
+    length = int(chunk_len)
+    time = int(x.shape[1])
+    n_params = len(tuple(cell.parameters()))
+    acc_x: Tensor | None = None
+    acc_params: list[Tensor | None] = [None] * n_params
+    carry_h0 = None
+    starts = list(range(0, time, length))
+    for t0 in reversed(starts):
+        t1 = min(t0 + length, time)
+        piece = states[:, t0:t1]
+        xw = x[:, t0:t1]
+        partial_w = partial[:, t0:t1]
+        if carry_h0 is not None:
+            partial_w = partial_w.clone()
+            partial_w[:, -1] = partial_w[:, -1] + carry_h0
+        h0_w = h0 if t0 == 0 else states[:, t0 - 1]
+        gx, pgrads, gh0 = _eq26_vjp(
+            cell,
+            piece,
+            xw,
+            partial_w,
+            backend=backend,
+            jacobian=jacobian,
+            jac_structure=jac_structure,
+            h0=h0_w,
+        )
+        carry_h0 = gh0
+        if gx is not None:
+            if acc_x is None:
+                acc_x = x.new_zeros(x.shape)
+            acc_x[:, t0:t1] = gx
+        for i, g in enumerate(pgrads):
+            if g is None:
+                continue
+            acc_params[i] = g if acc_params[i] is None else acc_params[i] + g
+    grad_h0 = None if h0 is None else carry_h0
+    return acc_x, tuple(acc_params), grad_h0
 
 
 def _init_h_prev(cell: nn.Module, x: Tensor, h0: Tensor | None) -> Tensor:

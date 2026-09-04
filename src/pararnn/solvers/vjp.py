@@ -76,9 +76,14 @@ def _clip_mask(raw: Tensor, cap: float | None) -> Tensor:
 
 
 def _linear_vjp(lin: nn.Linear, x: Tensor, grad_y: Tensor) -> tuple[Tensor, Tensor, Tensor | None]:
+    """VJP of ``y = x @ Wᵀ + b``. ``x`` may be a strided ``(B, T, d_in)`` view.
+
+    ``reshape`` copies when the batch/time axes are not a dense ``(N, d_in)``
+    layout (time skip, feature skip, permute round-trip through ``(B, D, T)``).
+    """
     gy = grad_y.reshape(-1, grad_y.shape[-1])
     xx = x.reshape(-1, x.shape[-1])
-    grad_x = (gy @ lin.weight).view_as(x)
+    grad_x = (gy @ lin.weight).reshape(x.shape)
     grad_w = gy.t() @ xx
     grad_b = gy.sum(0) if lin.bias is not None else None
     return grad_x, grad_w, grad_b

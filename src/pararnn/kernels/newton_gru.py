@@ -23,13 +23,15 @@ from pararnn.kernels._fused_common import (
     time_tiles,
 )
 from pararnn.kernels.precision import load_acc, store_acc, validate_cuda_tensors
+from pararnn.kernels.scan_diag import scan_chunk_aggregates
 
 log = logging.getLogger(__name__)
 
 # Same tiles as scan_diag: 128 × 32 × 2 × 4 B = 32 KiB for (J, r).
 _BLOCK_T = 128
 _BLOCK_D = 32
-_CHUNK_PAD = 64  # 64 * 128 = 8192.
+# Leaf pad matches scan_diag._CHUNK_PAD (third-level superchunks past 8192).
+_CHUNK_PAD = 64
 
 
 @triton.jit
@@ -208,54 +210,6 @@ def _gru_cell_local_scan_kernel(
 
 
 @triton.jit
-def _chunk_incl_kernel(
-    agg_j_ptr,
-    agg_r_ptr,
-    incl_r_ptr,
-    n_chunks,
-    d_h,
-    stride_ajb,
-    stride_ajc,
-    stride_ajd,
-    stride_arb,
-    stride_arc,
-    stride_ard,
-    stride_ib,
-    stride_ic,
-    stride_id,
-    CHUNK_PAD: tl.constexpr,
-    BLOCK_D: tl.constexpr,
-):
-    pid_b = tl.program_id(0)
-    d0 = tl.program_id(1) * BLOCK_D
-    offs_c = tl.arange(0, CHUNK_PAD)
-    offs_d = d0 + tl.arange(0, BLOCK_D)
-    mask = (offs_c[:, None] < n_chunks) & (offs_d[None, :] < d_h)
-    j = load_acc(
-        agg_j_ptr
-        + pid_b * stride_ajb
-        + offs_c[:, None] * stride_ajc
-        + offs_d[None, :] * stride_ajd,
-        mask,
-        1.0,
-    )
-    r = load_acc(
-        agg_r_ptr
-        + pid_b * stride_arb
-        + offs_c[:, None] * stride_arc
-        + offs_d[None, :] * stride_ard,
-        mask,
-        0.0,
-    )
-    _, r_s = tl.associative_scan((j, r), 0, _compose_diag)
-    store_acc(
-        incl_r_ptr + pid_b * stride_ib + offs_c[:, None] * stride_ic + offs_d[None, :] * stride_id,
-        r_s,
-        mask,
-    )
-
-
-@triton.jit
 def _gru_apply_update_kernel(
     h_ptr,
     j_loc_ptr,
@@ -342,7 +296,9 @@ def newton_gru_fused(
         raise ValueError(f"wx last dim {three_d} != 3 * d_h={3 * d_h}")
     h0 = prepare_h0(wx, h0, (batch, d_h))
     validate_cuda_tensors(wx, a_z, a_r, a_n, h0, name="newton_gru_fused")
-    n_chunks, n_dtiles = time_tiles(time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD)
+    n_chunks, n_dtiles = time_tiles(
+        time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD, cap=False
+    )
     h = wx.new_empty(batch, time, d_h)
     grid_td = (batch, n_chunks, n_dtiles)
     _gru_init_kernel[grid_td](
@@ -400,18 +356,9 @@ def newton_gru_fused(
         if h32 is not None and r32 is not None:
             fp32_omega_add(h, r_loc, omega_f, h32, r32)
         else:
-            _chunk_incl_kernel[(batch, n_dtiles)](
-                agg_j,
-                agg_r,
-                incl_r,
-                n_chunks,
-                d_h,
-                *agg_j.stride(),
-                *agg_r.stride(),
-                *incl_r.stride(),
-                CHUNK_PAD=_CHUNK_PAD,
-                BLOCK_D=_BLOCK_D,
-            )
+            if incl_r is None:
+                raise RuntimeError("fused GRU scan buffer missing for n_chunks>1")
+            incl_r.copy_(scan_chunk_aggregates(agg_j, agg_r))
             _gru_apply_update_kernel[grid_td](
                 h,
                 j_loc,

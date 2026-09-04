@@ -39,7 +39,19 @@ third_party/
 docs/internal/
 .cursor/
 
+# LLM dumps dropped at repo root before they get moved under docs/internal/
+/review1.md
+
 # editor
 .idea/
 .vscode/
 *.swp
+
+# secrets
+.env
+.env.*
+
+# lab IMU smoke (local only; not a public example)
+examples/imu_longseq_smoke.py
+configs/train/imu_*.yaml
+results/imu_*.md

@@ -34,6 +34,7 @@ from pararnn.kernels._scan_common import (
 )
 from pararnn.kernels._scan_common import (
     _store_agg_j,
+    incl_block_aggregates,
 )
 from pararnn.kernels._scan_common import (
     _store_j as _store_j_lane,
@@ -54,7 +55,7 @@ log = logging.getLogger(__name__)
 _BLOCK_T = 32
 _BLOCK_D = 16
 # Chunk scan: 20 × CHUNK_PAD × CHUNK_D × 4 B ≤ 64 KiB. 512 × 1 → 40 KiB.
-# T cap = 32 × 512 = 16384.
+# Two-level T = 32 × 512 = 16384. Past that, eager Blelloch on aggregates.
 _CHUNK_D = 1
 _CHUNK_PAD = 512
 
@@ -2705,9 +2706,9 @@ def newton_slstm_fused(
         _BLOCK_T,
         _BLOCK_D,
         _CHUNK_PAD,
+        cap=False,
         cap_suffix=(f" (T≤{_BLOCK_T * _CHUNK_PAD}). Shrink CHUNK_D or raise CHUNK_PAD."),
     )
-    n_dtiles_chunk = (d_h + _CHUNK_D - 1) // _CHUNK_D
     grid_td = (batch, n_chunks, n_dtiles)
     if states is None:
         states = wx.new_empty(batch, time, SLSTM_SLOTS, d_h)
@@ -2807,17 +2808,18 @@ def newton_slstm_fused(
         if states32 is not None and r32 is not None:
             fp32_omega_add(work, r_loc, omega_f, states32, r32)
         else:
-            _chunk_incl_kernel[(batch, n_dtiles_chunk)](
-                agg_j,
-                agg_r,
-                incl_r,
-                n_chunks,
-                d_h,
-                *agg_j.stride(),
-                *agg_r.stride(),
-                *incl_r.stride(),
-                CHUNK_PAD=_CHUNK_PAD,
-                BLOCK_D=_CHUNK_D,
+            if incl_r is None:
+                raise RuntimeError("fused sLSTM scan buffer missing for n_chunks>1")
+            incl_r.copy_(
+                incl_block_aggregates(
+                    agg_j,
+                    agg_r,
+                    n_state=SLSTM_SLOTS,
+                    chunk_incl_kernel=_chunk_incl_kernel,
+                    chunk_pad=_CHUNK_PAD,
+                    block_d=_CHUNK_D,
+                    logger=log,
+                )
             )
             _slstm_apply_update_kernel[grid_td](
                 work,

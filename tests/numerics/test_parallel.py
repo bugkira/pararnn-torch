@@ -314,6 +314,21 @@ def test_triton_scan_diag_matches_eager(cuda_device: torch.device) -> None:
 
 @pytest.mark.cuda
 @torch.no_grad()
+@pytest.mark.parametrize("time", [8192, 8193, 16384])
+def test_triton_scan_diag_three_level_matches_eager(
+    cuda_device: torch.device, time: int
+) -> None:
+    """8192 is two-level (64 tiles); 8193+ uses superchunk scan of those pads."""
+    torch.manual_seed(31)
+    jac = torch.randn(1, time, 8, device=cuda_device) * 0.3
+    residual = torch.randn(1, time, 8, device=cuda_device)
+    eager = scan_diag(jac, residual)
+    tri = scan_diag(jac, residual, backend="triton")
+    torch.testing.assert_close(tri, eager, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.cuda
+@torch.no_grad()
 def test_paragru_newton_triton_scan_matches_sequential(cuda_device: torch.device) -> None:
     torch.manual_seed(22)
     cell = ParaGRU(d_in=8, d_h=16).to(cuda_device)
@@ -322,6 +337,31 @@ def test_paragru_newton_triton_scan_matches_sequential(cuda_device: torch.device
     par = newton_apply(cell, x, NewtonConfig(max_iters=3, scan_backend="triton"))
     err = (par - seq).abs().amax()
     assert err < 1e-4, err
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_fused_paragru_three_level_matches_eager(cuda_device: torch.device) -> None:
+    """T=8193 is 65 tiles of 128: fused GRU uses the same superchunk scan as scan_diag."""
+    torch.manual_seed(32)
+    cell = ParaGRU(d_in=4, d_h=8).to(cuda_device)
+    x = torch.randn(1, 8193, 4, device=cuda_device)
+    fused = newton_apply(cell, x, NewtonConfig(max_iters=3, scan_backend="fused"))
+    eager = newton_apply(cell, x, NewtonConfig(max_iters=3, scan_backend="eager"))
+    torch.testing.assert_close(fused, eager, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.cuda
+def test_global_newton_backward_three_level(cuda_device: torch.device) -> None:
+    """Global IFT adjoint (no chunk_len) past the two-level tile pad."""
+    torch.manual_seed(33)
+    cell = ParaGRU(4, 8).to(cuda_device)
+    x = torch.randn(1, 8193, 4, device=cuda_device, requires_grad=True)
+    y = newton_apply(cell, x, NewtonConfig(max_iters=3, scan_backend="auto"))
+    y.square().mean().backward()
+    assert x.grad is not None
+    assert torch.isfinite(x.grad).all()
+    assert any(p.grad is not None and torch.isfinite(p.grad).all() for p in cell.parameters())
 
 
 @pytest.mark.cuda
@@ -350,6 +390,32 @@ def test_triton_scan_block2_matches_eager(cuda_device: torch.device) -> None:
     eager = scan_block2(jac, residual)
     tri = scan_block2(jac, residual, backend="triton")
     torch.testing.assert_close(tri, eager, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+@pytest.mark.parametrize("time", [4096, 4097, 8192])
+def test_triton_scan_block2_past_two_level_matches_eager(
+    cuda_device: torch.device, time: int
+) -> None:
+    """4096 is 64 tiles of 64; 4097+ scans tile reductions with eager Blelloch."""
+    torch.manual_seed(34)
+    jac = torch.randn(1, time, 2, 2, 6, device=cuda_device) * 0.2
+    residual = torch.randn(1, time, 2, 6, device=cuda_device)
+    eager = scan_block2(jac, residual)
+    tri = scan_block2(jac, residual, backend="triton")
+    torch.testing.assert_close(tri, eager, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_fused_paralstm_past_two_level_matches_eager(cuda_device: torch.device) -> None:
+    torch.manual_seed(35)
+    cell = ParaLSTM(d_in=4, d_h=8).to(cuda_device)
+    x = torch.randn(1, 4097, 4, device=cuda_device)
+    fused = newton_apply(cell, x, NewtonConfig(max_iters=3, scan_backend="fused"))
+    eager = newton_apply(cell, x, NewtonConfig(max_iters=3, scan_backend="eager"))
+    torch.testing.assert_close(fused, eager, atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.cuda

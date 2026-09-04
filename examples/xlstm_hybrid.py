@@ -1,16 +1,13 @@
 """NX-AI sLSTMBlock around ParaRNN(ParaSLSTM mix='diag').
 
-    uv add xlstm   # NX-AI package; Python 3.11+ (mlstm-kernels). Not a library extra:
-                   # it does not lock against this repo's requires-python >=3.10.
+    uv add xlstm   # NX-AI package; Python 3.11+ (mlstm-kernels).
     uv run python examples/xlstm_hybrid.py
 
 Their block keeps pre-LN, residual skip, and the gated FFN.
 The recurrent slot (``block.xlstm``) is the fused cell: ``ParaRNN(ParaSLSTM)``.
 Newton ``K=3`` is ParaRNN App. A / Danieli et al. §2.1.
 
-Channel mix in the recurrence is diagonal (fused 4×4). Their sequential
-``sLSTMLayer`` (conv, headwise gates, FlashRNN/vanilla cell) is swapped out.
-Beck-style ``mix='head'`` stays in the library as an unfused ablation, not here.
+Channel mix in the recurrence is diagonal (fused 4×4).
 """
 
 from __future__ import annotations
@@ -34,7 +31,7 @@ _INSTALL = "uv add xlstm"
 
 
 def require_xlstm():
-    """Import NX-AI block configs. Fail with the extra, not a missing cell."""
+    """Import NX-AI block configs. Raise with the install command if missing."""
     try:
         from xlstm.blocks.slstm.block import sLSTMBlock, sLSTMBlockConfig
         from xlstm.blocks.slstm.layer import sLSTMLayerConfig
@@ -86,9 +83,9 @@ def build_hybrid_slstm_block(
 ) -> nn.Module:
     """NX-AI ``sLSTMBlock`` with ``ParaRNN(ParaSLSTM mix='diag')`` in ``.xlstm``.
 
-    ``d_model=64``, ``n_heads=4`` are NX-AI's default width / head count for
-    *their* discarded ``sLSTMLayer`` (must divide width). Our cell is
-    channelwise. ``K=3`` is the paper default for Newton.
+    ``d_model=64``, ``n_heads=4`` are NX-AI's default width / head count
+    (must divide width). Our cell is channelwise. ``K=3`` is the paper default
+    for Newton.
     """
     sLSTMBlock, sLSTMBlockConfig, sLSTMLayerConfig, FeedForwardConfig = require_xlstm()
     if d_model % n_heads != 0:
@@ -130,8 +127,10 @@ def main() -> None:
     x = torch.randn(batch, seq_len, d_model, device=device)
     block.train()
     y_train = block(x)
+    y_train.sum().backward()
     stats = block.xlstm.rnn.last_stats
     res = stats[0].max_residual if stats else float("nan")
+    block.zero_grad(set_to_none=True)
     block.eval()
     y_eval = block(x)
     err = (y_train - y_eval).abs().max().item()

@@ -1,4 +1,4 @@
-"""Shared smoke-train helpers for examples/. Not public API."""
+"""Shared smoke-train helpers for examples/. Internal to this directory."""
 
 from __future__ import annotations
 
