@@ -43,7 +43,7 @@ uv run pytest -q
 
 **Hardware:** fused Triton bf16 needs CUDA compute capability ≥ 8.0 (Ampere and newer). Below that, `NewtonConfig(scan_backend="auto")` picks an eager fallback.
 
-Place modules on a device like any `nn.Module` (`.to(device)`, or `device=` / `dtype=` on the cell and `ParaRNN`).
+Place modules on a device like any `nn.Module` (`.to(device)`, or `device=` / `dtype=` on the cell and `ParaRNN`). Data parallel: wrap that module with `DistributedDataParallel` or FSDP2 `fully_shard` ([`docs/distributed.md`](docs/distributed.md)).
 
 `scripts/` holds development benchmarks and profiling; it is omitted from the wheel.
 
@@ -83,6 +83,7 @@ All scripts read YAML from `configs/train/`. Smoke runs log to MLflow when the `
 | Script | What it shows | Command | Extras |
 |---|---|---|---|
 | [`examples/toy_copy.py`](examples/toy_copy.py) | GRU smoke: CE + AdamW + MLflow | `uv run python examples/toy_copy.py --config configs/train/toy.yaml` | — |
+| [`examples/ddp_fsdp.py`](examples/ddp_fsdp.py) | DDP / FSDP2 one-step wrap of `ParaRNN` | `uv run torchrun --nproc_per_node=2 examples/ddp_fsdp.py` | two visible GPUs for NCCL |
 | [`examples/dyck_language.py`](examples/dyck_language.py) | ParaSLSTM Newton grads, fail-loud on divergence | `uv run python examples/dyck_language.py --config configs/train/dyck.yaml` | — |
 | [`examples/parity.py`](examples/parity.py) | Z₂ prefix tagging vs linear SSM | `uv run python examples/parity.py --config configs/train/parity_t16.yaml` | pins lab GPU in script |
 | [`examples/xlstm_hybrid.py`](examples/xlstm_hybrid.py) | NX-AI `sLSTMBlock` around fused `ParaSLSTM` | `uv add xlstm && uv run python examples/xlstm_hybrid.py` | `xlstm` |
@@ -102,7 +103,7 @@ h = newton_apply(cell, x)  # (B, T, hidden_size)
 h = sequential_apply(cell, x)
 ```
 
-**Details:** output shapes, `mix=`, LSTM layout, scan backends — [`docs/xlstm.md`](docs/xlstm.md#api-notes). Repo layout — [`docs/structure.md`](docs/structure.md).
+**Details:** output shapes, `mix=`, LSTM layout, scan backends — [`docs/xlstm.md`](docs/xlstm.md#api-notes). Data parallel — [`docs/distributed.md`](docs/distributed.md). Repo layout — [`docs/structure.md`](docs/structure.md).
 
 ## Method
 

@@ -78,6 +78,12 @@ the Triton scan path. Eager Hillis–Steele remains the CPU / fallback scan.
 3. Eager Blelloch scan as the CPU / fallback path.
 4. Ragged `cu_seqlens`: fused ParaGRU in-kernel; otherwise Triton or eager segmented scan.
 
+### Data parallel
+
+`ParaRNN` wraps as any `nn.Module`: `DistributedDataParallel` or FSDP2
+`fully_shard`. Compile Triton with `pararnn.distributed.warmup_scan_kernels`
+before the first NCCL step. Recipe: [`docs/distributed.md`](distributed.md).
+
 See also [`structure.md`](structure.md) for kernel file layout.
 
 ### Backward
