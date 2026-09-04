@@ -1,28 +1,89 @@
 # Changelog
 
-All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions use [SemVer](https://semver.org/).
+All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions use [SemVer](https://semver.org/). This is 0.x: a **minor** may include a break; **1.0.0** waits until the public API is a contract.
 
 ## [Unreleased]
 
-### Removed
+## [0.6.0] - 2026-09-04
 
-- Public `xLSTMBlock` (it was LayerNorm + residual around `ParaRNN(ParaSLSTM)`, not a second sLSTM cell). Use `ParaRNN(ParaSLSTM(...))` in the library; LN/FFN stacking is the caller's, or `examples/xlstm_hybrid.py` for an NX-AI `sLSTMBlock` around the same cell.
+Ragged time, data/tensor/context parallel, and greedy linear-draft verify.
+Patch-scale work from the same day (CI pin, ruff format, README onboarding)
+sits here too.
 
 ### Added
 
-- CUDA tests that fused Newton and eq. 2.6 agree with sequential BPTT on time-strided, feature-strided, and permute-roundtrip `x` (`tests/numerics/test_noncontiguous.py`). CPU eager GRU covers the packed-VJP reshape on the same layouts.
-- Zenodo DOI for the ParaSLSTM preprint ([10.5281/zenodo.22302587](https://doi.org/10.5281/zenodo.22302587)) on the README.
-- `examples/xlstm_hybrid.py`: NX-AI pre-norm / skip / FFN with `ParaRNN(ParaSLSTM mix='diag')` in the recurrent slot. Install NX-AI `xlstm` separately (`uv add xlstm`; Python 3.11+).
-- `NewtonConfig.scan_tile`: `thomas` / `thomas4` (C=4 sequential compose then PCR of T/C) and `thomas2` (C=2). Default stays `assoc` until a bench on the target GPU prefers Thomas.
-- `NewtonConfig.fused_time_loop`: one fused launch walks `fused_window_len` (default 64) with solved-state carry (same residual as `chunk_len`, not global Newton).
-- `NewtonConfig.fused_window_len`: `32` / `64` / `128` for that walk. `64` is the `chunk_len` that sat at ~2e-4 vs sequential at T=1024 `d_h=256` P=3 in this repo; `32` trips `newton_residual_high`.
+- Packed ragged sequences: `cu_seqlens` on `ParaRNN` / Newton / sequential,
+  `h0` length \(S\). Segmented scan (eager Hillis–Steele; Triton `scan_diag`
+  vs `offs_t`; block2/4 `J=0` at heads). Fused in-kernel packing is ParaGRU.
+- `pararnn.distributed`: `warmup_scan_kernels` and `last_newton_residuals`.
+  `ParaRNN` wraps with DDP or FSDP2 `fully_shard` (`examples/ddp_fsdp.py`).
+- Tensor parallel along \(d_h\) for channelwise-diagonal cells:
+  `tensor_parallel_diag_block`, one AllReduce on the output projection
+  (`examples/tensor_parallel.py`).
+- Context-parallel diag scan: `scan_diag_context_parallel` AllGathers the
+  tile monoid \((P_{\mathrm{end}}, \delta_{\mathrm{end}})\). Rank 1 applying
+  that carry is the numeric check. `NewtonConfig(scan_backend="context_parallel")`
+  shards scan work \(T/N\) on a replicated Newton trajectory
+  (`examples/context_parallel.py`).
+- `verify_linear_draft`: greedy speculative verify of a K-token chain. One
+  Newton (or sequential) unroll from `h0`, first mismatch \(k^\star\), state
+  truncated to \(h_{k^\star}\), bonus token from the leftover logit
+  (`examples/speculative_draft.py`).
+- Long-\(T\) scan past SRAM pads: chunked adjoint; hierarchical / eager-aggregate
+  tile scan (`docs/backward-scan-cap.md`).
+- CUDA tests that fused Newton and eq. 2.6 agree with sequential BPTT on
+  time-strided, feature-strided, and permute-roundtrip `x`
+  (`tests/numerics/test_noncontiguous.py`).
 
 ### Changed
 
+- Packed `_linear_vjp` uses `.reshape(x.shape)` on the input-map VJP so a
+  strided `(B, T, d_in)` view keeps the caller layout.
+- Fused sLSTM Newton keeps the guess, J tiles, and scan residual in fp32 when
+  DRAM is fp16/bf16 (`fp32_newton_work`). `W_x` stays a GEMM in the tensor
+  dtype (App. B algebra).
+- CI: `setup-uv` pinned to v10.0.1.
+
+## [0.5.0] - 2026-09-03
+
+Windowed / Thomas fused Newton, and the library `xLSTMBlock` comes off the
+installable surface.
+
+### Removed
+
+- Public `xLSTMBlock` (LayerNorm + residual around `ParaRNN(ParaSLSTM)`).
+  Use `ParaRNN(ParaSLSTM(...))`; LN/FFN stacking is the caller's, or
+  `examples/xlstm_hybrid.py` for an NX-AI `sLSTMBlock` around the same cell.
+
+### Added
+
+- `NewtonConfig.scan_tile`: `thomas` / `thomas4` (C=4 sequential compose then
+  PCR of T/C) and `thomas2` (C=2). Default `assoc` until a bench on the target
+  GPU prefers Thomas.
+- `NewtonConfig.fused_time_loop`: one fused launch walks `fused_window_len`
+  (default 64) with solved-state carry (same residual as `chunk_len`).
+- `NewtonConfig.fused_window_len`: `32` / `64` / `128`. `64` sat at ~2e-4 vs
+  sequential at T=1024 `d_h=256` P=3 in this repo; `32` trips
+  `newton_residual_high`.
+- `examples/xlstm_hybrid.py`: NX-AI pre-norm / skip / FFN with
+  `ParaRNN(ParaSLSTM mix='diag')` in the recurrent slot (`uv add xlstm`;
+  Python 3.11+).
+- Zenodo DOI for the ParaSLSTM preprint
+  ([10.5281/zenodo.22302587](https://doi.org/10.5281/zenodo.22302587)).
+
+### Changed
+
+- `ParaSLSTM`: `mix='diag'` remains the fused default. `mix='head'` warns as
+  an unfused ablation (`scan_dense`). `mix='dense'` raises if
+  `hidden_size > 8` (Jacobian oracle for tests).
+- Public docs state facts; Apple notes and the lab reading list stay off the
+  clone. Agent rules and the local Apple clone path are gitignored.
 - README quickstart runs `.backward()` on the Newton path.
-- Packed `_linear_vjp` uses `.reshape(x.shape)` on the input-map VJP so a strided `(B, T, d_in)` view keeps the caller layout.
-- Fused sLSTM Newton keeps the guess, J tiles, and scan residual in fp32 when DRAM is fp16/bf16 (`fp32_newton_work`). `W_x` stays a GEMM in the tensor dtype. This is the App. B algebra contract. It tightens P=3 bf16 residual; it does not make Ampere bf16 fused faster than fp32 (the hot path is still fp32 4×4 PCR).
-- `ParaSLSTM`: `mix='diag'` remains the fused default. `mix='head'` warns as an unfused ablation (`scan_dense`). `mix='dense'` raises if `hidden_size > 8` (Jacobian oracle for tests).
+
+### Breaking
+
+- Importing `xLSTMBlock` from `pararnn` fails. Callers that wrapped
+  `ParaRNN(ParaSLSTM)` themselves keep working.
 
 ## [0.4.0] - 2026-09-03
 
@@ -82,7 +143,9 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Generic-cell autograd path and sequential reference solver.
 - Numerics tests: parallel vs sequential agreement, layer forward/backward.
 
-[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/bugkira/pararnn-torch/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/bugkira/pararnn-torch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/bugkira/pararnn-torch/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/bugkira/pararnn-torch/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/bugkira/pararnn-torch/releases/tag/v0.2.0
