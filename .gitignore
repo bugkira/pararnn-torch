@@ -19,8 +19,7 @@ htmlcov/
 data/
 datasets/
 checkpoints/
-results/*.json
-results/*.log
+results/
 
 # experiment tracking
 mlruns/
@@ -57,4 +56,3 @@ docs/internal/
 # lab IMU smoke (local only; not a public example)
 examples/imu_longseq_smoke.py
 configs/train/imu_*.yaml
-results/imu_*.md
