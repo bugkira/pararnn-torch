@@ -250,108 +250,82 @@ md(
     r"""
 ## 4. Expressivity: \(\mathbb{Z}_2\) prefix tagging
 
-Last-token accuracy on running XOR (Merrill et al.): label at \(t\) is the prefix product on \(\mathbb{Z}_2\). Train at \(T{=}16\), also eval at \(T{=}32\).
+Running XOR / last-token accuracy (Merrill et al.): train \(T{=}16\), also eval \(T{=}32\).
 
-Arms: **ParaSLSTM Newton** and a compact **S4D-Real** diagonal SSM (same width). Protocol matches [`examples/parity.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/parity.py) (2000 AdamW steps; ~1–2 min on a T4-class GPU).
-
-Solver knobs: **K=3** (Danieli et al. App. A). **P=3** warm-start is set explicitly — library auto would pick P=1 at train length \(T{=}16\), which leaves `max|F|` above the 1e-3 warn band on many Adam steps.
+**ParaSLSTM Newton** vs compact **S4D-Real** SSM, same width. **K=3**, **P=3** (auto at \(T{=}16\) would be P=1 and warn under Adam). ~2000 AdamW steps.
 """
 )
 
 code(
     """
-VOCAB = 2
-SEQ_LEN, EVAL_SEQ_LEN = 16, 32
-BATCH, D_H, NUM_LAYERS = 16, 32, 2
-# Match examples/parity.py: 2000 AdamW steps, 10% warmup, cosine to 0.
-SCHEDULE_TOTAL, STEPS, WARMUP_FRAC = 2000, 2000, 0.1
-LR, WEIGHT_DECAY = 1e-3, 1e-6
-SEED = 0
+VOCAB, SEQ_LEN, EVAL_T, BATCH, D_H = 2, 16, 32, 16, 32
+STEPS, WARMUP, LR, SEED = 2000, 200, 1e-3, 0
+if device.type != "cuda":
+    STEPS = 400
+    print(f"CPU: STEPS={STEPS}")
 
 
-def sample_parity(batch: int, length: int, *, generator=None):
-    bits = torch.randint(0, 2, (batch, length), generator=generator)
-    labels = bits.cumsum(dim=1) % 2
-    return bits, labels
+def sample_parity(n, t, *, g=None):
+    bits = torch.randint(0, 2, (n, t), generator=g)
+    return bits, bits.cumsum(1) % 2
 
 
-def cosine_lr(step: int, total: int, base: float, warmup_frac: float) -> float:
-    warm = max(int(total * warmup_frac), 1)
-    if step < warm:
-        return base * float(step + 1) / float(warm)
-    t = float(step - warm) / float(max(total - warm, 1))
-    return base * 0.5 * (1.0 + math.cos(math.pi * t))
+class Residual(nn.Module):
+    def __init__(self, inner: nn.Module) -> None:
+        super().__init__()
+        self.inner = inner
+
+    def forward(self, x: Tensor) -> Tensor:
+        return x + self.inner(x)
 
 
 class S6Block(nn.Module):
     \"\"\"Pre-norm residual diagonal selective SSM (S4D-Real).\"\"\"
 
-    def __init__(self, d_model: int) -> None:
+    def __init__(self, d: int) -> None:
         super().__init__()
-        self.norm = nn.LayerNorm(d_model)
-        self.dt_proj = nn.Linear(d_model, d_model)
-        self.B_proj = nn.Linear(d_model, d_model)
-        self.C_proj = nn.Linear(d_model, d_model)
-        self.log_A = nn.Parameter(
-            torch.log(torch.arange(1, d_model + 1, dtype=torch.float32))
-        )
-        self.dt_bias = nn.Parameter(
-            torch.linspace(math.log(1e-3), math.log(1e-1), d_model)
-        )
+        self.norm = nn.LayerNorm(d)
+        self.dt_proj = nn.Linear(d, d)
+        self.B_proj = nn.Linear(d, d)
+        self.C_proj = nn.Linear(d, d)
+        self.log_A = nn.Parameter(torch.log(torch.arange(1, d + 1, dtype=torch.float32)))
+        self.dt_bias = nn.Parameter(torch.linspace(math.log(1e-3), math.log(1e-1), d))
 
     def forward(self, x: Tensor) -> Tensor:
         z = self.norm(x)
         dt = F.softplus(self.dt_proj(z) + self.dt_bias)
-        decay = torch.exp(-dt * torch.exp(self.log_A))
-        drive = self.B_proj(z) * z
-        h = scan_diag(decay, drive, backend="eager")
+        h = scan_diag(torch.exp(-dt * torch.exp(self.log_A)), self.B_proj(z) * z, backend="eager")
         return x + self.C_proj(h)
 
 
-class ResidualSLSTM(nn.Module):
-    def __init__(self, d_h: int, newton_cfg: NewtonConfig) -> None:
-        super().__init__()
-        self.norm = nn.LayerNorm(d_h)
-        # max_recurrent_norm=None matches examples/parity.py (no App. C.1 clip).
-        self.rnn = ParaRNN(
-            ParaSLSTM(d_h, d_h, mix="diag", max_recurrent_norm=None),
-            config=newton_cfg,
-            output_hidden=True,
-            solver="auto",
-        )
+def parity_model(arm: str) -> nn.Module:
+    cfg = NewtonConfig(max_iters=3, picard_iters=3, scan_backend="auto")
+    if arm == "ssm":
+        body = [S6Block(D_H), S6Block(D_H)]
+    else:
 
-    def forward(self, x: Tensor) -> Tensor:
-        return x + self.rnn(self.norm(x))
-
-
-class ParityNet(nn.Module):
-    def __init__(
-        self, d_h: int, num_layers: int, arm: str, newton_cfg: NewtonConfig
-    ) -> None:
-        super().__init__()
-        self.arm = arm
-        self.embed = nn.Embedding(VOCAB, d_h)
-        if arm == "ssm":
-            self.blocks = nn.ModuleList(S6Block(d_h) for _ in range(num_layers))
-        else:
-            self.blocks = nn.ModuleList(
-                ResidualSLSTM(d_h, newton_cfg) for _ in range(num_layers)
+        def _slstm_block() -> nn.Module:
+            return Residual(
+                nn.Sequential(
+                    nn.LayerNorm(D_H),
+                    ParaRNN(
+                        ParaSLSTM(D_H, D_H, mix="diag", max_recurrent_norm=None),
+                        config=cfg,
+                        output_hidden=True,
+                        solver="auto",
+                    ),
+                )
             )
-        self.head = nn.Linear(d_h, VOCAB)
 
-    def forward(self, tokens: Tensor) -> Tensor:
-        h = self.embed(tokens)
-        for block in self.blocks:
-            h = block(h)
-        return self.head(h)
+        body = [_slstm_block(), _slstm_block()]
+    return nn.Sequential(nn.Embedding(VOCAB, D_H), *body, nn.Linear(D_H, VOCAB))
 
 
 @torch.no_grad()
-def eval_last_acc(model: nn.Module, bits: Tensor, labels: Tensor) -> float:
+def last_acc(model: nn.Module, bits: Tensor, labels: Tensor) -> float:
     was = model.training
     model.eval()
-    hit = model(bits).argmax(dim=-1) == labels
-    acc = float(hit[:, -1].float().mean())
+    acc = float((model(bits).argmax(-1) == labels)[:, -1].float().mean())
     model.train(was)
     return acc
 
@@ -360,71 +334,43 @@ def train_arm(arm: str) -> dict:
     torch.manual_seed(SEED)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(SEED)
-    # K=3 App. A. P=3: auto at T=16 is P=1; under Adam that trips residual_high.
-    train_cfg = NewtonConfig(max_iters=3, picard_iters=3, scan_backend="auto")
-    model = ParityNet(D_H, NUM_LAYERS, arm, train_cfg).to(device)
-    model.train()
-    opt = torch.optim.AdamW(
-        model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.999)
-    )
-    gen = torch.Generator().manual_seed(SEED)
-    eval_gen = torch.Generator().manual_seed(SEED + 1)
-    eval_bits, eval_lab = sample_parity(BATCH * 4, SEQ_LEN, generator=eval_gen)
-    long_bits, long_lab = sample_parity(BATCH * 4, EVAL_SEQ_LEN, generator=eval_gen)
-    eval_bits, eval_lab = eval_bits.to(device), eval_lab.to(device)
-    long_bits, long_lab = long_bits.to(device), long_lab.to(device)
-
-    steps, hist16, hist32 = [], [], []
+    model = parity_model(arm).to(device).train()
+    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-6)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(STEPS - WARMUP, 1))
+    g = torch.Generator().manual_seed(SEED)
+    eg = torch.Generator().manual_seed(SEED + 1)
+    ev16 = tuple(t.to(device) for t in sample_parity(BATCH * 4, SEQ_LEN, g=eg))
+    ev32 = tuple(t.to(device) for t in sample_parity(BATCH * 4, EVAL_T, g=eg))
+    steps, h16, h32 = [], [], []
     for step in range(STEPS):
-        bits, labels = sample_parity(BATCH, SEQ_LEN, generator=gen)
-        bits, labels = bits.to(device), labels.to(device)
-        for g in opt.param_groups:
-            g["lr"] = cosine_lr(step, SCHEDULE_TOTAL, LR, WARMUP_FRAC)
-        loss = F.cross_entropy(model(bits).view(-1, VOCAB), labels.view(-1))
+        if step < WARMUP:
+            for pg in opt.param_groups:
+                pg["lr"] = LR * (step + 1) / WARMUP
+        bits, lab = sample_parity(BATCH, SEQ_LEN, g=g)
+        bits, lab = bits.to(device), lab.to(device)
+        loss = F.cross_entropy(model(bits).reshape(-1, VOCAB), lab.reshape(-1))
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
-        if step == 0 or (step + 1) % 100 == 0 or step + 1 == STEPS:
-            a16 = eval_last_acc(model, eval_bits, eval_lab)
-            a32 = eval_last_acc(model, long_bits, long_lab)
+        if step >= WARMUP:
+            sched.step()
+        if step == 0 or (step + 1) % 200 == 0 or step + 1 == STEPS:
+            a16, a32 = last_acc(model, *ev16), last_acc(model, *ev32)
             steps.append(step)
-            hist16.append(a16)
-            hist32.append(a32)
-            print(
-                f"arm={arm:6s} step={step:03d} ce={loss.item():.4f} "
-                f"last@16={a16:.3f} last@32={a32:.3f}"
-            )
-    return {
-        "steps": steps,
-        "t16": hist16,
-        "t32": hist32,
-        "final16": hist16[-1],
-        "final32": hist32[-1],
-    }
+            h16.append(a16)
+            h32.append(a32)
+            print(f"{arm:6s} step={step:04d} ce={loss.item():.4f} @16={a16:.3f} @32={a32:.3f}")
+    return {"steps": steps, "t16": h16, "t32": h32}
 
 
-# Parity benefits from a GPU; on CPU we still run a thinner schedule.
-if device.type != "cuda":
-    STEPS = 400
-    print(f"CPU: reducing STEPS to {STEPS} (LR schedule still uses {SCHEDULE_TOTAL})")
-
-curves = {}
-for arm in ("newton", "ssm"):
-    curves[arm] = train_arm(arm)
-    print(
-        f"arm={arm} final last@16={curves[arm]['final16']:.3f} "
-        f"last@32={curves[arm]['final32']:.3f}"
-    )
-
-fig, ax = plt.subplots(figsize=(7.5, 4.2), dpi=120)
+curves = {arm: train_arm(arm) for arm in ("newton", "ssm")}
+fig, ax = plt.subplots(figsize=(7.5, 4.0), dpi=120)
 for arm, style in (("newton", "-"), ("ssm", "--")):
     c = curves[arm]
-    ax.plot(c["steps"], c["t16"], style, label=f"{arm} eval T=16")
-    ax.plot(c["steps"], c["t32"], style, alpha=0.7, label=f"{arm} eval T=32")
-ax.set_xlabel("step")
-ax.set_ylabel("last-token accuracy")
-ax.set_ylim(-0.05, 1.05)
-ax.set_title(r"$\\mathbb{Z}_2$ prefix tagging (short Colab schedule)")
+    ax.plot(c["steps"], c["t16"], style, label=f"{arm} T=16")
+    ax.plot(c["steps"], c["t32"], style, alpha=0.7, label=f"{arm} T=32")
+ax.set(xlabel="step", ylabel="last-token accuracy", ylim=(-0.05, 1.05))
+ax.set_title(r"$\\mathbb{Z}_2$ prefix tagging")
 ax.legend(fontsize=8)
 ax.grid(True, ls=":", alpha=0.5)
 plt.tight_layout()
