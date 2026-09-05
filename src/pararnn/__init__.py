@@ -2,7 +2,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM, RNNCell
 from pararnn.kernels import can_decode_step, decode_step, decode_wx
-from pararnn.layers import ParaRNN
+from pararnn.layers import ParaRNN, ParaSLSTMBlock, SwiGLU
 from pararnn.paged import PagedStatePool, paged_apply
 from pararnn.solvers import (
     NewtonConfig,
@@ -23,7 +23,9 @@ __all__ = [
     "ParaLSTM",
     "ParaRNN",
     "ParaSLSTM",
+    "ParaSLSTMBlock",
     "RNNCell",
+    "SwiGLU",
     "can_decode_step",
     "decode_step",
     "decode_wx",

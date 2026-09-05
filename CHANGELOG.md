@@ -17,6 +17,8 @@ All notable changes to this project are documented here. Format follows [Keep a 
   (`tests/numerics/test_recompute.py`).
 - Experimental `NewtonConfig(fused_early_exit=True)`: host ``max|F|`` stop
   between fused Newton steps (fixed K remains the train default).
+- `ParaSLSTMBlock` / `SwiGLU`: pre-norm RMSNorm + fused-ready `ParaSLSTM` +
+  SwiGLU residual trunk (`layers/para_slstm_block.py`).
 
 ### Changed
 

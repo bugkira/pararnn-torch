@@ -28,7 +28,22 @@ model = ParaRNN(cell, config=NewtonConfig(max_iters=3), solver="auto")
 
 ## Stacking
 
-LayerNorm, residual, and FFN live outside the library cell. The Z₂ parity smoke (`examples/parity.py`) wraps `ParaRNN(ParaSLSTM)` in a local pre-norm residual. `examples/xlstm_hybrid.py` keeps an NX-AI `sLSTMBlock` (their LN, skip, FFN) and puts `ParaRNN(ParaSLSTM)` (`mix='diag'`) in the recurrent slot. Install: `uv add xlstm` (NX-AI package, Python 3.11+).
+`ParaSLSTMBlock` is the library drop-in trunk layer (RMSNorm → `ParaRNN(ParaSLSTM)`
+→ residual → RMSNorm → SwiGLU → residual):
+
+```python
+from pararnn import NewtonConfig, ParaSLSTMBlock
+
+block = ParaSLSTMBlock(d_model=64, mlp_ratio=4.0, config=NewtonConfig(max_iters=3))
+y = block(torch.randn(2, 128, 64))
+stack = torch.nn.Sequential(*[ParaSLSTMBlock(64) for _ in range(4)])
+```
+
+LayerNorm / residual / FFN are outside the Newton cell itself. The Z₂ parity
+smoke (`examples/parity.py`) wraps `ParaRNN(ParaSLSTM)` in a local pre-norm
+residual. `examples/xlstm_hybrid.py` keeps an NX-AI `sLSTMBlock` (their LN,
+skip, FFN) and puts `ParaRNN(ParaSLSTM)` (`mix='diag'`) in the recurrent slot.
+Install: `uv add xlstm` (NX-AI package, Python 3.11+).
 
 ## API notes
 

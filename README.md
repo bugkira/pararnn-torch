@@ -131,6 +131,7 @@ API notes stay in [`docs/distributed.md`](docs/distributed.md).
 
 - **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM` — recurrent maps \(f(h_{t-1}, x_t)\).
 - **Sequence module:** `ParaRNN(cell, config=NewtonConfig(max_iters=3))` — stacks one or more cells.
+- **Trunk block:** `ParaSLSTMBlock(d_model, mlp_ratio=4)` — RMSNorm + ParaSLSTM + SwiGLU residuals for LM stacks (`docs/xlstm.md`).
 - **Solver config:** `NewtonConfig(scan_backend="auto")` picks fused Triton on CUDA when available, else Triton scan + `step`, else eager Blelloch.
 - **Low-level solvers** (bypass `ParaRNN`):
 
