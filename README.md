@@ -1,5 +1,6 @@
 # ParaRNN
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bugkira/pararnn-torch/blob/main/notebooks/paraslstm_demo.ipynb)
 [![CI](https://github.com/bugkira/pararnn-torch/actions/workflows/ci.yml/badge.svg)](https://github.com/bugkira/pararnn-torch/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/bugkira/pararnn-torch)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -75,6 +76,9 @@ y = slstm(torch.randn(4, 128, 64, device=device))
 ```
 
 ## Results
+
+Interactive walkthrough: [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb)
+([Open in Colab](https://colab.research.google.com/github/bugkira/pararnn-torch/blob/main/notebooks/paraslstm_demo.ipynb); private clones need a `GITHUB_TOKEN` secret — see [`notebooks/README.md`](notebooks/README.md)).
 
 Diag-sLSTM forward median latency (ms), \(B{=}8\), \(d_h{=}256\), float32,
 RTX 2080 Ti, 10 seeds (`scripts/slstm_vs_flashrnn.py` / paper Tier-A timing).

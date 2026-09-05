@@ -28,6 +28,9 @@ mlflow.db
 wandb/
 outputs/
 
+# notebook execute artifacts
+notebooks/*.executed.ipynb
+
 # example smoke artifacts
 parity_curves.json
 

@@ -7,3 +7,4 @@
 | [`structure.md`](structure.md) | Layout of `src/`, tests, configs |
 | [`backward-scan-cap.md`](backward-scan-cap.md) | Long-T scan: chunked adjoint; hierarchical / eager-aggregate tile scan |
 | [`../scripts/README.md`](../scripts/README.md) | Bench / train / diagnostic script index |
+| [`../notebooks/README.md`](../notebooks/README.md) | Colab / Jupyter ParaSLSTM demo |

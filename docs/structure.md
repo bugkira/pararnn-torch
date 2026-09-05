@@ -4,7 +4,7 @@ One trunk (`main`). Three layers:
 
 1. **Ops** — `src/pararnn/kernels/`: Triton fused Newton and scans, selected with `NewtonConfig(scan_backend=)`.
 2. **Modules** — `cells/` is \(f\) (`step`); `solvers/` is Alg. 1; `layers/ParaRNN` is the sequence `nn.Module` (Newton in `.train()`, sequential in `.eval()`).
-3. **Integrations** — `examples/` (onboarding), `scripts/` (benches / training; see [`scripts/README.md`](../scripts/README.md)).
+3. **Integrations** — `examples/` (onboarding), `scripts/` (benches / training; see [`scripts/README.md`](../scripts/README.md)), `notebooks/` (Colab demo).
 
 ```
 ParaRNN/

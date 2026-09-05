@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- Colab / Jupyter demo [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb):
+  drop-in API, sequential↔Newton trust table, latency vs \(T\), short
+  \(\mathbb{Z}_2\) parity vs S4D-Real SSM, T=1 `decode_step`, citation
+  ([`notebooks/README.md`](notebooks/README.md)).
+
 ## [0.7.0] - 2026-09-05
 
 Compile-safe Newton, paged decode path, and OSS front-door polish.
