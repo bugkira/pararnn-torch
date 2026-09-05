@@ -15,6 +15,8 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - `NewtonConfig(recompute=True)`: Level-2 selective activation checkpointing —
   rematerialize \(H^\star\) in eq. 2.6 backward for ultra-long train T
   (`tests/numerics/test_recompute.py`).
+- Experimental `NewtonConfig(fused_early_exit=True)`: host ``max|F|`` stop
+  between fused Newton steps (fixed K remains the train default).
 
 ### Changed
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import torch
 import triton
@@ -212,6 +213,30 @@ def log_fused_iter(
                 "n_chunks": n_chunks,
             },
         )
+
+
+def fused_early_exit_hit(
+    residual_fn: Callable[[Tensor], float] | None,
+    early_exit_atol: float | None,
+    states: Tensor,
+    *,
+    iters_done_out: list[int] | None,
+    it: int,
+) -> bool:
+    """Host ``max|F|`` check after a fused Newton step. Opt-in experimental path."""
+    if residual_fn is None or early_exit_atol is None:
+        return False
+    if float(residual_fn(states)) < float(early_exit_atol):
+        if iters_done_out is not None:
+            iters_done_out.clear()
+            iters_done_out.append(it + 1)
+        return True
+    return False
+
+
+def mark_fused_iters_done(iters_done_out: list[int] | None, max_iters: int) -> None:
+    if iters_done_out is not None and not iters_done_out:
+        iters_done_out.append(int(max_iters))
 
 
 def log_fused_done(

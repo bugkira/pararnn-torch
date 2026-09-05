@@ -28,7 +28,8 @@ class NewtonStats:
 
     max_residual: float = float("nan")
     # Residual evaluations in the Newton loop (≤ max_iters), including the
-    # eval that triggered early-stop. 0 if max_iters=0. Fused: this is max_iters.
+    # eval that triggered early-stop. 0 if max_iters=0. Fused default: max_iters;
+    # with ``fused_early_exit`` this can be ``< max_iters``.
     iters: int = 0
     scan_backend: str = ""
     picard_iters: int = 0
@@ -85,6 +86,13 @@ class NewtonConfig:
     # / −70–80% of the Function-held trajectory (this repo IDEAS). Prefer outer
     # ``torch.utils.checkpoint`` on short T; combine both only if measured.
     recompute: bool = False
+    # False (default): fused Alg. 1 always runs ``max_iters`` (train / DDP /
+    # compile-safe fixed K). True: after each fused Newton step, host-sync
+    # ``max|F|`` and stop when ``< residual_atol``. Experimental — variable K
+    # straggles multi-GPU and breaks CUDA-graph assumptions; use for inference
+    # ablations / residual curves. Requires ``residual_atol``; rejects
+    # ``fused_time_loop``. Eager already early-stops via ``residual_atol`` alone.
+    fused_early_exit: bool = False
 
 
 # Lengths compiled as Triton BLOCK_T in the fused walk kernel. Not Apple App. C.
@@ -124,3 +132,8 @@ def _validate_config(config: NewtonConfig) -> None:
             raise ValueError(f"fused_window_len must be one of {FUSED_WINDOW_LENS}, got {w}")
         if not config.fused_time_loop:
             raise ValueError("fused_window_len requires fused_time_loop=True")
+    if config.fused_early_exit:
+        if config.residual_atol is None:
+            raise ValueError("fused_early_exit requires residual_atol (got None)")
+        if config.fused_time_loop:
+            raise ValueError("fused_early_exit cannot combine with fused_time_loop")

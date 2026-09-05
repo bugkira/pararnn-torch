@@ -24,8 +24,10 @@ from pararnn.kernels._fused_common import (
     alloc_fp32_update,
     fp32_newton_work,
     fp32_omega_add,
+    fused_early_exit_hit,
     log_fused_done,
     log_fused_iter,
+    mark_fused_iters_done,
     prepare_h0_block_table,
     time_tiles,
 )
@@ -2703,6 +2705,9 @@ def _newton_slstm_fused_impl(
     time_loop: bool = False,
     window_len: int | None = None,
     block_table: Tensor | None = None,
+    early_exit_atol: float | None = None,
+    residual_fn=None,
+    iters_done_out: list[int] | None = None,
 ) -> Tensor:
     """Alg. 1 for diag-mix ParaSLSTM. Public entry: ``pararnn::newton_slstm_fused``."""
     from pararnn.solvers.slstm_log import (
@@ -2882,6 +2887,37 @@ def _newton_slstm_fused_impl(
             d_h=d_h,
             n_chunks=n_chunks,
         )
+        if residual_fn is not None and early_exit_atol is not None:
+            check = work
+            if log_coords:
+                check = slstm_decode_log(work, eps=float(eps))
+            if check.dtype != wx.dtype:
+                check = check.to(dtype=wx.dtype)
+            if fused_early_exit_hit(
+                residual_fn,
+                early_exit_atol,
+                check,
+                iters_done_out=iters_done_out,
+                it=it,
+            ):
+                out = check if log_coords else work
+                if out.dtype != wx.dtype:
+                    out = out.to(dtype=wx.dtype)
+                log_fused_done(
+                    log,
+                    "newton_slstm_fused",
+                    time=time,
+                    batch=batch,
+                    d_h=d_h,
+                    max_iters=it + 1,
+                    n_chunks=n_chunks,
+                    log_coords=log_coords,
+                    scan_tile=scan_tile,
+                    acc_dtype=str(work.dtype),
+                    early_exit=True,
+                )
+                return out
+    mark_fused_iters_done(iters_done_out, max_iters)
     log_fused_done(
         log,
         "newton_slstm_fused",

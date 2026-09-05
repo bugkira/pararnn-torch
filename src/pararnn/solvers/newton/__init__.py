@@ -351,6 +351,25 @@ def _newton_solve(
         )
     compiling = torch.compiler.is_compiling()
     if config.scan_backend == "fused":
+        use_early = bool(config.fused_early_exit) and not compiling
+        if use_early:
+            states, iters_done, history, last_res = _newton_fused_early_exit(
+                cell, x, config, h0=h0, cu_seqlens=cu_seqlens, block_table=block_table
+            )
+            _fill_stats(
+                cell,
+                x,
+                states,
+                h0,
+                config,
+                iters=iters_done,
+                stats=stats,
+                residual_history=history,
+                known_residual=last_res,
+                cu_seqlens=cu_seqlens,
+                block_table=block_table,
+            )
+            return states
         states = _newton_fused(
             cell, x, config, h0=h0, cu_seqlens=cu_seqlens, block_table=block_table
         )
@@ -600,6 +619,7 @@ def _newton_fused(
                 "fused_time_loop": config.fused_time_loop,
                 "fused_window_len": window,
                 "block_table": block_table is not None,
+                "fused_early_exit": config.fused_early_exit,
             },
         )
     from pararnn.kernels.fused_newton import fused_newton
@@ -618,6 +638,75 @@ def _newton_fused(
         cu_seqlens=cu_seqlens,
         block_table=block_table,
     )
+
+
+def _newton_fused_early_exit(
+    cell: nn.Module,
+    x: Tensor,
+    config: NewtonConfig,
+    *,
+    h0: Tensor | None = None,
+    cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
+) -> tuple[Tensor, int, list[float], float]:
+    """Experimental fused path: host ``max|F|`` after each Newton step.
+
+    Bypasses the fixed-K custom op. Variable ``iters`` — train/DDP/compile
+    should keep ``fused_early_exit=False``.
+    """
+    wx = _input_affine(cell, x)
+    if wx is None:
+        raise TypeError(f"fused Newton needs cell.W_x; got {type(cell).__name__}")
+    atol = config.residual_atol
+    if atol is None:
+        raise ValueError("fused_early_exit requires residual_atol")
+    history: list[float] = []
+    h0_use = h0
+    if block_table is not None and h0 is not None:
+        h0_use = h0.index_select(0, block_table.to(device=h0.device, dtype=torch.long))
+
+    def residual_fn(states: Tensor) -> float:
+        pred = cell.step(_prepend(states, h0_use, cu_seqlens), x, wx=wx)
+        res = float((pred - states).detach().abs().amax())
+        history.append(res)
+        return res
+
+    iters_done_out: list[int] = []
+    from pararnn.kernels.fused_newton import fused_newton
+
+    window = config.fused_window_len
+    if config.fused_time_loop and window is None:
+        window = FUSED_WINDOW_DEFAULT
+    log.info(
+        "newton_fused_early_exit",
+        extra={
+            "cell": type(cell).__name__,
+            "seq_len": int(x.shape[1]),
+            "batch": int(x.shape[0]),
+            "max_iters": config.max_iters,
+            "residual_atol": float(atol),
+        },
+    )
+    states = fused_newton(
+        cell,
+        wx,
+        max_iters=config.max_iters,
+        omega=config.omega,
+        h0=h0,
+        log_coords=config.coords == "log",
+        picard_iters=int(config.picard_iters or 0),
+        scan_tile=config.scan_tile,
+        fused_time_loop=config.fused_time_loop,
+        fused_window_len=window,
+        cu_seqlens=cu_seqlens,
+        block_table=block_table,
+        early_exit_atol=float(atol),
+        residual_fn=residual_fn,
+        iters_done_out=iters_done_out,
+    )
+    iters_done = int(iters_done_out[0]) if iters_done_out else int(config.max_iters)
+    last_res = history[-1] if history else float("nan")
+    return states, iters_done, history, last_res
 
 
 def _eq26_vjp(

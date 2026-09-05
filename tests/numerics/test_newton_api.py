@@ -163,6 +163,53 @@ def test_fused_window_len_requires_time_loop():
         newton_apply(cell, x, NewtonConfig(fused_window_len=64, residual_fail=None))
 
 
+def test_fused_early_exit_requires_residual_atol():
+    from pararnn.solvers.newton.config import _validate_config
+
+    with pytest.raises(ValueError, match="fused_early_exit requires residual_atol"):
+        _validate_config(NewtonConfig(fused_early_exit=True, residual_atol=None))
+
+
+def test_fused_early_exit_rejects_time_loop():
+    from pararnn.solvers.newton.config import _validate_config
+
+    with pytest.raises(ValueError, match="fused_early_exit cannot combine"):
+        _validate_config(
+            NewtonConfig(fused_early_exit=True, fused_time_loop=True, fused_window_len=64)
+        )
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_fused_early_exit_fewer_than_max_iters(cuda_device: torch.device) -> None:
+    torch.manual_seed(96)
+    cell = ParaGRU(d_in=4, d_h=8).to(cuda_device)
+    x = torch.randn(2, 32, 4, device=cuda_device)
+    st = NewtonStats()
+    y = newton_apply(
+        cell,
+        x,
+        NewtonConfig(
+            max_iters=8,
+            scan_backend="fused",
+            residual_atol=1e-4,
+            fused_early_exit=True,
+            residual_fail=None,
+        ),
+        stats=st,
+    )
+    assert st.iters < 8
+    assert st.iters >= 1
+    assert st.max_residual < 1e-4
+    assert st.scan_backend == "fused"
+    y_fixed = newton_apply(
+        cell,
+        x,
+        NewtonConfig(max_iters=3, scan_backend="fused", residual_atol=None, residual_fail=None),
+    )
+    torch.testing.assert_close(y, y_fixed, atol=2e-4, rtol=2e-4)
+
+
 def test_fused_time_loop_rejects_chunk_len():
     cell = ParaSLSTM(d_in=4, d_h=4, mix="diag").to(device)
     x = torch.randn(2, 8, 4, device=device)
