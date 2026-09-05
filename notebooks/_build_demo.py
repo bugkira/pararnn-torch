@@ -250,19 +250,17 @@ md(
     r"""
 ## 4. Expressivity: \(\mathbb{Z}_2\) prefix tagging
 
-Running XOR / last-token accuracy (Merrill et al.): train \(T{=}16\), also eval \(T{=}32\).
-
-**ParaSLSTM Newton** vs compact **S4D-Real** SSM, same width. **K=3**, **P=3** (auto at \(T{=}16\) would be P=1 and warn under Adam). ~2000 AdamW steps.
+Running XOR (Merrill et al.): train \(T{=}16\), eval also at \(T{=}32\). **ParaSLSTM** (K=3, P=3) vs **S4D-Real** SSM.
 """
 )
 
 code(
     """
+# Models + data helpers (run once)
 VOCAB, SEQ_LEN, EVAL_T, BATCH, D_H = 2, 16, 32, 16, 32
 STEPS, WARMUP, LR, SEED = 2000, 200, 1e-3, 0
 if device.type != "cuda":
     STEPS = 400
-    print(f"CPU: STEPS={STEPS}")
 
 
 def sample_parity(n, t, *, g=None):
@@ -280,14 +278,12 @@ class Residual(nn.Module):
 
 
 class S6Block(nn.Module):
-    \"\"\"Pre-norm residual diagonal selective SSM (S4D-Real).\"\"\"
+    \"\"\"Pre-norm residual S4D-Real (diagonal selective SSM).\"\"\"
 
     def __init__(self, d: int) -> None:
         super().__init__()
-        self.norm = nn.LayerNorm(d)
-        self.dt_proj = nn.Linear(d, d)
-        self.B_proj = nn.Linear(d, d)
-        self.C_proj = nn.Linear(d, d)
+        self.norm, self.dt_proj = nn.LayerNorm(d), nn.Linear(d, d)
+        self.B_proj, self.C_proj = nn.Linear(d, d), nn.Linear(d, d)
         self.log_A = nn.Parameter(torch.log(torch.arange(1, d + 1, dtype=torch.float32)))
         self.dt_bias = nn.Parameter(torch.linspace(math.log(1e-3), math.log(1e-1), d))
 
@@ -301,10 +297,9 @@ class S6Block(nn.Module):
 def parity_model(arm: str) -> nn.Module:
     cfg = NewtonConfig(max_iters=3, picard_iters=3, scan_backend="auto")
     if arm == "ssm":
-        body = [S6Block(D_H), S6Block(D_H)]
+        body: list[nn.Module] = [S6Block(D_H), S6Block(D_H)]
     else:
-
-        def _slstm_block() -> nn.Module:
+        def block() -> nn.Module:
             return Residual(
                 nn.Sequential(
                     nn.LayerNorm(D_H),
@@ -317,12 +312,19 @@ def parity_model(arm: str) -> nn.Module:
                 )
             )
 
-        body = [_slstm_block(), _slstm_block()]
+        body = [block(), block()]
     return nn.Sequential(nn.Embedding(VOCAB, D_H), *body, nn.Linear(D_H, VOCAB))
 
 
+print(f"parity helpers ready (STEPS={STEPS})")
+"""
+)
+
+code(
+    """
+# Train both arms (~1–2 min on GPU)
 @torch.no_grad()
-def last_acc(model: nn.Module, bits: Tensor, labels: Tensor) -> float:
+def last_acc(model, bits, labels):
     was = model.training
     model.eval()
     acc = float((model(bits).argmax(-1) == labels)[:, -1].float().mean())
@@ -337,8 +339,7 @@ def train_arm(arm: str) -> dict:
     model = parity_model(arm).to(device).train()
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-6)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(STEPS - WARMUP, 1))
-    g = torch.Generator().manual_seed(SEED)
-    eg = torch.Generator().manual_seed(SEED + 1)
+    g, eg = torch.Generator().manual_seed(SEED), torch.Generator().manual_seed(SEED + 1)
     ev16 = tuple(t.to(device) for t in sample_parity(BATCH * 4, SEQ_LEN, g=eg))
     ev32 = tuple(t.to(device) for t in sample_parity(BATCH * 4, EVAL_T, g=eg))
     steps, h16, h32 = [], [], []
@@ -346,8 +347,7 @@ def train_arm(arm: str) -> dict:
         if step < WARMUP:
             for pg in opt.param_groups:
                 pg["lr"] = LR * (step + 1) / WARMUP
-        bits, lab = sample_parity(BATCH, SEQ_LEN, g=g)
-        bits, lab = bits.to(device), lab.to(device)
+        bits, lab = (t.to(device) for t in sample_parity(BATCH, SEQ_LEN, g=g))
         loss = F.cross_entropy(model(bits).reshape(-1, VOCAB), lab.reshape(-1))
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -359,12 +359,18 @@ def train_arm(arm: str) -> dict:
             steps.append(step)
             h16.append(a16)
             h32.append(a32)
-            print(f"{arm:6s} step={step:04d} ce={loss.item():.4f} @16={a16:.3f} @32={a32:.3f}")
+            print(f"{arm:6s} {step:04d}  ce={loss.item():.4f}  @16={a16:.3f}  @32={a32:.3f}")
     return {"steps": steps, "t16": h16, "t32": h32}
 
 
 curves = {arm: train_arm(arm) for arm in ("newton", "ssm")}
-fig, ax = plt.subplots(figsize=(7.5, 4.0), dpi=120)
+"""
+)
+
+code(
+    """
+# Plot last-token accuracy
+fig, ax = plt.subplots(figsize=(7.2, 3.8), dpi=120)
 for arm, style in (("newton", "-"), ("ssm", "--")):
     c = curves[arm]
     ax.plot(c["steps"], c["t16"], style, label=f"{arm} T=16")

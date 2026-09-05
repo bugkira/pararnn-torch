@@ -16,8 +16,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Parity demo / [`examples/parity.py`](examples/parity.py): explicit `picard_iters=3`
   at \(T{=}16\) (library auto is P=1) and quiet `pararnn.solvers.newton` WARNING
   so `newton_residual_high` does not flood Colab / stdout; divergence still raises.
-- Expressivity notebook cell: `nn.Sequential` + thin `Residual` (drop `ParityNet` /
-  `ResidualSLSTM`); shorter markdown and log cadence.
+- Expressivity section split into models / train / plot cells (Colab-sized chunks).
 
 ## [0.7.0] - 2026-09-05
 
