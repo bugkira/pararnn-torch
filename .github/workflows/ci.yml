@@ -46,10 +46,13 @@ jobs:
   gpu:
     # Lab box only. Fork PRs must not run here (untrusted code on the GPUs,
     # and forks have no [self-hosted, cuda] runner to pick the job up).
+    # continue-on-error: a queued/offline self-hosted runner must not hold
+    # the whole workflow red; CPU lint+test remain the merge gate.
     if: github.repository == 'bugkira/pararnn-torch' && github.event.pull_request.head.repo.fork != true
     name: gpu (${{ matrix.label }})
     runs-on: [self-hosted, cuda]
     timeout-minutes: 60
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:

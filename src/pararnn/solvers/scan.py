@@ -196,9 +196,7 @@ def _jac_drop_left(jac: Tensor, cu_seqlens: Tensor | None) -> Tensor:
     """
     if cu_seqlens is None:
         return jac
-    flags = segment_start_flags(cu_seqlens, jac.shape[1], batch=jac.shape[0]).to(
-        device=jac.device
-    )
+    flags = segment_start_flags(cu_seqlens, jac.shape[1], batch=jac.shape[0]).to(device=jac.device)
     extra = (1,) * (jac.dim() - 2)
     return jac.masked_fill(flags.view(*flags.shape, *extra), 0)
 

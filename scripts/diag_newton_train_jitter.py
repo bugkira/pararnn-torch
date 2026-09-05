@@ -15,11 +15,11 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from examples.dyck_language import VOCAB, sample_dyck1
-from scripts.slstm_vs_flashrnn import _NewtonDyckLM
 from pararnn import NewtonConfig
 from pararnn.layout import SLSTM_HIDDEN
 from pararnn.solvers import NewtonStats, sequential_apply
 from pararnn.solvers.newton import newton_apply
+from scripts.slstm_vs_flashrnn import _NewtonDyckLM
 from utils.mlflow_helper import setup_logging
 
 from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device

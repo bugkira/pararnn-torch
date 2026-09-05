@@ -81,10 +81,6 @@ for k in DRAFT_KS:
         lambda xx=x, ii=ids: verify_linear_draft(model, xx, ii, head, h0=h0, solver="newton")
     )
     s_min, s_mean = _minmax_ms(
-        lambda xx=x, ii=ids: verify_linear_draft(
-            model, xx, ii, head, h0=h0, solver="sequential"
-        )
+        lambda xx=x, ii=ids: verify_linear_draft(model, xx, ii, head, h0=h0, solver="sequential")
     )
-    print(
-        f"K={k} newton {n_min:.3f}/{n_mean:.3f} ms | seq {s_min:.3f}/{s_mean:.3f} ms"
-    )
+    print(f"K={k} newton {n_min:.3f}/{n_mean:.3f} ms | seq {s_min:.3f}/{s_mean:.3f} ms")

@@ -149,10 +149,12 @@ def test_compile_safe_fullgraph_training_matches_eager() -> None:
     y_c = compiled(x_c)
     (y_c * w).sum().backward()
     _assert_close(y_c, y_e.detach())
-    assert x_e.grad is not None and x_c.grad is not None
+    assert x_e.grad is not None
+    assert x_c.grad is not None
     _assert_close(x_c.grad, x_e.grad)
     for p_e, p_c in zip(cell_e.parameters(), cell_c.parameters(), strict=True):
-        assert p_e.grad is not None and p_c.grad is not None
+        assert p_e.grad is not None
+        assert p_c.grad is not None
         _assert_close(p_c.grad, p_e.grad)
 
 
@@ -223,8 +225,10 @@ def test_compile_safe_fused_fullgraph_training(cuda_device: torch.device) -> Non
     y_c = compiled(x_c)
     (y_c * w).sum().backward()
     _assert_close(y_c, y_e.detach())
-    assert x_e.grad is not None and x_c.grad is not None
+    assert x_e.grad is not None
+    assert x_c.grad is not None
     _assert_close(x_c.grad, x_e.grad)
     for p_e, p_c in zip(cell_e.parameters(), cell_c.parameters(), strict=True):
-        assert p_e.grad is not None and p_c.grad is not None
+        assert p_e.grad is not None
+        assert p_c.grad is not None
         _assert_close(p_c.grad, p_e.grad)

@@ -250,9 +250,7 @@ def reverse_scan_diag_context_parallel(
         mu = partial
         payload = incoming
     else:
-        mu = _reverse_scan_diag_from_carry(
-            jac, partial, carry_mu, j_next, backend=backend
-        )
+        mu = _reverse_scan_diag_from_carry(jac, partial, carry_mu, j_next, backend=backend)
         payload = torch.stack((mu[:, 0].contiguous(), jac[:, 0].contiguous()), dim=1)
     if rank > 0:
         dist.send(payload, dst=rank - 1, group=group)

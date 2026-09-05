@@ -23,7 +23,6 @@ if str(_REPO / "scripts") not in sys.path:
 import torch
 from torch.profiler import ProfilerActivity, profile
 
-from gpu import select_device, setup_logging
 from pararnn.solvers.scan import (
     _blelloch_inclusive,
     _compose_diag,
@@ -33,6 +32,8 @@ from pararnn.solvers.scan import (
     scan_diag,
 )
 from utils.cuda_timing import cuda_minmax
+
+from gpu import select_device, setup_logging
 
 log = logging.getLogger("diag_seg_scan")
 
@@ -172,7 +173,7 @@ def main() -> None:
     for time in (512, 2048, 8192):
         hs_w = _hs_work(time)
         bl_w = _blelloch_work(time)
-        rounds = int(math.ceil(math.log2(time)))
+        rounds = math.ceil(math.log2(time))
         clone_mib = rounds * _bytes_jr(time) / (1024**2)
         log.info(
             "work T=%d hs_el=%d blelloch_el=%d ratio=%.2f hs_rounds=%d "
@@ -195,12 +196,17 @@ def main() -> None:
         cs = torch.tensor([0, time], device=device, dtype=torch.long)
         cs2 = torch.tensor([0, time // 2, time], device=device, dtype=torch.long)
 
+        # Default-arg binds close over this iteration's tensors (B023).
         arms = {
-            "blelloch": lambda: _blelloch_inclusive(jac, residual, _compose_diag, _fill_ident_diag),
-            "hs_clone": lambda: _hillis_steele_seg_inclusive(jac, residual, _compose_diag, flags),
-            "hs_pingpong": lambda: _pingpong_hs(jac, residual, flags),
-            "scan_cu1": lambda: scan_diag(jac, residual, cu_seqlens=cs),
-            "scan_cu2": lambda: scan_diag(jac, residual, cu_seqlens=cs2),
+            "blelloch": lambda j=jac, r=residual: _blelloch_inclusive(
+                j, r, _compose_diag, _fill_ident_diag
+            ),
+            "hs_clone": lambda j=jac, r=residual, f=flags: _hillis_steele_seg_inclusive(
+                j, r, _compose_diag, f
+            ),
+            "hs_pingpong": lambda j=jac, r=residual, f=flags: _pingpong_hs(j, r, f),
+            "scan_cu1": lambda j=jac, r=residual, c=cs: scan_diag(j, r, cu_seqlens=c),
+            "scan_cu2": lambda j=jac, r=residual, c=cs2: scan_diag(j, r, cu_seqlens=c),
         }
         # segmented Blelloch is a prototype; skip if it disagrees
         ref = _blelloch_inclusive(jac, residual, _compose_diag, _fill_ident_diag)
@@ -211,7 +217,7 @@ def main() -> None:
         try:
             sb = _seg_blelloch(jac, residual, flags)
             torch.testing.assert_close(sb, ref, atol=1e-3, rtol=1e-3)
-            arms["seg_blelloch"] = lambda: _seg_blelloch(jac, residual, flags)
+            arms["seg_blelloch"] = lambda j=jac, r=residual, f=flags: _seg_blelloch(j, r, f)
         except AssertionError as exc:
             log.warning("seg_blelloch_skip T=%d err=%s", time, exc)
 
@@ -241,7 +247,8 @@ def main() -> None:
         for _ in range(3):
             fn()
         torch.cuda.synchronize()
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=False) as prof:
+        acts = [ProfilerActivity.CPU, ProfilerActivity.CUDA]
+        with profile(activities=acts, record_shapes=False) as prof:
             fn()
             torch.cuda.synchronize()
         rows = []

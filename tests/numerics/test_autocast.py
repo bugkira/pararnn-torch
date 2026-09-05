@@ -53,8 +53,10 @@ def test_autocast_pararnn_matches_fp32_reference(
     # Newton opts out of autocast: activations stay float32.
     assert y_amp.dtype == torch.float32
     torch.testing.assert_close(y_amp, y_ref, atol=_ATOL, rtol=_RTOL)
-    assert x_ref.grad is not None and x_amp.grad is not None
+    assert x_ref.grad is not None
+    assert x_amp.grad is not None
     torch.testing.assert_close(x_amp.grad, x_ref.grad, atol=_ATOL, rtol=_RTOL)
     for p_a, p_r in zip(model_amp.parameters(), model_ref.parameters(), strict=True):
-        assert p_a.grad is not None and p_r.grad is not None
+        assert p_a.grad is not None
+        assert p_r.grad is not None
         torch.testing.assert_close(p_a.grad, p_r.grad, atol=_ATOL, rtol=_RTOL)

@@ -25,7 +25,6 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from examples.dyck_language import VOCAB, sample_dyck1
-from scripts.slstm_vs_flashrnn import _NewtonDyckLM
 from pararnn import NewtonConfig, ParaSLSTM
 from pararnn.layout import prepend_state
 from pararnn.solvers import newton as newton_mod
@@ -33,6 +32,7 @@ from pararnn.solvers import newton_apply
 from pararnn.solvers.newton import _eq26_vjp
 from pararnn.solvers.vjp import cell_vjp
 from pararnn.solvers.vjp import uses_packed_vjp as _uses_packed_vjp
+from scripts.slstm_vs_flashrnn import _NewtonDyckLM
 from utils.cuda_timing import cuda_minmax
 from utils.mlflow_helper import git_commit, lock_hash, setup_logging, uv_export_hash
 

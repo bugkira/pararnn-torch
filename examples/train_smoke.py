@@ -53,7 +53,5 @@ for step in range(STEPS):
         print(f"step={step:03d} | loss={loss.item():.4f} | res={res} | backend={backend}")
 
 loss_final = loss.item()
-assert loss_final < loss0, (
-    f"Smoke failed: final loss ({loss_final:.4f}) >= initial ({loss0:.4f})"
-)
+assert loss_final < loss0, f"Smoke failed: final loss ({loss_final:.4f}) >= initial ({loss0:.4f})"
 print(f"Smoke OK: {loss0:.4f} -> {loss_final:.4f}")

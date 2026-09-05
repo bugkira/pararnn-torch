@@ -31,7 +31,12 @@ def _aggregate(rows: list[dict], out_name: str) -> None:
         key = (row["cell"], row["mode"], str(int(float(row["T"]))))
         buckets[key].append(float(row["median_ms"]))
     out_rows = []
-    for (cell, mode, T), vals in sorted(buckets.items(), key=lambda x: (x[0][0], int(x[0][2]), x[0][1])):
+
+    def _sort_key(item: tuple) -> tuple:
+        (cell, mode, T), _vals = item
+        return (cell, int(T), mode)
+
+    for (cell, mode, T), vals in sorted(buckets.items(), key=_sort_key):
         mean = statistics.mean(vals)
         std = statistics.stdev(vals) if len(vals) > 1 else 0.0
         out_rows.append(
@@ -62,16 +67,28 @@ def main() -> None:
     _aggregate(_load("fused_seed*.csv"), "fused_agg.csv")
 
     # Headline ratios at T=2048 for DRAFT
-    picard = { (r["mode"], r["T"]): r for r in csv.DictReader((MULTI / "picard_agg.csv").open()) } if (MULTI / "picard_agg.csv").exists() else {}
-    flash = { (r["mode"], r["T"]): r for r in csv.DictReader((MULTI / "flashrnn_agg.csv").open()) } if (MULTI / "flashrnn_agg.csv").exists() else {}
+    picard_path = MULTI / "picard_agg.csv"
+    flash_path = MULTI / "flashrnn_agg.csv"
+    picard = (
+        {(r["mode"], r["T"]): r for r in csv.DictReader(picard_path.open())}
+        if picard_path.exists()
+        else {}
+    )
+    flash = (
+        {(r["mode"], r["T"]): r for r in csv.DictReader(flash_path.open())}
+        if flash_path.exists()
+        else {}
+    )
     lines = ["# Multiseed aggregate (median_ms → mean±std)\n"]
     if ("newton_fused", "2048") in picard and ("sequential_eager", "2048") in picard:
         f = float(picard[("newton_fused", "2048")]["median_ms_mean"])
         e = float(picard[("sequential_eager", "2048")]["median_ms_mean"])
         c = float(picard[("sequential_compiled", "2048")]["median_ms_mean"])
+        f_std = float(picard[("newton_fused", "2048")]["median_ms_std"])
         lines.append(
-            f"ParaSLSTM T=2048: fused={f:.2f}±{float(picard[('newton_fused','2048')]['median_ms_std']):.2f} ms; "
-            f"eager={e:.1f}; compiled={c:.1f}; fused/eager={e/f:.1f}×; fused/compiled={c/f:.1f}×\n"
+            f"ParaSLSTM T=2048: fused={f:.2f}±{f_std:.2f} ms; "
+            f"eager={e:.1f}; compiled={c:.1f}; "
+            f"fused/eager={e / f:.1f}×; fused/compiled={c / f:.1f}×\n"
         )
     fr_modes = [k for k in flash if k[1] == "2048" and k[0].startswith("flashrnn")]
     if fr_modes and ("newton_fused", "2048") in flash:

@@ -44,9 +44,7 @@ def test_full_accept_when_draft_is_greedy() -> None:
     batch, k = 3, 6
     h0 = torch.randn(batch, 8)
     draft_ids = _greedy_chain(model, embed, head, h0, k, batch)
-    got = verify_linear_draft(
-        model, embed(draft_ids), draft_ids, head, h0=h0, solver="sequential"
-    )
+    got = verify_linear_draft(model, embed(draft_ids), draft_ids, head, h0=h0, solver="sequential")
     assert int((got.n_accepted == k).sum()) == batch
     torch.testing.assert_close(got.hidden, _state_after(model, embed, h0, draft_ids))
 
@@ -68,9 +66,7 @@ def test_zero_accept_when_first_token_differs() -> None:
     draft_ids = _greedy_chain(model, embed, head, h0, k, batch)
     draft_ids = draft_ids.clone()
     draft_ids[:, 0] = (draft_ids[:, 0] + 1) % 11
-    got = verify_linear_draft(
-        model, embed(draft_ids), draft_ids, head, h0=h0, solver="sequential"
-    )
+    got = verify_linear_draft(model, embed(draft_ids), draft_ids, head, h0=h0, solver="sequential")
     assert torch.equal(got.n_accepted, torch.zeros(batch, dtype=torch.int64))
     torch.testing.assert_close(got.hidden, h0)
     greedy0 = head(h0).argmax(-1)
@@ -84,9 +80,7 @@ def test_mid_mismatch_keeps_prefix_state() -> None:
     draft_ids = _greedy_chain(model, embed, head, h0, k, batch)
     draft_ids = draft_ids.clone()
     draft_ids[:, 3] = (draft_ids[:, 3] + 1) % 11
-    got = verify_linear_draft(
-        model, embed(draft_ids), draft_ids, head, h0=h0, solver="sequential"
-    )
+    got = verify_linear_draft(model, embed(draft_ids), draft_ids, head, h0=h0, solver="sequential")
     assert int(got.n_accepted.item()) == 3
     torch.testing.assert_close(got.hidden, _state_after(model, embed, h0, draft_ids[:, :3]))
 
@@ -109,9 +103,7 @@ def test_lstm_hidden_is_full_state() -> None:
         ids.append(tok)
         h = cell.step(h, embed(tok))
     draft_ids = torch.stack(ids, dim=1)
-    got = verify_linear_draft(
-        model, embed(draft_ids), draft_ids, head, h0=h0, solver="sequential"
-    )
+    got = verify_linear_draft(model, embed(draft_ids), draft_ids, head, h0=h0, solver="sequential")
     assert int((got.n_accepted == k).sum()) == batch
     assert got.hidden.shape == (batch, 2, d)
     torch.testing.assert_close(got.hidden, h)

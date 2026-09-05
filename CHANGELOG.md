@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-05
+
+Compile-safe Newton, paged decode path, and OSS front-door polish.
+
 ### Added
 
 - Compatibility tests: `torch._dynamo.explain` reports **0** graph breaks under
@@ -27,31 +31,38 @@ All notable changes to this project are documented here. Format follows [Keep a 
   CUDA writes slots in-kernel through `block_table` for every T. Fused Newton
   loads pool `h0` via the same ids (`newton_apply(..., block_table=)`). `offload` /
   `reload` copy a slot to pinned host RAM and back (`host_capacity` defaults to
-  GPU `capacity`; `examples/paged_cache.py`).
+  GPU `capacity`). Torchrun demo: `examples/paged_cache.py` on
+  [`archive/distributed-demos`](https://github.com/bugkira/pararnn-torch/tree/archive/distributed-demos).
 - `decode_step`: T=1 Triton kernel for the recurrent step (gates + mix in one
   SRAM trip). `decode_wx` fills `W_x(x)` into a buffer. `out=` reuses storage;
   `block_table` indexes a pool `(C, …)`. App. C.1 clip is in-kernel so a CUDA
   graph of GEMM → step does not allocate. `sequential_apply` / `ParaRNN.eval()`
   take this path on CUDA when `T=1` and gradients are off
   (`examples/decode_step.py`).
+- `SECURITY.md`, bug-report / PR templates, optional `.pre-commit-config.yaml`.
+- [`scripts/README.md`](scripts/README.md) index of benches vs diagnostics.
+- README Results table and Reproduce commands (2080 Ti medians; Z₂ parity).
 
 ### Changed
 
 - `newton_apply` disables outer CUDA/CPU autocast for the solve and eq. 2.6
   backward so `W_x` and states share one dtype. Half-precision training still
   uses explicit `.to(dtype)`.
-- README Compatibility blurb: compile (breaks allowed), AMP policy, DDP/FSDP /
-  checkpoint pointers.
-- README citation: Zenodo DOI badge for the ParaSLSTM preprint, ParaRNN ICLR
-  2026 badge for the Newton-scan framework, and BibTeX for both.
-- FlashRNN Dyck comparison and IMU long-seq smoke live under `scripts/`
-  (`slstm_vs_flashrnn.py`, `imu_longseq_smoke.py`); examples stay onboarding.
-- Two-card TP / CP / paged-pool demos removed from `examples/` (history on
-  branch `archive/distributed-demos`). API + numerics tests stay;
+- README Compatibility blurb: compile, AMP policy, DDP/FSDP / checkpoint
+  pointers; Zenodo + ParaRNN ICLR badges. Install path is git until the first
+  PyPI Trusted Publishing upload.
+- FlashRNN Dyck comparison lives under `scripts/slstm_vs_flashrnn.py`; examples
+  stay onboarding.
+- Two-card TP / CP / paged-pool demos removed from `examples/` on `main`
+  (history on `archive/distributed-demos`). API + numerics tests stay;
   `docs/distributed.md` keeps the architecture.
 - `examples/toy_copy.py` → `train_smoke.py`: standalone script (inlined knobs,
   no YAML / repo `sys.path`); stderr only; per-step identity CE. Same style
   across `examples/` (`print`, no MLflow; dyck/parity knobs in-file).
+- CI: self-hosted GPU jobs use `continue-on-error` so an offline runner leaves
+  lint + CPU tests as the merge gate.
+- Docs honesty: CHANGELOG / `docs/structure.md` point archived torchrun demos
+  at `archive/distributed-demos`; surface version matches the package.
 
 ## [0.6.0] - 2026-09-04
 
@@ -67,13 +78,13 @@ sits here too.
 - `pararnn.distributed`: `warmup_scan_kernels` and `last_newton_residuals`.
   `ParaRNN` wraps with DDP or FSDP2 `fully_shard` (`examples/ddp_fsdp.py`).
 - Tensor parallel along \(d_h\) for channelwise-diagonal cells:
-  `tensor_parallel_diag_block`, one AllReduce on the output projection
-  (`examples/tensor_parallel.py`).
+  `tensor_parallel_diag_block`, one AllReduce on the output projection.
+  Torchrun demo: `examples/tensor_parallel.py` on `archive/distributed-demos`.
 - Context-parallel diag scan: `scan_diag_context_parallel` AllGathers the
   tile monoid \((P_{\mathrm{end}}, \delta_{\mathrm{end}})\). Rank 1 applying
   that carry is the numeric check. `NewtonConfig(scan_backend="context_parallel")`
-  shards scan work \(T/N\) on a replicated Newton trajectory
-  (`examples/context_parallel.py`).
+  shards scan work \(T/N\) on a replicated Newton trajectory. Torchrun demo:
+  `examples/context_parallel.py` on `archive/distributed-demos`.
 - `verify_linear_draft`: greedy speculative verify of a K-token chain. One
   Newton (or sequential) unroll from `h0`, first mismatch \(k^\star\), state
   truncated to \(h_{k^\star}\), bonus token from the leftover logit
@@ -190,7 +201,8 @@ installable surface.
 - Generic-cell autograd path and sequential reference solver.
 - Numerics tests: parallel vs sequential agreement, layer forward/backward.
 
-[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/bugkira/pararnn-torch/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/bugkira/pararnn-torch/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/bugkira/pararnn-torch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/bugkira/pararnn-torch/compare/v0.3.0...v0.4.0

@@ -38,13 +38,13 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from examples.dyck_language import VOCAB, sample_dyck1
-from scripts.slstm_vs_flashrnn import _NewtonDyckLM
 from pararnn import NewtonConfig, ParaSLSTM
 from pararnn.kernels.custom_ops import newton_slstm_fused
 from pararnn.layout import SLSTM_HIDDEN, prepend_state
 from pararnn.solvers import NewtonStats, newton_apply, sequential_apply
 from pararnn.solvers.scan import scan_diag
 from pararnn.solvers.slstm_picard import slstm_frozen_gate_scan
+from scripts.slstm_vs_flashrnn import _NewtonDyckLM
 from utils.cuda_timing import cuda_minmax
 from utils.mlflow_helper import git_commit, lock_hash, setup_logging, uv_export_hash
 

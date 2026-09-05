@@ -111,17 +111,13 @@ class _NewtonFixedPoint(torch.autograd.Function):
         # Everything backward needs — on ctx (autograd worker threads safe).
         ctx.cell = cell
         ctx.has_h0 = has_h0
-        ctx.scan_backend = (
-            "triton" if config.scan_backend == "fused" else config.scan_backend
-        )
+        ctx.scan_backend = "triton" if config.scan_backend == "fused" else config.scan_backend
         ctx.jacobian = config.jacobian
         ctx.jac_structure = config.jac_structure
         ctx.chunk_len = config.chunk_len
         ctx.has_cu_seqlens = cu_seqlens is not None
         saved_cs = (
-            cu_seqlens
-            if isinstance(cu_seqlens, Tensor)
-            else x_in.new_zeros(0, dtype=torch.long)
+            cu_seqlens if isinstance(cu_seqlens, Tensor) else x_in.new_zeros(0, dtype=torch.long)
         )
         ctx.save_for_backward(states, x_in, h0_in, saved_cs)
         return states

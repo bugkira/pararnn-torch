@@ -27,9 +27,10 @@ if str(_REPO / "scripts") not in sys.path:
 import torch
 from torch import Tensor
 
+from utils.mlflow_helper import ROOT, git_commit, lock_hash, uv_export_hash
+
 from gpu import select_device, wait_until_free
 from gpu import setup_logging as setup_gpu_logging
-from utils.mlflow_helper import ROOT, git_commit, lock_hash, uv_export_hash
 
 log = logging.getLogger("eval_tirex_dropin")
 
@@ -86,7 +87,7 @@ def _make_series(n: int, length: int, *, seed: int, device: torch.device) -> Ten
     g.manual_seed(seed)
     t = torch.arange(length, dtype=torch.float32).unsqueeze(0)
     series = []
-    for i in range(n):
+    for _i in range(n):
         amp = torch.rand((), generator=g).item() * 2.0 + 0.5
         freq = math.pi * (0.01 + 0.04 * torch.rand((), generator=g).item())
         phase = torch.rand((), generator=g).item() * 2 * math.pi
@@ -97,12 +98,7 @@ def _make_series(n: int, length: int, *, seed: int, device: torch.device) -> Ten
         ar_path = torch.zeros(length)
         for k in range(1, length):
             ar_path[k] = ar * ar_path[k - 1] + eps[k]
-        y = (
-            amp * torch.sin(freq * t[0] + phase)
-            + slope * t[0]
-            + 0.3 * ar_path
-            + noise_s * eps
-        )
+        y = amp * torch.sin(freq * t[0] + phase) + slope * t[0] + 0.3 * ar_path + noise_s * eps
         series.append(y)
     return torch.stack(series, dim=0).to(device)
 

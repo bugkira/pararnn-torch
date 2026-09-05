@@ -4,7 +4,7 @@ One trunk (`main`). Three layers:
 
 1. **Ops** — `src/pararnn/kernels/`: Triton fused Newton and scans, selected with `NewtonConfig(scan_backend=)`.
 2. **Modules** — `cells/` is \(f\) (`step`); `solvers/` is Alg. 1; `layers/ParaRNN` is the sequence `nn.Module` (Newton in `.train()`, sequential in `.eval()`).
-3. **Integrations** — `examples/`, `scripts/`. Residual / FFN stacking lives in examples (`parity.py`, `xlstm_hybrid.py`).
+3. **Integrations** — `examples/` (onboarding), `scripts/` (benches / training; see [`scripts/README.md`](../scripts/README.md)).
 
 ```
 ParaRNN/
@@ -34,9 +34,11 @@ ParaRNN/
 └── README.md
 ```
 
-## Current surface (0.4)
+## Current surface (0.7)
 
-`NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` and residual early-stop (`NewtonDivergenceError` if max|F|>1 after K). `ParaRNN` takes a cell or a list, `return_hidden`, LSTM `output_hidden`. **ParaSLSTM** `mix='diag'` is the fused 4×4 path; `mix='head'` is an unfused ablation (`scan_dense`); `mix='dense'` is a `d_h<=8` test oracle. Examples: copy, Dyck-1, Z2 parity, NX-AI `sLSTMBlock` hybrid, DDP/FSDP2, linear-draft verify, T=1 decode-step. Two-tile scan: `scan_diag_two_ranks` (streams). NCCL time split: `scan_diag_context_parallel` (API + tests; torchrun demos on `archive/distributed-demos`). `verify_linear_draft`: one Newton scan of a K-token chain, first mismatch \(k^\star\). `PagedStatePool` / `block_table` in kernels (demos archived). `decode_step`: T=1 Triton recurrent step (gates + mix; `W_x` is a GEMM). `out=` and `block_table` for serving. Data / tensor / context parallel: `docs/distributed.md`.
+`NewtonConfig(scan_backend="auto")`; fused kernels prepend `h0`; `NewtonStats` and residual early-stop (`NewtonDivergenceError` if max|F|>1 after K). Compile-safe preset: fixed-K Autograd path, fused Alg. 1 as `pararnn::newton_*_fused` custom ops. `ParaRNN` takes a cell or a list, `return_hidden`, LSTM `output_hidden`. **ParaSLSTM** `mix='diag'` is the fused 4×4 path; `mix='head'` is an unfused ablation (`scan_dense`); `mix='dense'` is a `d_h<=8` test oracle.
+
+Examples on `main`: `train_smoke`, Dyck-1, Z₂ parity, NX-AI `sLSTMBlock` hybrid, DDP/FSDP2, linear-draft verify, T=1 `decode_step`. `PagedStatePool` / `block_table` and tensor / context-parallel APIs live in the library + numerics tests; two-card torchrun demos sit on branch [`archive/distributed-demos`](https://github.com/bugkira/pararnn-torch/tree/archive/distributed-demos). Architecture notes: [`docs/distributed.md`](distributed.md).
 
 ## Naming
 

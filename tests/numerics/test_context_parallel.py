@@ -123,9 +123,7 @@ def _cpu_newton_worker(rank: int, world: int, port: int) -> None:
         residual_atol=None,
         residual_fail=None,
     )
-    cfg_e = NewtonConfig(
-        max_iters=3, scan_backend="eager", residual_atol=None, residual_fail=None
-    )
+    cfg_e = NewtonConfig(max_iters=3, scan_backend="eager", residual_atol=None, residual_fail=None)
     y_cp = newton_apply(cell, x, cfg_cp)
     torch.manual_seed(0)
     cell_e = ParaGRU(6, 6)
@@ -152,9 +150,7 @@ def _cpu_newton_grad_worker(rank: int, world: int, port: int) -> None:
     torch.manual_seed(4)
     cell_e = ParaGRU(6, 6)
     x_e = x.detach().clone().requires_grad_(True)
-    cfg_e = NewtonConfig(
-        max_iters=3, scan_backend="eager", residual_atol=None, residual_fail=None
-    )
+    cfg_e = NewtonConfig(max_iters=3, scan_backend="eager", residual_atol=None, residual_fail=None)
     y_e = newton_apply(cell_e, x_e, cfg_e)
     (y_e * w).sum().backward()
     torch.testing.assert_close(x.grad, x_e.grad, atol=_GRAD_ATOL, rtol=_GRAD_ATOL)

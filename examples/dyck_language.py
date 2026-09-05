@@ -60,15 +60,11 @@ if __name__ == "__main__":
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.0)
 
     # One backward: eq. 2.6 grads finite.
-    tokens = sample_dyck1(4, min(SEQ_LEN, 8), generator=torch.Generator().manual_seed(0)).to(
-        device
-    )
+    tokens = sample_dyck1(4, min(SEQ_LEN, 8), generator=torch.Generator().manual_seed(0)).to(device)
     loss = F.cross_entropy(model(tokens[:, :-1]).reshape(-1, VOCAB), tokens[:, 1:].reshape(-1))
     loss.backward()
     bad = [
-        n
-        for n, p in model.named_parameters()
-        if p.grad is None or not torch.isfinite(p.grad).all()
+        n for n, p in model.named_parameters() if p.grad is None or not torch.isfinite(p.grad).all()
     ]
     assert not bad, f"non-finite or missing grads: {bad}"
     model.zero_grad(set_to_none=True)
@@ -78,9 +74,7 @@ if __name__ == "__main__":
     loss0 = None
     for step in range(STEPS):
         tokens = sample_dyck1(BATCH, SEQ_LEN, generator=gen).to(device)
-        loss = F.cross_entropy(
-            model(tokens[:, :-1]).reshape(-1, VOCAB), tokens[:, 1:].reshape(-1)
-        )
+        loss = F.cross_entropy(model(tokens[:, :-1]).reshape(-1, VOCAB), tokens[:, 1:].reshape(-1))
         if step == 0:
             loss0 = loss.item()
 
@@ -92,9 +86,7 @@ if __name__ == "__main__":
             st = rnn_layer.last_stats[0] if rnn_layer.last_stats else None
             res = f"{st.max_residual:.2e}" if st else "nan"
             backend = (st.scan_backend or SCAN_BACKEND) if st else SCAN_BACKEND
-            print(
-                f"step={step:03d} | loss={loss.item():.4f} | res={res} | backend={backend}"
-            )
+            print(f"step={step:03d} | loss={loss.item():.4f} | res={res} | backend={backend}")
 
     loss_final = loss.item()
     assert loss_final < loss0, (

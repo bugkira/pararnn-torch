@@ -79,9 +79,7 @@ def verify_linear_draft(
         raise ValueError("verify_linear_draft needs batch_first=True")
     _validate_input(draft_x, model.layers[0], batch_first=True)
     if draft_ids.shape[:2] != draft_x.shape[:2]:
-        raise ValueError(
-            f"draft_ids {tuple(draft_ids.shape)} vs draft_x {tuple(draft_x.shape)}"
-        )
+        raise ValueError(f"draft_ids {tuple(draft_ids.shape)} vs draft_x {tuple(draft_x.shape)}")
     if draft_x.shape[1] < 1:
         raise ValueError(f"draft length K must be >= 1, got {draft_x.shape[1]}")
     batch, time = int(draft_x.shape[0]), int(draft_x.shape[1])
@@ -102,9 +100,7 @@ def verify_linear_draft(
 
     last_cell = model.layers[-1]
     slot = _hidden_slot(last_cell)
-    prefix_h = _hidden_from_h0(
-        h0s[-1], slot, batch=batch, cell=last_cell, like=draft_x
-    )
+    prefix_h = _hidden_from_h0(h0s[-1], slot, batch=batch, cell=last_cell, like=draft_x)
     scan_h = layer_states[-1] if slot is None else layer_states[-1][:, :, slot, :]
     hidden_bt = torch.cat((prefix_h.unsqueeze(1), scan_h), dim=1)
     logits = readout(hidden_bt)

@@ -25,9 +25,7 @@ LR = 1e-3
 STRATEGY = "ddp"  # or "fsdp"
 
 if "RANK" not in os.environ:
-    raise SystemExit(
-        "Launch with torchrun, e.g. torchrun --nproc_per_node=2 ddp_fsdp.py"
-    )
+    raise SystemExit("Launch with torchrun, e.g. torchrun --nproc_per_node=2 ddp_fsdp.py")
 
 rank = int(os.environ["RANK"])
 local_rank = int(os.environ.get("LOCAL_RANK", rank))

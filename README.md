@@ -1,7 +1,7 @@
 # ParaRNN
 
-[![PyPI](https://img.shields.io/pypi/v/pararnn-torch?color=blue)](https://pypi.org/project/pararnn-torch/)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/pararnn-torch/)
+[![CI](https://github.com/bugkira/pararnn-torch/actions/workflows/ci.yml/badge.svg)](https://github.com/bugkira/pararnn-torch/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/bugkira/pararnn-torch)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22302587.svg)](https://doi.org/10.5281/zenodo.22302587)
 [![ParaRNN](https://img.shields.io/static/v1?label=ParaRNN&message=ICLR%202026&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2510.21450)
@@ -20,32 +20,30 @@ Implementation follows [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21
 
 ## Install
 
-| | Users | Contributors |
+| | Users / clone | Contributors |
 |---|---|---|
-| Command | `pip install pararnn-torch` | `git clone … && uv sync --group dev` |
+| Command | see below | `git clone … && uv sync --group dev` |
 | PyTorch | bring your own (CPU or CUDA) | pinned in `pyproject.toml` (cu128 index) |
 | Python | 3.10+ | 3.10+ |
 
-**Users** — install from PyPI with your existing PyTorch:
+**From source** (current release path; PyPI Trusted Publishing is wired in
+[`.github/workflows/release.yml`](.github/workflows/release.yml) for the first
+`v*` tag once the GitHub `pypi` environment is linked):
 
 ```bash
-pip install pararnn-torch
-```
-
-**Contributors** — clone and sync dev deps:
-
-```bash
+pip install "pararnn-torch @ git+https://github.com/bugkira/pararnn-torch"
+# or editable:
 git clone https://github.com/bugkira/pararnn-torch
 cd pararnn-torch
 uv sync --group dev
-uv run pytest -q
+uv run pytest -q -m "not cuda"
 ```
 
 **Hardware:** fused Triton bf16 needs CUDA compute capability ≥ 8.0 (Ampere and newer). Below that, `NewtonConfig(scan_backend="auto")` picks an eager fallback.
 
 Place modules on a device like any `nn.Module` (`.to(device)`, or `device=` / `dtype=` on the cell and `ParaRNN`). Data parallel: wrap that module with `DistributedDataParallel` or FSDP2 `fully_shard` ([`docs/distributed.md`](docs/distributed.md)).
 
-`scripts/` holds development benchmarks and profiling; it is omitted from the wheel.
+`scripts/` holds development benchmarks and profiling; it is omitted from the wheel ([`scripts/README.md`](scripts/README.md)).
 
 ## Quickstart
 
@@ -76,6 +74,34 @@ slstm = ParaRNN(ParaSLSTM(64, 64, mix="diag"), device=device)
 y = slstm(torch.randn(4, 128, 64, device=device))
 ```
 
+## Results
+
+Diag-sLSTM forward median latency (ms), \(B{=}8\), \(d_h{=}256\), float32,
+RTX 2080 Ti, 10 seeds (`scripts/slstm_vs_flashrnn.py` / paper Tier-A timing).
+Fused Newton is this library's Alg. 1 path; sequential is `torch.compile` of
+the same cell's `step` unroll. FlashRNN is a sequential head-mix kernel on the
+same GPU for context.
+
+| \(T\) | fused Newton | sequential compiled | FlashRNN |
+|------:|-------------:|--------------------:|---------:|
+| 256 | 6.4 | 112 | 1.2 |
+| 1024 | 15.3 | 429 | 3.1 |
+| 2048 | 29.1 | 840 | 5.8 |
+| 4096 | 69.1 | 1735 | 11.3 |
+
+Z₂ prefix tagging (`examples/parity.py`): last-token accuracy **1.0** at train
+length 16 and held-out length 32 for ParaSLSTM Newton; a matched-width linear
+SSM arm lands near chance (~0.53–0.56) on the same protocol.
+
+Reproduce:
+
+```bash
+uv run python examples/train_smoke.py
+uv run python examples/parity.py
+uv run python scripts/slstm_vs_flashrnn.py --config configs/bench/newton_slstm_flashrnn.yaml
+uv run python scripts/train_babylm.py --config configs/train/babylm.yaml   # needs --extra lm
+```
+
 ## Examples
 
 Standalone scripts: install `pararnn-torch`, copy a file, run it. Knobs live
@@ -91,7 +117,10 @@ in the script; metrics go to stdout.
 | [`examples/parity.py`](examples/parity.py) | Z₂ prefix tagging vs linear SSM | `uv run python examples/parity.py` | CUDA; writes `parity_curves.json` |
 | [`examples/xlstm_hybrid.py`](examples/xlstm_hybrid.py) | NX-AI `sLSTMBlock` around fused `ParaSLSTM` | `uv add xlstm && uv run python examples/xlstm_hybrid.py` | `xlstm` |
 
-FlashRNN train comparison and other benches live under `scripts/` (e.g. `scripts/slstm_vs_flashrnn.py`, extra `flashrnn`). Two-card TP / CP / paged-pool demos are on branch [`archive/distributed-demos`](https://github.com/bugkira/pararnn-torch/tree/archive/distributed-demos); API notes stay in [`docs/distributed.md`](docs/distributed.md).
+FlashRNN train comparison and other benches live under `scripts/` (see
+[`scripts/README.md`](scripts/README.md)). Two-card TP / CP / paged-pool demos
+are on branch [`archive/distributed-demos`](https://github.com/bugkira/pararnn-torch/tree/archive/distributed-demos);
+API notes stay in [`docs/distributed.md`](docs/distributed.md).
 
 ## API overview
 

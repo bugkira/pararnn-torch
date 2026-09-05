@@ -158,9 +158,7 @@ def _train_arm(device: torch.device, arm: str) -> dict:
     cfg = NewtonConfig(max_iters=NEWTON_ITERS, scan_backend=SCAN_BACKEND)
     model = _ParityNet(D_H, NUM_LAYERS, arm, cfg).to(device)
     model.train()
-    opt = torch.optim.AdamW(
-        model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY, betas=ADAM_BETAS
-    )
+    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY, betas=ADAM_BETAS)
     gen = torch.Generator().manual_seed(SEED)
     eval_gen = torch.Generator().manual_seed(SEED + 1)
     n_params = sum(p.numel() for p in model.parameters())

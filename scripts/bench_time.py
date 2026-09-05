@@ -555,7 +555,7 @@ def main() -> None:
                                     rows.append(
                                         {
                                             "cell": cell_name,
-                                    "seed": bench_seed,
+                                            "seed": bench_seed,
                                             "mode": f"flashrnn_{fr_backend}",
                                             "T": T,
                                             "dtype": dtype_name,
