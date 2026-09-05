@@ -24,7 +24,6 @@ scan_backend: auto
 max_recurrent_norm: null
 
 lr: 1.0e-3
-lr_fallback: []
 weight_decay: 1.0e-6
 adam_betas: [0.9, 0.999]
 dtype: float32
@@ -34,9 +33,6 @@ arms:
   - newton
   - eager
   - ssm
-
-mlflow_experiment: state-tracking
-mlflow_run_name: parity-t16-2k
 
 why: |
   Fallback after T=32 / 300 steps stayed copy-only. Same stacked ParaSLSTM

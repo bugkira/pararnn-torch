@@ -1,47 +1,22 @@
 """Dyck-1 next-token smoke: ParaSLSTM + Newton grads.
 
-    uv run python examples/dyck_language.py --config configs/train/dyck.yaml
+K=3, Picard P from T (P=1 at T=16). Fail-loud if CE does not drop.
 
-Library contract: K=3, Picard P from T (here P=1). Fail-loud if Newton
-diverges. Device is ``cuda`` if available, else CPU.
+Usage:
+    python dyck_language.py
 """
 
-from __future__ import annotations
-
-import argparse
-import logging
-import sys
-from pathlib import Path
-
 import torch
-import yaml
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-_REPO = Path(__file__).resolve().parents[1]
-if str(_REPO) not in sys.path:
-    sys.path.insert(0, str(_REPO))
-
-from examples._harness import (
-    configure_cuda_device,
-    gpu_label,
-    log_smoke_train_metrics,
-    lr_candidates,
-    mlflow_repro_params,
-    newton_residual,
-    resolve_scan_backend,
-    resolved_scan_backend,
-    run_lr_backend_fallback,
-    smoke_device,
-)
 from pararnn import NewtonConfig, ParaRNN, ParaSLSTM
-from scripts.utils.mlflow_helper import ROOT, setup_logging
 
-log = logging.getLogger("dyck")
-DEFAULT_CONFIG = ROOT / "configs" / "train" / "dyck.yaml"
-device = smoke_device()
 OPEN, CLOSE = 0, 1
 VOCAB = 2
+SEQ_LEN, BATCH, D_H = 16, 32, 32
+STEPS, LR, SEED = 50, 3e-3, 0
+SCAN_BACKEND = "auto"
 
 
 def sample_dyck1(batch: int, length: int, *, generator: torch.Generator | None = None) -> Tensor:
@@ -68,185 +43,61 @@ def sample_dyck1(batch: int, length: int, *, generator: torch.Generator | None =
     return out
 
 
-class _DyckLM(nn.Module):
-    def __init__(self, d_h: int, newton_cfg: NewtonConfig) -> None:
-        super().__init__()
-        self.embed = nn.Embedding(VOCAB, d_h)
-        self.rnn = ParaRNN(
-            ParaSLSTM(d_in=d_h, d_h=d_h, mix="diag"),
-            config=newton_cfg,
-            output_hidden=True,
-        )
-        self.head = nn.Linear(d_h, VOCAB)
+if __name__ == "__main__":
+    torch.manual_seed(SEED)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def forward(self, tokens: Tensor) -> Tensor:
-        return self.head(self.rnn(self.embed(tokens)))
-
-
-def main(argv: list[str] | None = None) -> None:
-    setup_logging()
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    args = parser.parse_args(argv)
-    spec = yaml.safe_load(args.config.read_text())
-    _validate_spec(spec)
-
-    configure_cuda_device(device)
-    gpu_name = gpu_label(device)
-    scan_backend = resolve_scan_backend(spec, device)
-    lrs = lr_candidates(spec)
-    log.info(
-        "dyck_start gpu=%s torch=%s lrs=%s scan_backend=%s",
-        gpu_name,
-        torch.__version__,
-        lrs,
-        scan_backend,
+    rnn_layer = ParaRNN(
+        ParaSLSTM(d_in=D_H, d_h=D_H, mix="diag"),
+        config=NewtonConfig(max_iters=3, scan_backend=SCAN_BACKEND),
+        output_hidden=True,
     )
+    model = nn.Sequential(
+        nn.Embedding(VOCAB, D_H),
+        rnn_layer,
+        nn.Linear(D_H, VOCAB),
+    ).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.0)
 
-    import mlflow
-
-    mlflow.set_experiment(str(spec["mlflow_experiment"]))
-    with mlflow.start_run(run_name=str(spec.get("mlflow_run_name", "dyck1"))):
-        mlflow.set_tags(
-            {
-                "cell": "para_slstm",
-                "mix": "diag",
-                "gpu": gpu_name,
-                "dtype": str(spec["dtype"]),
-                "task": str(spec["task"]),
-            }
-        )
-        mlflow.log_params(
-            {
-                "seq_len": spec["seq_len"],
-                "batch": spec["batch"],
-                "d_h": spec["d_h"],
-                "steps": spec["steps"],
-                "newton_iters": spec["newton_iters"],
-                "lr": spec["lr"],
-                "weight_decay": spec["weight_decay"],
-                "dtype": spec["dtype"],
-                "scan_backend": scan_backend,
-                "seed": spec["seed"],
-                **mlflow_repro_params(args.config),
-            }
-        )
-        mlflow.log_artifact(str(args.config))
-        mlflow.log_text(str(spec.get("why", "")).strip() + "\n", "why.txt")
-
-        last_losses, last_residuals, used_backend, used_lr = run_lr_backend_fallback(
-            spec,
-            device,
-            _train,
-            scan_backend=scan_backend,
-            gpu_name=gpu_name,
-        )
-        log_smoke_train_metrics(
-            mlflow, last_losses, last_residuals, used_lr=used_lr, used_backend=used_backend
-        )
-        if last_losses[-1] >= last_losses[0]:
-            raise RuntimeError(
-                f"dyck smoke failed: loss at step {len(last_losses) - 1} "
-                f"({last_losses[-1]:.4f}) >= loss at step 0 ({last_losses[0]:.4f}) "
-                f"after lrs {lrs}"
-            )
-        log.info(
-            "dyck_ok lr=%s loss0=%.4f loss_final=%.4f scan_backend=%s",
-            used_lr,
-            last_losses[0],
-            last_losses[-1],
-            used_backend,
-        )
-
-
-def _train(
-    spec: dict,
-    device: torch.device,
-    *,
-    lr: float,
-    scan_backend: str,
-) -> tuple[list[float], list[float], str]:
-    seed = int(spec["seed"])
-    torch.manual_seed(seed)
-    if device.type == "cuda":
-        torch.cuda.manual_seed_all(seed)
-    seq_len = int(spec["seq_len"])
-    batch = int(spec["batch"])
-    d_h = int(spec["d_h"])
-    steps = int(spec["steps"])
-    newton_cfg = NewtonConfig(
-        max_iters=int(spec["newton_iters"]),
-        scan_backend=scan_backend,
+    # One backward: eq. 2.6 grads finite.
+    tokens = sample_dyck1(4, min(SEQ_LEN, 8), generator=torch.Generator().manual_seed(0)).to(
+        device
     )
-    model = _DyckLM(d_h, newton_cfg).to(device)
-    model.train()
-    _check_grads_finite(model, device, seq_len=min(seq_len, 8))
-    opt = torch.optim.AdamW(
-        model.parameters(),
-        lr=lr,
-        weight_decay=float(spec["weight_decay"]),
-    )
-    gen = torch.Generator(device="cpu").manual_seed(seed)
-    losses: list[float] = []
-    residuals: list[float] = []
-    for step in range(steps + 1):
-        tokens = sample_dyck1(batch, seq_len, generator=gen).to(device)
-        logits = model(tokens[:, :-1])
-        residual, _ = newton_residual(model.rnn)
-        resolved = resolved_scan_backend(model.rnn, scan_backend)
-        loss = F.cross_entropy(logits.reshape(-1, VOCAB), tokens[:, 1:].reshape(-1))
-        loss_f = float(loss.detach())
-        losses.append(loss_f)
-        residuals.append(residual)
-        log.info(
-            "train_step step=%d loss=%.4f residual=%.3e lr=%s backend=%s seq_len=%d",
-            step,
-            loss_f,
-            residual,
-            lr,
-            resolved,
-            seq_len,
+    loss = F.cross_entropy(model(tokens[:, :-1]).reshape(-1, VOCAB), tokens[:, 1:].reshape(-1))
+    loss.backward()
+    bad = [
+        n
+        for n, p in model.named_parameters()
+        if p.grad is None or not torch.isfinite(p.grad).all()
+    ]
+    assert not bad, f"non-finite or missing grads: {bad}"
+    model.zero_grad(set_to_none=True)
+    print(f"Dyck start: device={device}, grads ok")
+
+    gen = torch.Generator().manual_seed(SEED)
+    loss0 = None
+    for step in range(STEPS):
+        tokens = sample_dyck1(BATCH, SEQ_LEN, generator=gen).to(device)
+        loss = F.cross_entropy(
+            model(tokens[:, :-1]).reshape(-1, VOCAB), tokens[:, 1:].reshape(-1)
         )
-        if step == steps:
-            break
+        if step == 0:
+            loss0 = loss.item()
+
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
-    return losses, residuals, resolved_scan_backend(model.rnn, scan_backend)
 
+        if step % 10 == 0 or step == STEPS - 1:
+            st = rnn_layer.last_stats[0] if rnn_layer.last_stats else None
+            res = f"{st.max_residual:.2e}" if st else "nan"
+            backend = (st.scan_backend or SCAN_BACKEND) if st else SCAN_BACKEND
+            print(
+                f"step={step:03d} | loss={loss.item():.4f} | res={res} | backend={backend}"
+            )
 
-def _check_grads_finite(model: _DyckLM, device: torch.device, *, seq_len: int) -> None:
-    """One backward: all grads finite (eq. 2.6 adjoint)."""
-    tokens = sample_dyck1(4, seq_len, generator=torch.Generator().manual_seed(0)).to(device)
-    model.zero_grad(set_to_none=True)
-    logits = model(tokens[:, :-1])
-    loss = F.cross_entropy(logits.reshape(-1, VOCAB), tokens[:, 1:].reshape(-1))
-    loss.backward()
-    bad = [
-        name
-        for name, p in model.named_parameters()
-        if p.grad is None or not torch.isfinite(p.grad).all()
-    ]
-    if bad:
-        raise RuntimeError(f"non-finite or missing grads: {bad}")
-    log.info(
-        "dyck_grads_finite n_params=%d loss=%.4f",
-        len(list(model.parameters())),
-        float(loss.detach()),
+    loss_final = loss.item()
+    assert loss_final < loss0, (
+        f"Dyck failed: final loss ({loss_final:.4f}) >= initial ({loss0:.4f})"
     )
-    model.zero_grad(set_to_none=True)
-
-
-def _validate_spec(spec: dict) -> None:
-    if spec.get("dtype") != "float32":
-        raise ValueError("dyck smoke is float32")
-    if spec.get("cell") != "para_slstm":
-        raise ValueError("dyck smoke uses ParaSLSTM")
-    if int(spec.get("seq_len", 0)) % 2:
-        raise ValueError("Dyck-1 seq_len must be even")
-    if int(spec.get("newton_iters", 0)) != 3:
-        raise ValueError("library contract is newton_iters=3")
-
-
-if __name__ == "__main__":
-    main()
+    print(f"Dyck OK: {loss0:.4f} -> {loss_final:.4f}")

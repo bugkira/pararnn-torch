@@ -1,37 +1,23 @@
 """NX-AI sLSTMBlock around ParaRNN(ParaSLSTM mix='diag').
 
-    uv add xlstm   # NX-AI package; Python 3.11+ (mlstm-kernels).
-    uv run python examples/xlstm_hybrid.py
-
 Their block keeps pre-LN, residual skip, and the gated FFN.
-The recurrent slot (``block.xlstm``) is the fused cell: ``ParaRNN(ParaSLSTM)``.
-Newton ``K=3`` is ParaRNN App. A / Danieli et al. §2.1.
+The recurrent slot (``block.xlstm``) is ``ParaRNN(ParaSLSTM)``.
+Newton K=3 is App. A / Danieli et al. §2.1.
 
-Channel mix in the recurrence is diagonal (fused 4×4).
+Usage:
+    uv add xlstm   # Python 3.11+
+    python xlstm_hybrid.py
 """
-
-from __future__ import annotations
-
-import logging
-import sys
-from pathlib import Path
-
-_REPO = Path(__file__).resolve().parents[1]
-if str(_REPO) not in sys.path:
-    sys.path.insert(0, str(_REPO))
 
 import torch
 from torch import Tensor, nn
 
 from pararnn import NewtonConfig, ParaRNN, ParaSLSTM
 
-log = logging.getLogger("xlstm_hybrid")
-
 _INSTALL = "uv add xlstm"
 
 
 def require_xlstm():
-    """Import NX-AI block configs. Raise with the install command if missing."""
     try:
         from xlstm.blocks.slstm.block import sLSTMBlock, sLSTMBlockConfig
         from xlstm.blocks.slstm.layer import sLSTMLayerConfig
@@ -42,18 +28,9 @@ def require_xlstm():
 
 
 class ParaSLSTMAsXlstmSlot(nn.Module):
-    """``sLSTMLayer`` stand-in: same ``(B, T, d) → (B, T, d)`` as their layer.
+    """sLSTMLayer stand-in: (B, T, d) → (B, T, d). Swallows NX-AI kwargs."""
 
-    Swallows extra kwargs that NX-AI ``sLSTMBlock.forward`` forwards.
-    """
-
-    def __init__(
-        self,
-        d_model: int,
-        *,
-        config: NewtonConfig,
-        solver: str = "auto",
-    ) -> None:
+    def __init__(self, d_model: int, *, config: NewtonConfig, solver: str = "auto") -> None:
         super().__init__()
         self.rnn = ParaRNN(
             ParaSLSTM(d_model, d_model, mix="diag"),
@@ -67,7 +44,7 @@ class ParaSLSTMAsXlstmSlot(nn.Module):
 
     def step(self, x: Tensor, **_kwargs):
         raise RuntimeError(
-            "token-wise NX-AI .step is not wired; call .eval() on the block "
+            "token-wise NX-AI .step is unwired; call .eval() on the block "
             "for a sequential ParaSLSTM unroll of the full sequence"
         )
 
@@ -79,12 +56,7 @@ def build_hybrid_slstm_block(
     config: NewtonConfig | None = None,
     solver: str = "auto",
 ) -> nn.Module:
-    """NX-AI ``sLSTMBlock`` with ``ParaRNN(ParaSLSTM mix='diag')`` in ``.xlstm``.
-
-    ``d_model=64``, ``n_heads=4`` are NX-AI's default width / head count
-    (must divide width). Our cell is channelwise. ``K=3`` is the paper default
-    for Newton.
-    """
+    """NX-AI sLSTMBlock with ParaRNN(ParaSLSTM mix='diag') in .xlstm."""
     sLSTMBlock, sLSTMBlockConfig, sLSTMLayerConfig, FeedForwardConfig = require_xlstm()
     if d_model % n_heads != 0:
         raise ValueError(f"n_heads={n_heads} must divide d_model={d_model}")
@@ -107,41 +79,27 @@ def build_hybrid_slstm_block(
     cfg.__post_init__()
     block = sLSTMBlock(cfg)
     block.xlstm = ParaSLSTMAsXlstmSlot(d_model, config=newton, solver=solver)
-    log.info(
-        "hybrid_slstm_block d_model=%d nx_num_heads=%d mix=diag newton_iters=%d solver=%s",
-        d_model,
-        n_heads,
-        newton.max_iters,
-        solver,
-    )
     return block
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+if __name__ == "__main__":
+    D_MODEL, N_HEADS, BATCH, SEQ_LEN = 64, 4, 2, 16
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    d_model, n_heads, batch, seq_len = 64, 4, 2, 16
-    block = build_hybrid_slstm_block(d_model, n_heads).to(device)
-    x = torch.randn(batch, seq_len, d_model, device=device)
+    block = build_hybrid_slstm_block(D_MODEL, N_HEADS).to(device)
+    x = torch.randn(BATCH, SEQ_LEN, D_MODEL, device=device)
+
     block.train()
     y_train = block(x)
     y_train.sum().backward()
     stats = block.xlstm.rnn.last_stats
     res = stats[0].max_residual if stats else float("nan")
     block.zero_grad(set_to_none=True)
+
     block.eval()
     y_eval = block(x)
     err = (y_train - y_eval).abs().max().item()
-    log.info(
-        "hybrid_smoke device=%s shape=%s residual=%.3e train_vs_eval_maxabs=%.3e",
-        device,
-        tuple(y_train.shape),
-        res,
-        err,
+    assert torch.isfinite(y_train).all(), "hybrid forward produced non-finite values"
+    print(
+        f"hybrid OK device={device} shape={tuple(y_train.shape)} "
+        f"residual={res:.3e} train_vs_eval_maxabs={err:.3e}"
     )
-    if not torch.isfinite(y_train).all():
-        raise RuntimeError("hybrid forward produced non-finite values")
-
-
-if __name__ == "__main__":
-    main()

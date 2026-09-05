@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -255,7 +256,11 @@ def main() -> None:
     modes = tuple(spec.get("modes", _DEFAULT_MODES))
     experiment = str(spec.get("mlflow_experiment", "cell-forward-bench"))
     run_name = str(spec.get("mlflow_run_name", "pararnn-vs-naive-rnn"))
+    bench_seed = int(os.environ.get("BENCH_SEED", spec.get("seed", 0)))
+    torch.manual_seed(bench_seed)
+    torch.cuda.manual_seed_all(bench_seed)
     csv_rel = spec.get("csv", "outputs/bench_cell_forward.csv")
+    csv_rel = str(csv_rel).replace("{seed}", str(bench_seed))
     if "newton_compiled" in modes or "sequential_compiled" in modes:
         # Each T is a new static shape. Dynamo's default recompile_limit=8
         # is exhausted by 9 seq_lens; _scan then silently runs eager
@@ -269,7 +274,7 @@ def main() -> None:
     multi_dtype = len(dtype_names) > 1
 
     log.info(
-        "bench_start gpu=%s torch=%s batch=%d d_h=%d K=%d picard=%s dtypes=%s modes=%s",
+        "bench_start gpu=%s torch=%s batch=%d d_h=%d K=%d picard=%s dtypes=%s modes=%s seed=%s",
         torch.cuda.get_device_name(device),
         torch.__version__,
         batch,
@@ -278,6 +283,7 @@ def main() -> None:
         newton_cfg.picard_iters,
         ",".join(dtype_names),
         ",".join(modes),
+        bench_seed,
     )
 
     import mlflow
@@ -295,6 +301,7 @@ def main() -> None:
         )
         mlflow.log_params(
             {
+                "seed": bench_seed,
                 "newton_iters": newton_cfg.max_iters,
                 "batch": batch,
                 "d_in": d_in,
@@ -398,6 +405,7 @@ def main() -> None:
                                 rows.append(
                                     {
                                         "cell": cell_name,
+                                        "seed": bench_seed,
                                         "mode": "sequential_eager",
                                         "T": T,
                                         "dtype": dtype_name,
@@ -427,6 +435,7 @@ def main() -> None:
                                 rows.append(
                                     {
                                         "cell": cell_name,
+                                        "seed": bench_seed,
                                         "mode": "sequential_compiled",
                                         "T": T,
                                         "dtype": dtype_name,
@@ -461,6 +470,7 @@ def main() -> None:
                             rows.append(
                                 {
                                     "cell": cell_name,
+                                    "seed": bench_seed,
                                     "mode": "newton",
                                     "T": T,
                                     "dtype": dtype_name,
@@ -490,6 +500,7 @@ def main() -> None:
                             rows.append(
                                 {
                                     "cell": cell_name,
+                                    "seed": bench_seed,
                                     "mode": "newton_fused",
                                     "T": T,
                                     "dtype": dtype_name,
@@ -544,6 +555,7 @@ def main() -> None:
                                     rows.append(
                                         {
                                             "cell": cell_name,
+                                    "seed": bench_seed,
                                             "mode": f"flashrnn_{fr_backend}",
                                             "T": T,
                                             "dtype": dtype_name,
@@ -616,6 +628,7 @@ def main() -> None:
                             rows.append(
                                 {
                                     "cell": cell_name,
+                                    "seed": bench_seed,
                                     "mode": "newton_compiled",
                                     "T": T,
                                     "dtype": dtype_name,

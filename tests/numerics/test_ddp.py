@@ -22,11 +22,11 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from pararnn import NewtonConfig, ParaGRU, ParaRNN
 from pararnn.distributed import last_newton_residuals, warmup_scan_kernels
 
-# App. A: K=3. Wiring sizes — reducer/NCCL path, not a quality run.
+# App. A: K=3. Wiring sizes for the reducer / NCCL path.
 _D_IN = 8
 _T = 16
 _BATCH = 2
-_LR = 0.1  # one SGD step so ranks share an updated weight; not a train lr.
+_LR = 0.1  # one SGD step so ranks share an updated weight.
 _ATOL = 1e-5
 _RTOL = 1e-5
 

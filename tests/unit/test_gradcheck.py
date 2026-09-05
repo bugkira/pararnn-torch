@@ -1,4 +1,4 @@
-"""Finite-difference check of the eq. 2.6 adjoint (not autograd through Newton).
+"""Finite-difference check of the eq. 2.6 adjoint.
 
 ``newton_apply`` wraps a custom ``torch.autograd.Function`` whose backward is
 one reverse scan (Danieli et al. 2025 eq. 2.6). There is no other gradcheck
@@ -42,7 +42,7 @@ _KINDS = ("gru", "lstm", "slstm")
 def _make_cell(kind: str) -> nn.Module:
     # max_recurrent_norm=None: App. C.1 clamp is piecewise-linear. At |a|=cap
     # the packed VJP uses ``<=`` while ``Tensor.clamp`` is 0 on the boundary.
-    # Disable the clip so this file tests eq. 2.6, not that convention.
+    # Disable the clip so this file tests the smooth eq. 2.6 map.
     kwargs = {
         "input_size": _D_IN,
         "hidden_size": _D_H,
@@ -60,9 +60,9 @@ def _gradcheck_config(cell: nn.Module) -> NewtonConfig:
     # residual_atol defaults to 1e-5 and early-stops when max|F| drops below
     # that. K then depends on the residual — a step function of (x, θ, h0) —
     # so gradcheck fails even with a correct adjoint. Disable it and run all
-    # K=3 (App. A). residual_fail is a post-hoc raise, not an output
-    # discontinuity when it does not fire; None also skips the D2H in
-    # _fill_stats. picard_adapt retries P from the residual (discontinuous).
+    # K=3 (App. A). residual_fail is a post-hoc raise when it fires; None also
+    # skips the D2H in _fill_stats. picard_adapt retries P from the residual
+    # (discontinuous).
     kwargs: dict[str, object] = {
         "max_iters": 3,
         "scan_backend": "eager",

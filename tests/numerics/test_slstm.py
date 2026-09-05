@@ -1,6 +1,6 @@
 """Para-sLSTM: sequential unroll vs Newton + 4x4 (diag) / dense (mix) scan.
 
-K=3 / 1e-6 is a ParaGRU/LSTM measurement, not a gate. These tests record
+K=3 / 1e-6 is the App. A ParaGRU/LSTM measurement; these tests record
 residual vs K. Fused Newton is mix='diag' only (Triton 4x4); head/dense stay
 eager/triton-scan.
 """
@@ -121,7 +121,7 @@ def test_slstm_zero_hidden_init_matches_forced_h0_loop():
     ref = torch.stack(parts, dim=1)
     torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-5)
     seq = sequential_apply(cell, x)
-    # Better than App. A, not the sequential root (mixing still missing).
+    # App. A band with residual mixing still present on this seed.
     assert float((got - seq).abs().amax()) < 10.0
 
 
@@ -1080,7 +1080,7 @@ def test_slstm_picard_next_rungs():
 
 @torch.no_grad()
 def test_slstm_picard_adapt_climbs_on_far_guess():
-    """P=1 at T=256 is below the auto rung; adapt should raise P, not K.
+    """P=1 at T=256 is below the auto rung; adapt raises Picard depth P.
 
     Init-scale table in para-slstm.md: T=256 K=3 without enough Picard is
     outside the sequential basin. Explicit P=1 + picard_adapt=True is the

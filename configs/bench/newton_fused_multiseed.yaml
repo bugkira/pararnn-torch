@@ -1,0 +1,38 @@
+# Fused Newton (Triton cell + J + scan). Same shapes as cell_forward.yaml.
+# scan_backend=fused is the handwritten GRU/LSTM kernel (not any f).
+# Library default is auto, not silent fused. This bench pins fused.
+# GEMM W_x stays in PyTorch (eq. 3.1). Not Apple's fused CUDA.
+#
+# Protocol: 10 warmup / 50 runs — smoke, not App. B (20/100).
+# Three-way on this 2080 Ti:
+#   sequential_eager  = naive RNN (Python unroll of cell.step, no J)
+#   newton            = naive ParaRNN (eager Newton + Blelloch)
+#   newton_fused      = Triton cell+J+scan
+# sequential_compiled is the honest sequential baseline (CUDA graphs);
+# do not quote fused vs the Python loop as if it were fig. 2/5 (A100 fused).
+# K=3: App. A. float32: Turing. batch=8, d_h=256: Table 3 per-head.
+# seq_lens: one-tile (T≤128 GRU / ≤64 LSTM) and two-level (LM length 2048).
+
+newton_iters: 3
+batch: 8
+d_in: 256
+d_h: 256
+dtype: float32
+warmup: 10
+n_runs: 50
+seq_lens: [64, 256, 512, 2048, 4096]
+seq_lens_sequential_max: 4096
+sequential_compile_mode: reduce-overhead
+modes: [sequential_eager, sequential_compiled, newton, newton_fused]
+newton_max_t:
+  ParaGRU: 4096
+  ParaLSTM: 4096
+mlflow_experiment: newton-fused-bench
+mlflow_run_name: newton-fused-multiseed
+csv: outputs/multiseed/fused_seed{seed}.csv
+why: >
+  Naive RNN (sequential_apply), compiled sequential, eager Newton (naive
+  ParaRNN), and Triton fused Newton on 2080 Ti. Fused is not the library
+  default. Protocol is 10/50 smoke, not App. B. K=3 App. A. Shapes match
+  cell_forward.yaml. Do not quote as the paper's 665× (A100 fused CUDA vs
+  naive sequential).

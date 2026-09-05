@@ -13,6 +13,9 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Two-card TP / CP / paged-pool demos removed from `examples/` (history on
   branch `archive/distributed-demos`). API + numerics tests stay;
   `docs/distributed.md` keeps the architecture.
+- `examples/toy_copy.py` → `train_smoke.py`: standalone script (inlined knobs,
+  no YAML / repo `sys.path`); stderr only; per-step identity CE. Same style
+  across `examples/` (`print`, no MLflow; dyck/parity knobs in-file).
 
 ### Added
 
@@ -102,8 +105,6 @@ installable surface.
 - `ParaSLSTM`: `mix='diag'` remains the fused default. `mix='head'` warns as
   an unfused ablation (`scan_dense`). `mix='dense'` raises if
   `hidden_size > 8` (Jacobian oracle for tests).
-- Public docs state facts; Apple notes and the lab reading list stay off the
-  clone. Agent rules and the local Apple clone path are gitignored.
 - README quickstart runs `.backward()` on the Newton path.
 
 ### Breaking

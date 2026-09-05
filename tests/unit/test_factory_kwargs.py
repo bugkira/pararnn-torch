@@ -1,4 +1,4 @@
-"""Cells follow nn.Module factory_kwargs (device=, dtype=). Not a GPU picker."""
+"""Cells follow nn.Module factory_kwargs (device=, dtype=)."""
 
 from __future__ import annotations
 

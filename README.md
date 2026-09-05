@@ -16,7 +16,7 @@ Package **`pararnn-torch`**, import **`pararnn`**. **Alpha** — fused kernels a
 
 `ParaSLSTM` with `mix='diag'` is the main fused path for exponentially gated sLSTM and xLSTM-style stacks. `ParaGRU` and `ParaLSTM` follow the same Newton wrapper.
 
-Implementation follows [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450). Apple's official CUDA kernels at [apple/ml-pararnn](https://github.com/apple/ml-pararnn) are reference-only under a separate license; this repo is MIT for our code.
+Implementation follows [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450).
 
 ## Install
 
@@ -78,16 +78,17 @@ y = slstm(torch.randn(4, 128, 64, device=device))
 
 ## Examples
 
-All scripts read YAML from `configs/train/`. Smoke runs log to MLflow when the `train` extra is installed (`uv sync --extra train`).
+Standalone scripts: install `pararnn-torch`, copy a file, run it. Knobs live
+in the script; metrics go to stdout.
 
 | Script | What it shows | Command | Extras |
 |---|---|---|---|
-| [`examples/toy_copy.py`](examples/toy_copy.py) | GRU smoke: CE + AdamW + MLflow | `uv run python examples/toy_copy.py --config configs/train/toy.yaml` | — |
+| [`examples/train_smoke.py`](examples/train_smoke.py) | GRU identity CE smoke: AdamW | `uv run python examples/train_smoke.py` | — |
 | [`examples/ddp_fsdp.py`](examples/ddp_fsdp.py) | DDP / FSDP2 one-step wrap of `ParaRNN` | `uv run torchrun --nproc_per_node=2 examples/ddp_fsdp.py` | two visible GPUs for NCCL |
 | [`examples/speculative_draft.py`](examples/speculative_draft.py) | Greedy linear-draft verify: one Newton scan vs sequential | `uv run python examples/speculative_draft.py` | — |
 | [`examples/decode_step.py`](examples/decode_step.py) | T=1 Triton decode vs eager `cell.step` | `uv run python examples/decode_step.py` | — |
-| [`examples/dyck_language.py`](examples/dyck_language.py) | ParaSLSTM Newton grads, fail-loud on divergence | `uv run python examples/dyck_language.py --config configs/train/dyck.yaml` | — |
-| [`examples/parity.py`](examples/parity.py) | Z₂ prefix tagging vs linear SSM | `uv run python examples/parity.py --config configs/train/parity_t16.yaml` | pins lab GPU in script |
+| [`examples/dyck_language.py`](examples/dyck_language.py) | ParaSLSTM Newton grads, fail-loud on divergence | `uv run python examples/dyck_language.py` | — |
+| [`examples/parity.py`](examples/parity.py) | Z₂ prefix tagging vs linear SSM | `uv run python examples/parity.py` | CUDA; writes `parity_curves.json` |
 | [`examples/xlstm_hybrid.py`](examples/xlstm_hybrid.py) | NX-AI `sLSTMBlock` around fused `ParaSLSTM` | `uv add xlstm && uv run python examples/xlstm_hybrid.py` | `xlstm` |
 
 FlashRNN train comparison and other benches live under `scripts/` (e.g. `scripts/slstm_vs_flashrnn.py`, extra `flashrnn`). Two-card TP / CP / paged-pool demos are on branch [`archive/distributed-demos`](https://github.com/bugkira/pararnn-torch/tree/archive/distributed-demos); API notes stay in [`docs/distributed.md`](docs/distributed.md).
@@ -147,7 +148,7 @@ When an arXiv identifier is assigned, the Zenodo badge and `@misc` entry above w
 
 ## References
 
-- Danieli, Rodríguez, Sarabia, Suau, Zappella. *ParaRNN*. ICLR 2026 (Oral). [arXiv:2510.21450](https://arxiv.org/abs/2510.21450). Official CUDA: [apple/ml-pararnn](https://github.com/apple/ml-pararnn).
+- Danieli, Rodríguez, Sarabia, Suau, Zappella. *ParaRNN*. ICLR 2026 (Oral). [arXiv:2510.21450](https://arxiv.org/abs/2510.21450).
 - Sereda. *ParaSLSTM*. [doi:10.5281/zenodo.22302587](https://doi.org/10.5281/zenodo.22302587).
 - Beck et al. *xLSTM*. [arXiv:2405.04517](https://arxiv.org/abs/2405.04517).
 - Lim et al. *DEER*. ICLR 2024. [arXiv:2309.12252](https://arxiv.org/abs/2309.12252).
@@ -155,4 +156,4 @@ When an arXiv identifier is assigned, the Zenodo badge and `@misc` entry above w
 
 ## License
 
-`src/`, `tests/`, `configs/` — MIT, [LICENSE](LICENSE). Apple's CUDA at [apple/ml-pararnn](https://github.com/apple/ml-pararnn) uses a separate custom license.
+MIT, [LICENSE](LICENSE).

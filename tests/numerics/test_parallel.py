@@ -263,7 +263,7 @@ def test_compiled_sequential_matches_eager(cuda_device: torch.device) -> None:
 @pytest.mark.cuda
 @torch.no_grad()
 def test_compiled_newton_matches_sequential(cuda_device: torch.device) -> None:
-    """Call-site torch.compile(newton_apply); not a library solver."""
+    """Call-site torch.compile(newton_apply)."""
     torch.manual_seed(16)
     cfg = NewtonConfig(max_iters=3)
     for cell in (
@@ -528,7 +528,7 @@ def test_paralstm_newton_fused_bwd_matches_sequential_bptt(
 _FP16_ATOL = 2e-3  # IDEAS.md #fp16: residual ~1e-3; LSTM a bit looser
 # Same 4.1× ULP multiple as _FP16_ATOL (fp16 2**-11). bf16 ULP is 2**-8 = 8× coarser.
 # RTX 3060 CC 8.6: worst fused-vs-seq 4.88e-3 (ParaLSTM) → ~3.3× headroom.
-# Fallback: fused vs eager in the same dtype; agreement is dtype resolution, not a kernel bug.
+# Fallback: fused vs eager in the same dtype; agreement is dtype resolution.
 _BF16_ATOL = 8 * _FP16_ATOL  # 1.6e-2
 
 
@@ -600,7 +600,7 @@ def test_paragru_newton_fused_fp16_matches_eager(cuda_device: torch.device) -> N
 @pytest.mark.cuda
 @torch.no_grad()
 def test_fused_bf16_raises_below_cc80(cuda_device: torch.device) -> None:
-    """Explicit fused bf16 must raise on CC 7.x, not silent-fallback."""
+    """Explicit fused bf16 raises on CC 7.x."""
     from pararnn.kernels.precision import is_fused_dtype_supported
 
     if is_fused_dtype_supported(torch.bfloat16, cuda_device):

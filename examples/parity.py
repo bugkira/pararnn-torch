@@ -1,56 +1,44 @@
-"""Running parity (Z2 tagging): stacked ParaSLSTM vs sequential vs SSM.
+"""Running parity (Z₂ tagging): stacked ParaSLSTM vs sequential vs SSM.
 
-    uv run python examples/parity.py --config configs/train/parity_t16.yaml
+Merrill et al. 2024 §5: label at t is the prefix product on Z₂ (XOR).
+T=16 / 2000 steps; eval also at T=32.
 
-Merrill et al. 2024 §5: token-tagging, label at t is the prefix product
-on Z₂ (XOR). Lab GPU: 2080 Ti by name.
-T=32 / 300 steps (`configs/train/parity.yaml`) stays copy-only; use T=16 /
-2000 steps for the quality smoke.
+Usage:
+    python parity.py
 """
 
-from __future__ import annotations
-
-import argparse
 import json
-import logging
 import math
-import sys
-from pathlib import Path
-
-_REPO = Path(__file__).resolve().parents[1]
-if str(_REPO) not in sys.path:
-    sys.path.insert(0, str(_REPO))
-_SCRIPTS = _REPO / "scripts"
-if str(_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS))
 
 import torch
-import yaml
 from torch import Tensor, nn
 from torch.nn import functional as F
 
 from pararnn import NewtonConfig, ParaRNN, ParaSLSTM
 from pararnn.solvers.scan import scan_diag
-from utils.mlflow_helper import ROOT, git_commit, lock_hash, setup_logging, uv_export_hash
 
-from gpu import DEFAULT_EXPERIMENT_GPU_NAME, select_device, wait_until_free
-
-log = logging.getLogger("parity")
-DEFAULT_CONFIG = ROOT / "configs" / "train" / "parity_t16.yaml"
 VOCAB = 2
+SEQ_LEN, EVAL_SEQ_LEN = 16, 32
+BATCH, D_H, NUM_LAYERS = 16, 32, 2
+STEPS, WARMUP_FRAC = 2000, 0.1
+NEWTON_ITERS, SCAN_BACKEND = 3, "auto"
+LR, WEIGHT_DECAY = 1e-3, 1e-6
+ADAM_BETAS = (0.9, 0.999)
+SEED = 0
+ARMS = ("newton", "eager", "ssm")
 
 
 def sample_parity(
     batch: int, length: int, *, generator: torch.Generator | None = None
 ) -> tuple[Tensor, Tensor]:
-    """Bits and running XOR labels (Merrill §5 tagging on Z2)."""
+    """Bits and running XOR labels (Merrill §5 tagging on Z₂)."""
     bits = torch.randint(0, 2, (batch, length), generator=generator)
     labels = bits.cumsum(dim=1) % 2
     return bits, labels
 
 
 def _cosine_lr(step: int, total: int, base: float, warmup_frac: float) -> float:
-    """ParaRNN App. C / Bergsma: 10% warmup, cosine to 0."""
+    """ParaRNN App. C: 10% warmup, cosine to 0."""
     warm = max(int(total * warmup_frac), 1)
     if step < warm:
         return base * float(step + 1) / float(warm)
@@ -61,9 +49,8 @@ def _cosine_lr(step: int, total: int, base: float, warmup_frac: float) -> float:
 class _S6Block(nn.Module):
     """Pre-norm residual diagonal selective SSM (S4D-Real).
 
-    h_t = exp(-Δ_t A) ⊙ h_{t-1} + (B_t ⊙ x_t). A is S4D-Real (n+1).
-    Δ range Gu & Dao 2023 [1e-3, 1e-1]. ``scan_diag`` eager so Autograd
-    flows (Triton scan has no backward). Linear SSM: Merrill TC^0 bound.
+    h_t = exp(-Δ_t A) ⊙ h_{t-1} + (B_t ⊙ x_t). Δ range Gu & Dao 2023
+    [1e-3, 1e-1]. scan_diag eager so Autograd flows.
     """
 
     def __init__(self, d_model: int) -> None:
@@ -85,25 +72,18 @@ class _S6Block(nn.Module):
 
 
 class _ResidualSLSTM(nn.Module):
-    """Pre-norm residual around ``ParaRNN(ParaSLSTM)``. Local to this smoke."""
-
     def __init__(
         self,
         d_h: int,
         *,
         solver: str,
         newton_cfg: NewtonConfig,
-        max_recurrent_norm: float | None,
+        max_recurrent_norm: float | None = None,
     ) -> None:
         super().__init__()
         self.norm = nn.LayerNorm(d_h)
         self.rnn = ParaRNN(
-            ParaSLSTM(
-                d_h,
-                d_h,
-                mix="diag",
-                max_recurrent_norm=max_recurrent_norm,
-            ),
+            ParaSLSTM(d_h, d_h, mix="diag", max_recurrent_norm=max_recurrent_norm),
             config=newton_cfg,
             output_hidden=True,
             solver=solver,
@@ -120,7 +100,7 @@ class _ParityNet(nn.Module):
         num_layers: int,
         arm: str,
         newton_cfg: NewtonConfig,
-        max_recurrent_norm: float | None,
+        max_recurrent_norm: float | None = None,
     ) -> None:
         super().__init__()
         self.arm = arm
@@ -147,28 +127,20 @@ class _ParityNet(nn.Module):
         return self.head(h)
 
     def newton_residuals(self) -> list[float]:
-        out: list[float] = []
         if self.arm != "newton":
-            return out
+            return []
+        out: list[float] = []
         for block in self.blocks:
-            if not isinstance(block, _ResidualSLSTM):
-                continue
-            for st in block.rnn.last_stats:
-                out.append(st.max_residual)
+            if isinstance(block, _ResidualSLSTM):
+                out.extend(st.max_residual for st in block.rnn.last_stats)
         return out
 
 
 @torch.no_grad()
 def _eval_acc(model: nn.Module, bits: Tensor, labels: Tensor) -> dict[str, float]:
-    """Overall / first-token / last-token / exact-sequence accuracy.
-
-    t=0 is a copy of the bit (trivial). Last token is the full prefix XOR
-    (Merrill tagging). Overall ~0.5 + 0.5/T is copy-only.
-    """
     was_train = model.training
     model.eval()
-    pred = model(bits).argmax(dim=-1)
-    hit = pred == labels
+    hit = model(bits).argmax(dim=-1) == labels
     out = {
         "tok": float(hit.float().mean()),
         "exact": float(hit.all(dim=1).float().mean()),
@@ -179,101 +151,61 @@ def _eval_acc(model: nn.Module, bits: Tensor, labels: Tensor) -> dict[str, float
     return out
 
 
-def _train_arm(
-    spec: dict,
-    device: torch.device,
-    *,
-    arm: str,
-    lr: float,
-) -> dict:
-    seed = int(spec["seed"])
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    cfg = NewtonConfig(
-        max_iters=int(spec["newton_iters"]),
-        scan_backend=str(spec["scan_backend"]),
-    )
-    clip = spec.get("max_recurrent_norm")
-    model = _ParityNet(
-        int(spec["d_h"]),
-        int(spec["num_layers"]),
-        arm,
-        cfg,
-        None if clip is None else float(clip),
-    ).to(device)
+def _train_arm(device: torch.device, arm: str) -> dict:
+    torch.manual_seed(SEED)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(SEED)
+    cfg = NewtonConfig(max_iters=NEWTON_ITERS, scan_backend=SCAN_BACKEND)
+    model = _ParityNet(D_H, NUM_LAYERS, arm, cfg).to(device)
     model.train()
-    betas = tuple(float(x) for x in spec["adam_betas"])
     opt = torch.optim.AdamW(
-        model.parameters(),
-        lr=lr,
-        weight_decay=float(spec["weight_decay"]),
-        betas=betas,
+        model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY, betas=ADAM_BETAS
     )
-    gen = torch.Generator(device="cpu").manual_seed(seed)
-    eval_gen = torch.Generator(device="cpu").manual_seed(seed + 1)
-    steps = int(spec["steps"])
-    batch = int(spec["batch"])
-    seq_len = int(spec["seq_len"])
-    eval_len = int(spec["eval_seq_len"])
-    warmup_frac = float(spec["warmup_frac"])
-    losses: list[float] = []
-    token_acc: list[float] = []
-    curve_steps: list[int] = []
-    eval_last_hist: list[float] = []
-    long_last_hist: list[float] = []
+    gen = torch.Generator().manual_seed(SEED)
+    eval_gen = torch.Generator().manual_seed(SEED + 1)
     n_params = sum(p.numel() for p in model.parameters())
-    log.info("parity_arm=%s n_params=%d lr=%g", arm, n_params, lr)
+    print(f"arm={arm} n_params={n_params} lr={LR}")
 
-    eval_bits, eval_lab = sample_parity(batch * 4, seq_len, generator=eval_gen)
-    long_bits, long_lab = sample_parity(batch * 4, eval_len, generator=eval_gen)
+    eval_bits, eval_lab = sample_parity(BATCH * 4, SEQ_LEN, generator=eval_gen)
+    long_bits, long_lab = sample_parity(BATCH * 4, EVAL_SEQ_LEN, generator=eval_gen)
     eval_bits, eval_lab = eval_bits.to(device), eval_lab.to(device)
     long_bits, long_lab = long_bits.to(device), long_lab.to(device)
 
-    for step in range(steps):
-        bits, labels = sample_parity(batch, seq_len, generator=gen)
+    loss0 = loss_f = 0.0
+    curve_steps: list[int] = []
+    eval_last_hist: list[float] = []
+    long_last_hist: list[float] = []
+    for step in range(STEPS):
+        bits, labels = sample_parity(BATCH, SEQ_LEN, generator=gen)
         bits, labels = bits.to(device), labels.to(device)
         for g in opt.param_groups:
-            g["lr"] = _cosine_lr(step, steps, lr, warmup_frac)
+            g["lr"] = _cosine_lr(step, STEPS, LR, WARMUP_FRAC)
         logits = model(bits)
-        loss = F.cross_entropy(logits.reshape(-1, VOCAB), labels.reshape(-1))
+        loss = F.cross_entropy(logits.view(-1, VOCAB), labels.view(-1))
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
-        losses.append(float(loss.detach()))
-        with torch.no_grad():
-            token_acc.append(float((logits.argmax(-1) == labels).float().mean()))
-        if step == 0 or (step + 1) % 50 == 0 or step + 1 == steps:
-            tr_tok = token_acc[-1]
-            res = model.newton_residuals()
+        loss_f = loss.item()
+        if step == 0:
+            loss0 = loss_f
+        if step == 0 or (step + 1) % 50 == 0 or step + 1 == STEPS:
             ev = _eval_acc(model, eval_bits, eval_lab)
             lg = _eval_acc(model, long_bits, long_lab)
             curve_steps.append(step)
             eval_last_hist.append(ev["tok_last"])
             long_last_hist.append(lg["tok_last"])
-            log.info(
-                "arm=%s step=%03d ce=%.4f train_tok=%.3f "
-                "eval_tok=%.3f t0=%.3f last=%.3f exact=%.3f "
-                "long_tok=%.3f long_last=%.3f long_exact=%.3f res=%s",
-                arm,
-                step,
-                losses[-1],
-                tr_tok,
-                ev["tok"],
-                ev["tok_t0"],
-                ev["tok_last"],
-                ev["exact"],
-                lg["tok"],
-                lg["tok_last"],
-                lg["exact"],
-                [f"{r:.2e}" for r in res] if res else "-",
+            res = model.newton_residuals()
+            print(
+                f"arm={arm} step={step:04d} ce={loss_f:.4f} "
+                f"eval_last={ev['tok_last']:.3f} long_last={lg['tok_last']:.3f} "
+                f"res={[f'{r:.2e}' for r in res] if res else '-'}"
             )
     ev = _eval_acc(model, eval_bits, eval_lab)
     lg = _eval_acc(model, long_bits, long_lab)
     return {
         "n_params": n_params,
-        "loss0": losses[0],
-        "loss_final": losses[-1],
-        "train_tok_final": token_acc[-1],
+        "loss0": loss0,
+        "loss_final": loss_f,
         "eval_tok": ev["tok"],
         "eval_exact": ev["exact"],
         "eval_t0": ev["tok_t0"],
@@ -281,160 +213,43 @@ def _train_arm(
         "long_tok": lg["tok"],
         "long_exact": lg["exact"],
         "long_last": lg["tok_last"],
-        "losses": losses,
-        "token_acc": token_acc,
         "curve_steps": curve_steps,
         "eval_last_hist": eval_last_hist,
         "long_last_hist": long_last_hist,
     }
 
 
-def _validate_spec(spec: dict) -> None:
-    if spec.get("task") != "running_parity":
-        raise ValueError(f"expected task=running_parity, got {spec.get('task')!r}")
-    if int(spec["seq_len"]) < 2:
-        raise ValueError("seq_len must be >= 2")
-    if int(spec["eval_seq_len"]) < int(spec["seq_len"]):
-        raise ValueError("eval_seq_len must be >= seq_len")
-    if int(spec["num_layers"]) < 1:
-        raise ValueError("num_layers must be >= 1")
-    arms = spec.get("arms") or []
-    if not arms:
-        raise ValueError("arms must be a non-empty list")
-    for a in arms:
-        if a not in ("newton", "eager", "ssm"):
-            raise ValueError(f"unknown arm {a!r}")
-
-
-def main(argv: list[str] | None = None) -> None:
-    setup_logging()
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    args = parser.parse_args(argv)
-    spec = yaml.safe_load(args.config.read_text())
-    _validate_spec(spec)
-
-    device = select_device(DEFAULT_EXPERIMENT_GPU_NAME)
-    torch.cuda.set_device(device)
-    wait_until_free(device, min_free_gib=2.0)
-    gpu_name = torch.cuda.get_device_name(device)
-    scan_backend = str(spec["scan_backend"])
-    log.info("parity_start gpu=%s scan_backend=%s", gpu_name, scan_backend)
-
-    import mlflow
-
-    mlflow.set_experiment(str(spec["mlflow_experiment"]))
-    with mlflow.start_run(run_name=str(spec.get("mlflow_run_name", "parity"))):
-        mlflow.set_tags(
-            {
-                "task": "running_parity",
-                "mix": str(spec["mix"]),
-                "gpu": gpu_name,
-                "dtype": str(spec["dtype"]),
-            }
-        )
-        mlflow.log_params(
-            {
-                "seq_len": spec["seq_len"],
-                "eval_seq_len": spec["eval_seq_len"],
-                "batch": spec["batch"],
-                "d_h": spec["d_h"],
-                "num_layers": spec["num_layers"],
-                "steps": spec["steps"],
-                "newton_iters": spec["newton_iters"],
-                "lr": spec["lr"],
-                "weight_decay": spec["weight_decay"],
-                "scan_backend": scan_backend,
-                "seed": spec["seed"],
-                "git": git_commit(),
-                "uv_lock": lock_hash(),
-                "uv_export": uv_export_hash(),
-            }
-        )
-        mlflow.log_artifact(str(args.config))
-        mlflow.log_text(str(spec.get("why", "")).strip() + "\n", "why.txt")
-
-        curves: dict[str, dict] = {}
-        lrs = [float(spec["lr"]), *[float(x) for x in spec.get("lr_fallback", [])]]
-        for arm in spec["arms"]:
-            used: dict | None = None
-            used_lr = lrs[0]
-            for lr in lrs:
-                row = _train_arm(spec, device, arm=arm, lr=lr)
-                used = row
-                used_lr = lr
-                if row["eval_tok"] > 0.6:
-                    break
-                if lr == lrs[-1]:
-                    log.warning(
-                        "arm=%s lr=%s eval_tok=%.3f last=%.3f still near chance",
-                        arm,
-                        lr,
-                        row["eval_tok"],
-                        row["eval_last"],
-                    )
-                    break
-                log.warning(
-                    "arm=%s lr=%s eval_tok=%.3f last=%.3f still near chance; trying fallback",
-                    arm,
-                    lr,
-                    row["eval_tok"],
-                    row["eval_last"],
-                )
-            assert used is not None
-            mlflow.log_param(f"{arm}_lr_used", used_lr)
-            mlflow.log_param(f"{arm}_n_params", used["n_params"])
-            mlflow.log_metric(f"{arm}/loss0", used["loss0"])
-            mlflow.log_metric(f"{arm}/loss_final", used["loss_final"])
-            mlflow.log_metric(f"{arm}/eval_tok", used["eval_tok"])
-            mlflow.log_metric(f"{arm}/eval_exact", used["eval_exact"])
-            mlflow.log_metric(f"{arm}/eval_t0", used["eval_t0"])
-            mlflow.log_metric(f"{arm}/eval_last", used["eval_last"])
-            mlflow.log_metric(f"{arm}/long_tok", used["long_tok"])
-            mlflow.log_metric(f"{arm}/long_exact", used["long_exact"])
-            mlflow.log_metric(f"{arm}/long_last", used["long_last"])
-            for i, (ce, acc) in enumerate(zip(used["losses"], used["token_acc"], strict=True)):
-                if i % 10 == 0 or i + 1 == len(used["losses"]):
-                    mlflow.log_metric(f"{arm}/loss", ce, step=i)
-                    mlflow.log_metric(f"{arm}/train_tok", acc, step=i)
-            for s, el, ll in zip(
-                used["curve_steps"],
-                used["eval_last_hist"],
-                used["long_last_hist"],
-                strict=True,
-            ):
-                mlflow.log_metric(f"{arm}/eval_last_t16", el, step=s)
-                mlflow.log_metric(f"{arm}/eval_last_t32", ll, step=s)
-            curves[arm] = {
-                "steps": used["curve_steps"],
-                "eval_last_t16": used["eval_last_hist"],
-                "eval_last_t32": used["long_last_hist"],
-                "n_params": used["n_params"],
-                "eval_last": used["eval_last"],
-                "long_last": used["long_last"],
-                "loss0": used["loss0"],
-                "loss_final": used["loss_final"],
-            }
-            log.info(
-                "arm=%s done eval_tok=%.3f t0=%.3f last=%.3f exact=%.3f "
-                "long_tok=%.3f long_last=%.3f long_exact=%.3f",
-                arm,
-                used["eval_tok"],
-                used["eval_t0"],
-                used["eval_last"],
-                used["eval_exact"],
-                used["long_tok"],
-                used["long_last"],
-                used["long_exact"],
-            )
-        curve_path = ROOT / "docs" / "internal" / "paper" / "data" / "parity_curves.json"
-        curve_path.parent.mkdir(parents=True, exist_ok=True)
-        curve_path.write_text(
-            json.dumps({"gpu": torch.cuda.get_device_name(device), "arms": curves}, indent=2) + "\n"
-        )
-        mlflow.log_artifact(str(curve_path))
-        log.info("wrote last-token curves %s", curve_path)
-
-
 if __name__ == "__main__":
-    main()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    assert device.type == "cuda", "parity smoke expects a CUDA GPU"
+    print(f"parity start: {torch.cuda.get_device_name(device)} lr={LR}")
+
+    curves: dict[str, dict] = {}
+    for arm in ARMS:
+        used = _train_arm(device, arm)
+        if used["eval_tok"] <= 0.6:
+            print(
+                f"warning: arm={arm} eval_tok={used['eval_tok']:.3f} "
+                f"last={used['eval_last']:.3f} still near chance"
+            )
+        curves[arm] = {
+            "steps": used["curve_steps"],
+            "eval_last_t16": used["eval_last_hist"],
+            "eval_last_t32": used["long_last_hist"],
+            "n_params": used["n_params"],
+            "eval_last": used["eval_last"],
+            "long_last": used["long_last"],
+            "loss0": used["loss0"],
+            "loss_final": used["loss_final"],
+            "lr_used": LR,
+        }
+        print(
+            f"arm={arm} done eval_tok={used['eval_tok']:.3f} "
+            f"last={used['eval_last']:.3f} long_last={used['long_last']:.3f}"
+        )
+
+    curve_path = "parity_curves.json"
+    with open(curve_path, "w", encoding="utf-8") as f:
+        json.dump({"gpu": torch.cuda.get_device_name(device), "arms": curves}, f, indent=2)
+        f.write("\n")
+    print(f"wrote {curve_path}")

@@ -1,0 +1,49 @@
+# ParaSLSTM mix='diag' fused Newton with Picard warm-start vs sequential.
+# Same shapes as newton_fused.yaml / newton_slstm.yaml (B=8, d_h=256, K=3).
+# newton_slstm.yaml timed a diverged P=0 Newton; this config is the matching one.
+#
+# Auto Picard from T (slstm_auto_picard): P=1 at T≤64, P=3 at T≤2048, P=5
+# after that. Isolated seed 0, d_h=256, x_scale=1, K=3, T=2048 ~5e-4
+# (docs/para-slstm.md). Fallback: raise P, not K and not chunk_len.
+# agree_tol=2e-3: T=4096 P=5 band (flashrnn_long.yaml); T≤2048 still ~1e-4.
+#
+# Protocol: 10 warmup / 50 runs — smoke, not App. B.
+# require_agreement: true — fail if auto-P Newton does not match sequential.
+# GPU: 2080 Ti by name. MLflow newton-slstm-bench.
+
+newton_iters: 3
+# Auto P: 1 at T≤64, 3 at T≤2048, 5 at T=4096 (slstm_auto_picard / para-slstm.md).
+# T=128 sits on the first P=3 octave; T=4096 is the first P=5 rung
+# (newton_slstm_flashrnn_long.yaml). Pinned P=3 at T=4096 overshoots some draws.
+coords: native
+batch: 8
+d_in: 256
+d_h: 256
+dtype: float32
+x_scale: 1.0
+warmup: 10
+n_runs: 50
+# Power-of-two grid including T=128 (gap 64→256 hid the P=1→3 step) and T=4096
+# (first auto-P=5 length; fused cap 16384). Same T as Fig. 3 / Table 2.
+seq_lens: [64, 128, 256, 512, 1024, 2048, 4096]
+seq_lens_sequential_max: 4096
+sequential_compile_mode: reduce-overhead
+modes: [sequential_eager, sequential_compiled, newton, newton_fused]
+newton_max_t:
+  ParaSLSTM: 4096
+cells:
+  - name: ParaSLSTM
+    mix: diag
+require_agreement: true
+# T≤2048 lands ~1e-4 (para-slstm.md). T=4096 P=5 agrees at 2e-3
+# (newton_slstm_flashrnn_long.yaml); one tol for the grid.
+agree_tol: 2.0e-3
+mlflow_experiment: newton-slstm-bench
+mlflow_run_name: slstm-picard-multiseed
+csv: outputs/multiseed/picard_seed{seed}.csv
+why: >
+  ParaSLSTM mix=diag on 2080 Ti. Auto Picard then native Newton K=3
+  (O(log T), not chunk_len). Sequential-matched at d_h=256; do not quote
+  newton_slstm.yaml 30 ms (that Newton diverged). Fused is mix=diag only.
+  Protocol 10/50 smoke. Grid T=64…4096 (T=128, T=4096 for Table 2 / Fig. 3).
+  FlashRNN is newton_slstm_flashrnn.yaml. Not TinyStories.

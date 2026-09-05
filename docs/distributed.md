@@ -20,9 +20,8 @@ Smoke (two visible GPUs):
 
 ```bash
 CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0,1 \
-  uv run torchrun --nproc_per_node=2 examples/ddp_fsdp.py
-
-uv run torchrun --nproc_per_node=2 examples/ddp_fsdp.py --strategy fsdp
+uv run torchrun --nproc_per_node=2 examples/ddp_fsdp.py
+# FSDP2: set STRATEGY = "fsdp" at the top of the script.
 ```
 
 `nproc_per_node` is the number of **visible** devices. On this box nvidia-smi

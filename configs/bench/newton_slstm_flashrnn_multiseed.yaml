@@ -1,0 +1,40 @@
+# ParaSLSTM fused Newton (auto Picard) vs NX-AI FlashRNN sequential sLSTM.
+# CUDA_HOME: pip nvidia-cuda-runtime if unset (no system toolkit on this box).
+# cuda_fused needs CC 8.0; 2080 Ti is 7.5 → backend=triton_fused, heads 8×32
+# (D=64 exceeds Turing 64 KiB smem). Not the same mixing as mix='diag'.
+#
+# Protocol: 10 warmup / 50 runs — smoke, not App. B.
+# GPU: 2080 Ti by name. MLflow newton-slstm-bench.
+
+newton_iters: 3
+# library auto P from T (1 if T≤64, 3 if T≤2048, else 5).
+batch: 8
+d_in: 256
+d_h: 256
+dtype: float32
+x_scale: 1.0
+warmup: 10
+n_runs: 50
+# Same T as newton_slstm_picard.yaml so Table 2 and Fig. 3 share one grid.
+seq_lens: [64, 128, 256, 512, 1024, 2048, 4096]
+seq_lens_sequential_max: 4096
+sequential_compile_mode: reduce-overhead
+modes: [newton_fused, flashrnn]
+newton_max_t:
+  ParaSLSTM: 4096
+cells:
+  - name: ParaSLSTM
+    mix: diag
+require_agreement: true
+# Matches newton_slstm_picard.yaml: T=4096 P=5 band is 2e-3
+# (newton_slstm_flashrnn_long.yaml). T≤2048 still ~1e-4.
+agree_tol: 2.0e-3
+mlflow_experiment: newton-slstm-bench
+mlflow_run_name: slstm-flashrnn-multiseed
+csv: outputs/multiseed/flashrnn_seed{seed}.csv
+why: >
+  Honest sequential competitor is NX-AI FlashRNN sLSTM, not compiled PyTorch
+  unroll. cuda_fused is Ampere+ (CC 8.0). On Turing: CUDA_HOME from the
+  pip cuda_runtime wheel, backend=triton_fused, 8 heads × 32 (not diag).
+  Protocol 10/50. Grid T=64…4096 with T=128 and T=4096 so Table 2 has no
+  dashes where Fig. 3 plots FlashRNN. T>4096 is newton_slstm_flashrnn_long.yaml.
