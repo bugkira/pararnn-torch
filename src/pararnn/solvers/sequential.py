@@ -96,7 +96,7 @@ def sequential_apply_compiled(
 ) -> Tensor:
     """Same unroll with ``torch.compile`` on ``cell.step``.
 
-    Honest sequential baseline (bottlenecks.md #12). ``cell.step`` shapes are
+    Honest sequential baseline (IDEAS.md kernel changelog #12). ``cell.step`` shapes are
     static across time, so ``reduce-overhead`` can CUDA-graph the cell.
     Mode: PyTorch 2 compile tutorial (graphs for repeated small ops).
     """

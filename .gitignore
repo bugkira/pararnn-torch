@@ -54,5 +54,5 @@ docs/internal/
 .env.*
 
 # lab IMU smoke (local only; not a public example)
-examples/imu_longseq_smoke.py
+scripts/imu_longseq_smoke.py
 configs/train/imu_*.yaml

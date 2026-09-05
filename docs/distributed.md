@@ -1,4 +1,4 @@
-# Data parallel (DDP / FSDP) and tensor parallel
+# Data parallel (DDP / FSDP) and tensor / context parallel
 
 `ParaRNN` is an `nn.Module`. After `init_process_group`, wrap it or a parent
 that contains it:
@@ -16,7 +16,7 @@ model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 # fully_shard(model, mesh=init_device_mesh("cuda", (world_size,)))
 ```
 
-Smoke:
+Smoke (two visible GPUs):
 
 ```bash
 CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0,1 \
@@ -83,16 +83,11 @@ y = block(x)  # (B, T, 32), one AllReduce
 `d_h` must divide the tensor-parallel size. Factory kinds: `gru`, `lstm`,
 `slstm` (`mix='diag'`).
 
-Smoke:
-
-```bash
-CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0,1 \
-  uv run torchrun --nproc_per_node=2 examples/tensor_parallel.py
-```
-
 CPU gloo: sharded Newton + row-parallel grads match a full `Linear(d_h, d_out)`
 (`tests/numerics/test_tp_allreduce.py`). CUDA: both ranks hold the same
 AllReduced `y`.
+
+## Context parallel (time shard)
 
 Sequence-parallel scan over NCCL splits **time** (`scan_diag_context_parallel`
 in `pararnn.solvers.seq_parallel`). Each rank holds `T/N` steps, scans
@@ -114,15 +109,12 @@ start, end = time_shard_bounds(T, rank, world)
 delta_local = scan_diag_context_parallel(jac[:, start:end], residual[:, start:end])
 ```
 
-Smoke:
-
-```bash
-CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0,1 \
-  uv run torchrun --nproc_per_node=2 examples/context_parallel.py
-```
-
 CPU gloo: each rank's tile matches `scan_diag` of the full system, including
 remainder `T=17`. Rank 1 `max_abs` is the carry path (`<1e-4`). Local-tile
 `grad_jac` / `grad_residual` match a full eager scan. Newton forward and
 eq. 2.6 grads match `scan_backend="eager"`. CUDA NCCL: concat of the two
 eager tiles matches CPU `scan_diag` (`tests/numerics/test_context_parallel.py`).
+
+Two-card torchrun demos for TP / CP / paged pool lived in
+`examples/` and are archived on branch `archive/distributed-demos`.
+API and numerics tests above stay on `main`.

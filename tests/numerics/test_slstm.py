@@ -1084,7 +1084,7 @@ def test_slstm_picard_adapt_climbs_on_far_guess():
 
     Init-scale table in para-slstm.md: T=256 K=3 without enough Picard is
     outside the sequential basin. Explicit P=1 + picard_adapt=True is the
-    train-diag path (docs/internal/next.md). Fallback if this seed snaps at P=1:
+    train-diag path (docs/internal/IDEAS.md, Picard). Fallback if this seed snaps at P=1:
     the assert on seq err still holds.
     """
     torch.manual_seed(0)

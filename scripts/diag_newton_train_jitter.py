@@ -15,7 +15,7 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from examples.dyck_language import VOCAB, sample_dyck1
-from examples.slstm_vs_flashrnn import _NewtonDyckLM
+from scripts.slstm_vs_flashrnn import _NewtonDyckLM
 from pararnn import NewtonConfig
 from pararnn.layout import SLSTM_HIDDEN
 from pararnn.solvers import NewtonStats, sequential_apply

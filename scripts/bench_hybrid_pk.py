@@ -7,7 +7,7 @@ the same sLSTM (para-slstm.md). K=1 is the DEER hook: one Newton if the guess
 is in the quadratic basin (Lim et al. 2024). Library contract stays P from T
 and K=3; this script only measures.
 
-Phase 1: P ∈ {0,1,3,5} × K ∈ {0,1,3}. P rungs: slstm_auto_picard / next.md.
+Phase 1: P ∈ {0,1,3,5} × K ∈ {0,1,3}. P rungs: slstm_auto_picard / IDEAS.md Picard.
 K=0 is the guess vs sequential (predictor quality). K=3 is App. A / library.
 Shapes: Dyck smoke (B=32 T=64 d_h=32) and fused table (B=8 d_h=256,
 x_scale=1, T∈{64,256,1024,2048}). Protocol 10/50 smoke, not App. B.
@@ -38,7 +38,7 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from examples.dyck_language import VOCAB, sample_dyck1
-from examples.slstm_vs_flashrnn import _NewtonDyckLM
+from scripts.slstm_vs_flashrnn import _NewtonDyckLM
 from pararnn import NewtonConfig, ParaSLSTM
 from pararnn.kernels.newton_slstm import newton_slstm_fused
 from pararnn.layout import SLSTM_HIDDEN, prepend_state

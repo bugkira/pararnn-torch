@@ -12,7 +12,7 @@ batch: 32
 # d_head ≤ 64). Not paper 125M.
 d_h: 32
 num_layers: 1
-# pytorch_port.md 50–200; 50 sees CE move on this alphabet (dyck.yaml).
+# 50 steps: enough to see CE move on this alphabet (dyck.yaml).
 steps: 50
 # First steps include Triton compile; exclude from min/mean step_ms.
 warmup_time_steps: 5

@@ -8,6 +8,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 - README citation: Zenodo DOI badge for the ParaSLSTM preprint, ParaRNN ICLR
   2026 badge for the Newton-scan framework, and BibTeX for both.
+- FlashRNN Dyck comparison and IMU long-seq smoke live under `scripts/`
+  (`slstm_vs_flashrnn.py`, `imu_longseq_smoke.py`); examples stay onboarding.
+- Two-card TP / CP / paged-pool demos removed from `examples/` (history on
+  branch `archive/distributed-demos`). API + numerics tests stay;
+  `docs/distributed.md` keeps the architecture.
 
 ### Added
 

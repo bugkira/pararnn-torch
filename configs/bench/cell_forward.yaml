@@ -18,7 +18,7 @@
 # newton_max_t: 2080 Ti is 11 GiB. Do not switch to the 3060. After
 #   elementwise 2×2 + Blelloch, ParaLSTM T=4096 Newton peaked 1.4 GiB
 #   (was OOM). Keep the cap at 4096 with the seq_lens list.
-# sequential_compile_mode: reduce-overhead — bottlenecks.md #12. cell.step
+# sequential_compile_mode: reduce-overhead — IDEAS.md kernel changelog #12. cell.step
 #   shapes are static across t, so CUDA graphs are the honest sequential
 #   baseline (PyTorch 2 compile tutorial). Not the paper's A100 compile of
 #   fused Newton. Fallback: default if graphs fail on this driver.

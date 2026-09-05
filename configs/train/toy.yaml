@@ -12,7 +12,7 @@ batch: 32
 d_h: 32
 # Wrapper smoke. ParaRNN stacking is naive (no residual/LN in the module).
 num_layers: 1
-# pytorch_port.md: 50–200 steps; 100 is the middle of that range.
+# 100 steps: middle of the 50–200 toy range; enough to see CE drop vs step 0.
 steps: 100
 
 # Danieli et al. 2025 App. A: residual to machine precision in 3–4 Newton

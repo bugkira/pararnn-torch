@@ -75,7 +75,7 @@ def main() -> None:
             {
                 "gpu": torch.cuda.get_device_name(device),
                 "dtype": spec["dtype"],
-                "purpose": "bottlenecks.md #1 profile after #2 step-without-J",
+                "purpose": "IDEAS.md profile after step-without-J",
             }
         )
         mlflow.log_params(
@@ -93,7 +93,7 @@ def main() -> None:
         mlflow.log_text(
             "CUPTI profile of sequential vs Newton on 2080 Ti. "
             "Shapes justified in configs/bench/profile_hotpath.yaml. "
-            "step() no longer builds J (bottlenecks.md #2).",
+            "step() no longer builds J (IDEAS.md kernel changelog #12).",
             "why.txt",
         )
 

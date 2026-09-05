@@ -1,12 +1,12 @@
 """Dyck-1 train: ParaSLSTM Newton vs NX-AI FlashRNN.
 
     uv sync --extra flashrnn --group dev
-    uv run python examples/slstm_vs_flashrnn.py --config configs/train/dyck_vs_flashrnn.yaml
-    uv run python examples/slstm_vs_flashrnn.py --config configs/train/dyck_vs_flashrnn_head.yaml
+    uv run python scripts/slstm_vs_flashrnn.py --config configs/train/dyck_vs_flashrnn.yaml
+    uv run python scripts/slstm_vs_flashrnn.py --config configs/train/dyck_vs_flashrnn_head.yaml
 
-FlashRNN is a sequential baseline in this example and ``scripts/``. Turing
-has no ``cuda_fused`` (CC 8.0); this run uses ``triton_fused``. The head
-YAML is an ablation: mix=head, n_heads=1, K=4 (1×32 mixing).
+FlashRNN is a sequential baseline under ``scripts/``. Turing has no
+``cuda_fused`` (CC 8.0); this run uses ``triton_fused``. The head YAML is
+an ablation: mix=head, n_heads=1, K=4 (1×32 mixing).
 """
 
 from __future__ import annotations

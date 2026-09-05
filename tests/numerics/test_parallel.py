@@ -525,7 +525,7 @@ def test_paralstm_newton_fused_bwd_matches_sequential_bptt(
     torch.testing.assert_close(x_s.grad, x_n.grad, atol=5e-4, rtol=1e-4)
 
 
-_FP16_ATOL = 2e-3  # bottlenecks.md: fp16 residual ~1e-3; LSTM a bit looser
+_FP16_ATOL = 2e-3  # IDEAS.md #fp16: residual ~1e-3; LSTM a bit looser
 # Same 4.1× ULP multiple as _FP16_ATOL (fp16 2**-11). bf16 ULP is 2**-8 = 8× coarser.
 # RTX 3060 CC 8.6: worst fused-vs-seq 4.88e-3 (ParaLSTM) → ~3.3× headroom.
 # Fallback: fused vs eager in the same dtype; agreement is dtype resolution, not a kernel bug.

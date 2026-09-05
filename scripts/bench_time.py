@@ -61,7 +61,7 @@ def _torch_dtype(name: str) -> torch.dtype:
 def _agree_tol(dtype: torch.dtype, spec: dict) -> float:
     if "agree_tol" in spec:
         return float(spec["agree_tol"])
-    # fp16 vs sequential fp16: residual ~1e-3 (docs/bottlenecks.md). Not 1e-4 vs fp32.
+    # fp16 vs sequential fp16: residual ~1e-3 (docs/internal/IDEAS.md #fp16). Not 1e-4 vs fp32.
     return 2e-3 if dtype in (torch.float16, torch.bfloat16) else 1e-4
 
 
