@@ -19,6 +19,7 @@ from torch import Tensor, nn
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
 from pararnn.cells.para_slstm import ParaSLSTM
+from pararnn.determinism import maybe_check_packed_vjp_once
 
 
 def cell_vjp(
@@ -30,6 +31,20 @@ def cell_vjp(
     packed: bool,
 ) -> tuple[Tensor | None, tuple[Tensor | None, ...]]:
     """``(∇_x L, per-parameter grads)`` aligned with ``cell.parameters()``."""
+    maybe_check_packed_vjp_once(
+        cell, h_prev, x, mu, packed=packed, vjp_fn=_cell_vjp_body
+    )
+    return _cell_vjp_body(cell, h_prev, x, mu, packed=packed)
+
+
+def _cell_vjp_body(
+    cell: nn.Module,
+    h_prev: Tensor,
+    x: Tensor,
+    mu: Tensor,
+    *,
+    packed: bool,
+) -> tuple[Tensor | None, tuple[Tensor | None, ...]]:
     if packed and isinstance(cell, ParaGRU):
         return _gru_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaLSTM):

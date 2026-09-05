@@ -31,6 +31,9 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - vLLM out-of-tree plugin: `vllm.general_plugins` entry
   `pararnn_paraslstm` → `ModelRegistry.register_model("ParaSLSTMForCausalLM", …)`
   (lazy string). Optional extra `vllm`.
+- `pararnn.determinism`: under `torch.use_deterministic_algorithms(True)`, one-shot
+  warnings for missing `CUBLAS_WORKSPACE_CONFIG` and packed eq. 2.6 param-grad
+  drift; wired from `cell_vjp` (`tests/numerics/test_vjp_determinism.py`).
 
 ### Changed
 

@@ -155,6 +155,7 @@ h = sequential_apply(cell, x)
 - **`torch.compile`:** with the compile-safe preset (fixed K, no residual host sync), `newton_apply` traces as a single graph (`fullgraph=True`) on eager and fused paths. Fused Alg. 1 kernels are `pararnn::newton_*_fused` custom ops with `register_fake` (`tests/numerics/test_compile.py`, `kernels/custom_ops.py`). Eq. 2.6 stays on the module-level `Autograd.Function` (fused ops do not carry `W_x`).
 - **Precision / AMP:** put the module and `x` in fp16/bf16/fp32 explicitly. Under outer `torch.autocast`, Newton opts out and stays in the tensor dtype so the eq. 2.6 VJP keeps one dtype (`tests/numerics/test_autocast.py`).
 - **DDP / FSDP / checkpoint:** wrap `ParaRNN` with DDP or FSDP2 (`docs/distributed.md`, `examples/ddp_fsdp.py`). Non-reentrant `torch.utils.checkpoint` and `state_dict` round-trip: `tests/numerics/test_checkpoint.py`. For ultra-long train \(T\), `NewtonConfig(recompute=True)` rematerializes \(H^\star\) in the eq. 2.6 backward (`tests/numerics/test_recompute.py`).
+- **Deterministic algorithms:** packed eq. 2.6 VJP (diag GRU/LSTM/sLSTM) reduces with tile `tl.sum` then `.sum` — no Triton atomics; parameter grads bit-match across identical calls (`tests/numerics/test_vjp_determinism.py`). With `torch.use_deterministic_algorithms(True)`, set `CUBLAS_WORKSPACE_CONFIG=:4096:8` for cuBLAS GEMMs (`W_x` / `∇x`); the first packed `cell_vjp` under that flag re-checks param grads once and logs a single warning if they drift (`pararnn.determinism`).
 
 ## Method
 
