@@ -4,13 +4,20 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Changed
+
+- README citation: Zenodo DOI badge for the ParaSLSTM preprint, ParaRNN ICLR
+  2026 badge for the Newton-scan framework, and BibTeX for both.
+
 ### Added
 
 - `PagedStatePool` / `paged_apply`: O(1) GPU slot per request (sLSTM
   `(c,n,m,h)`, LSTM `(c,h)`, GRU `h`). Host free-list, `index_select` /
-  `index_copy_`, mixed packed prefill+decode via `cu_seqlens`. T=1 sequential
-  CUDA writes slots in-kernel through `block_table`. CPU↔GPU page swap is a
-  later pass (`examples/paged_cache.py`).
+  `index_copy_`, mixed packed prefill+decode via `cu_seqlens`. Sequential
+  CUDA writes slots in-kernel through `block_table` for every T. Fused Newton
+  loads pool `h0` via the same ids (`newton_apply(..., block_table=)`). `offload` /
+  `reload` copy a slot to pinned host RAM and back (`host_capacity` defaults to
+  GPU `capacity`; `examples/paged_cache.py`).
 - `decode_step`: T=1 Triton kernel for the recurrent step (gates + mix in one
   SRAM trip). `decode_wx` fills `W_x(x)` into a buffer. `out=` reuses storage;
   `block_table` indexes a pool `(C, …)`. App. C.1 clip is in-kernel so a CUDA

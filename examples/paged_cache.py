@@ -4,7 +4,9 @@
 
 State is O(1) per request. Continuous batching still needs a GPU pool:
 allocate a slot, prefill (Newton or sequential), decode T=1 from that
-slot, free when the request ends. Capacity 8 is a toy max-num-seqs, not
+slot, free when the request ends. A paused request can ``offload`` to
+pinned host RAM (``host_capacity`` defaults to ``capacity``: one GPU batch
+parked while another is resident). Capacity 8 is a toy max-num-seqs, not
 a production bound. Local smoke: no MLflow.
 """
 
@@ -41,9 +43,7 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     gpu = torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu"
     torch.manual_seed(0)
-    cfg = NewtonConfig(
-        max_iters=_NEWTON_ITERS, residual_atol=None, residual_fail=None
-    )
+    cfg = NewtonConfig(max_iters=_NEWTON_ITERS, residual_atol=None, residual_fail=None)
     model = ParaRNN(ParaSLSTM(_DIM, _DIM, mix="diag"), config=cfg).to(device)
     pool = PagedStatePool(model, _CAPACITY)
     assert pool.buffers[0].shape == (_CAPACITY, 4, _DIM)
@@ -80,7 +80,23 @@ def main() -> None:
     st = pool.gather(d)
     if not torch.equal(st, torch.zeros_like(st)):
         raise SystemExit("reused slot was not zeroed")
-    log.info("ok sLSTM cache shape=%s", tuple(pool.buffers[0].shape))
+
+    # Park A on the host, fill the GPU slot, then bring A back and decode.
+    host_a = pool.offload(a)
+    log.info(
+        "offload A host_used=%s gpu_free=%s",
+        pool.host_allocator.n_used,
+        pool.allocator.n_free,
+    )
+    _ = pool.allocate(1)
+    a = pool.reload(host_a)
+    x_a2 = torch.randn(1, 1, _DIM, device=device)
+    paged_apply(pool, a, x_a2, solver="sequential")
+    log.info(
+        "ok sLSTM cache shape=%s host_free=%s",
+        tuple(pool.buffers[0].shape),
+        pool.host_allocator.n_free,
+    )
 
 
 if __name__ == "__main__":

@@ -44,3 +44,13 @@ def test_dense_head_forward_cpu():
 def test_weight_tying():
     model = BabyLMModel(_tiny_spec(), cell_type="diag_seq")
     assert model.lm_head.weight.data_ptr() == model.embed.weight.data_ptr()
+
+
+def test_rnn_io_at_last_layer():
+    model = BabyLMModel(_tiny_spec(num_layers=2), cell_type="dense")
+    tokens = torch.randint(0, 64, (2, 8))
+    x_in, hidden = model.rnn_io_at_layer(tokens, layer=1)
+    assert x_in.shape == (2, 8, 32)
+    assert hidden.shape == (2, 8, 32)
+    assert torch.isfinite(x_in).all()
+    assert torch.isfinite(hidden).all()

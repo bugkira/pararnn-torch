@@ -13,6 +13,7 @@ import triton.language as tl
 from torch import Tensor
 
 from pararnn.kernels._fused_common import (
+    _bt_row,
     _load_state,
     _store_state,
     _tanh,
@@ -20,7 +21,7 @@ from pararnn.kernels._fused_common import (
     fp32_omega_add,
     log_fused_done,
     log_fused_iter,
-    prepare_h0,
+    prepare_h0_block_table,
     time_tiles,
 )
 from pararnn.kernels._scan_common import incl_block_aggregates
@@ -122,10 +123,12 @@ def _lstm_init_kernel(
     stride_h0b,
     stride_h0s,
     stride_h0d,
+    bt_ptr,
     SLOT_C: tl.constexpr,
     SLOT_H: tl.constexpr,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    HAS_BT: tl.constexpr,
 ):
     """App. A: only t=0 sees ``h0``; later t still ``f(0, x_t)``."""
     pid_b = tl.program_id(0)
@@ -143,13 +146,14 @@ def _lstm_init_kernel(
     a_o = load_acc(ao_ptr + offs_d, dmask, 0.0)
     peephole_f = load_acc(cf_ptr + offs_d, dmask, 0.0)
     peephole_o = load_acc(co_ptr + offs_d, dmask, 0.0)
+    row = _bt_row(pid_b, bt_ptr, HAS_BT)
     c0 = load_acc(
-        h0_ptr + pid_b * stride_h0b + SLOT_C * stride_h0s + offs_d * stride_h0d,
+        h0_ptr + row * stride_h0b + SLOT_C * stride_h0s + offs_d * stride_h0d,
         dmask,
         0.0,
     )
     h0 = load_acc(
-        h0_ptr + pid_b * stride_h0b + SLOT_H * stride_h0s + offs_d * stride_h0d,
+        h0_ptr + row * stride_h0b + SLOT_H * stride_h0s + offs_d * stride_h0d,
         dmask,
         0.0,
     )
@@ -209,10 +213,12 @@ def _lstm_cell_local_scan_kernel(
     stride_arc,
     stride_ars,
     stride_ard,
+    bt_ptr,
     SLOT_C: tl.constexpr,
     SLOT_H: tl.constexpr,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    HAS_BT: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -256,13 +262,14 @@ def _lstm_cell_local_scan_kernel(
         stride_ss,
         stride_sd,
     )
+    row = _bt_row(pid_b, bt_ptr, HAS_BT)
     c0 = load_acc(
-        h0_ptr + pid_b * stride_h0b + SLOT_C * stride_h0s + offs_d * stride_h0d,
+        h0_ptr + row * stride_h0b + SLOT_C * stride_h0s + offs_d * stride_h0d,
         dmask,
         0.0,
     )
     h0 = load_acc(
-        h0_ptr + pid_b * stride_h0b + SLOT_H * stride_h0s + offs_d * stride_h0d,
+        h0_ptr + row * stride_h0b + SLOT_H * stride_h0s + offs_d * stride_h0d,
         dmask,
         0.0,
     )
@@ -649,10 +656,12 @@ def newton_lstm_fused(
     max_iters: int,
     omega: float,
     h0: Tensor | None = None,
+    block_table: Tensor | None = None,
 ) -> Tensor:
     """Alg. 1 for CIFG ParaLSTM. ``wx`` is ``W_x(x)`` with shape ``(B, T, 3 d_h)``.
 
     ``h0`` is paper ``h_0`` (default zeros), shape ``(B, 2, d_h)``.
+    ``block_table`` is ``(B,)`` slot ids into a pool-shaped ``h0``.
     """
     wx = wx.contiguous()
     a_f = a_f.contiguous()
@@ -664,7 +673,7 @@ def newton_lstm_fused(
     d_h = a_f.numel()
     if three_d != 3 * d_h:
         raise ValueError(f"wx last dim {three_d} != 3 * d_h={3 * d_h}")
-    h0 = prepare_h0(wx, h0, (batch, 2, d_h))
+    h0, bt, has_bt = prepare_h0_block_table(wx, h0, batch, (2, d_h), block_table)
     validate_cuda_tensors(wx, a_f, a_z, a_o, c_f, c_o, h0, name="newton_lstm_fused")
     n_chunks, n_dtiles = time_tiles(time, d_h, _BLOCK_T, _BLOCK_D, _CHUNK_PAD, cap=False)
     states = wx.new_empty(batch, time, 2, d_h)
@@ -683,10 +692,12 @@ def newton_lstm_fused(
         *wx.stride(),
         *states.stride(),
         *h0.stride(),
+        bt,
         SLOT_C=LSTM_CELL,
         SLOT_H=LSTM_HIDDEN,
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
+        HAS_BT=has_bt,
     )
     if max_iters <= 0:
         return states
@@ -722,10 +733,12 @@ def newton_lstm_fused(
             *r_loc.stride(),
             *agg_j.stride(),
             *agg_r.stride(),
+            bt,
             SLOT_C=LSTM_CELL,
             SLOT_H=LSTM_HIDDEN,
             BLOCK_T=_BLOCK_T,
             BLOCK_D=_BLOCK_D,
+            HAS_BT=has_bt,
         )
         if states32 is not None and r32 is not None:
             fp32_omega_add(states, r_loc, omega_f, states32, r32)

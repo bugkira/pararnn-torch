@@ -3,8 +3,8 @@
 [![PyPI](https://img.shields.io/pypi/v/pararnn-torch?color=blue)](https://pypi.org/project/pararnn-torch/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/pararnn-torch/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Paper](https://img.shields.io/static/v1?label=Paper&message=2510.21450&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2510.21450)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22302587.svg)](https://doi.org/10.5281/zenodo.22302587)
+[![ParaRNN](https://img.shields.io/static/v1?label=ParaRNN&message=ICLR%202026&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2510.21450)
 
 PyTorch sequence module for parallel *training* of nonlinear RNNs (GRU, LSTM, sLSTM). Decode is the sequential unroll; on CUDA, T=1 uses a Triton step kernel.
 
@@ -109,7 +109,7 @@ h = sequential_apply(cell, x)
 ```
 
 - **Speculative verify:** `verify_linear_draft` — one Newton scan of a K-token draft, first mismatch \(k^\star\), state truncated to \(h_{k^\star}\).
-- **Paged state:** `PagedStatePool` / `paged_apply` — O(1) slot per request, gather/scatter `(c,n,m,h)`, mixed packed prefill+decode. T=1 sequential CUDA writes the pool through `block_table`.
+- **Paged state:** `PagedStatePool` / `paged_apply` — O(1) slot per request, gather/scatter `(c,n,m,h)`, mixed packed prefill+decode. Sequential CUDA and fused Newton index the pool through `block_table`. `offload` / `reload` park a slot on pinned host RAM.
 - **Decode step:** `decode_step` — T=1 Triton recurrent step (gates + mix). `out=` reuses a buffer; `block_table` is slot ids into a pool. `decode_wx` fills `W_x(x)` for CUDA graphs. `can_decode_step` reports whether the kernel will run.
 
 **Details:** output shapes, `mix=`, LSTM layout, scan backends — [`docs/xlstm.md`](docs/xlstm.md#api-notes). Data / tensor parallel — [`docs/distributed.md`](docs/distributed.md). Repo layout — [`docs/structure.md`](docs/structure.md).
@@ -120,10 +120,37 @@ Training imposes \(F(H)_t = h_t - f(h_{t-1}, x_t) = 0\) and Newton-solves it wit
 
 GRU/LSTM warm-start follows App. A: \(h_l^{(0)} = f(0, x_l)\). sLSTM starts from the zero-hidden unroll (running \(m\) and \(n\)). Recurrent weights are clipped elementwise (App. C.1). Channels stay separate inside diagonal / 2×2 / 4×4 cells (eq. 3.3). Backward uses paper eq. 2.6 (one reverse scan).
 
+## Citation
+
+If you use this library, please cite the ParaSLSTM preprint and the ParaRNN framework.
+
+```bibtex
+@misc{sereda2026paraslstm,
+  author       = {Sereda, Daniil},
+  title        = {{ParaSLSTM}: Work-Efficient Parallel Training of Nonlinear {sLSTM} via Tropical Warm-Starts},
+  month        = sep,
+  year         = 2026,
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.22302587},
+  url          = {https://doi.org/10.5281/zenodo.22302587}
+}
+
+@inproceedings{danieli2026pararnn,
+  title        = {{ParaRNN}: Unlocking Parallel Training of Nonlinear {RNNs} for Large Language Models},
+  author       = {Danieli, Federico and Rodr{\'i}guez, Pau and Sarabia, Miguel and Suau, Xavier and Zappella, Luca},
+  booktitle    = {International Conference on Learning Representations},
+  year         = {2026},
+  note         = {Oral. arXiv:2510.21450},
+  url          = {https://arxiv.org/abs/2510.21450}
+}
+```
+
+When an arXiv identifier is assigned, the Zenodo badge and `@misc` entry above will point to that preprint; the Zenodo DOI keeps the deposit timestamp.
+
 ## References
 
-- Danieli, Rodríguez, Sarabia, Suau, Zappella. *ParaRNN: Unlocking Parallel Training of Nonlinear RNNs for Large Language Models*. ICLR 2026 (Oral). [arXiv:2510.21450](https://arxiv.org/abs/2510.21450). Official CUDA: [apple/ml-pararnn](https://github.com/apple/ml-pararnn).
-- Sereda. *ParaSLSTM: Work-Efficient Parallel Training of Nonlinear sLSTM via Tropical Warm-Starts*. [doi:10.5281/zenodo.22302587](https://doi.org/10.5281/zenodo.22302587).
+- Danieli, Rodríguez, Sarabia, Suau, Zappella. *ParaRNN*. ICLR 2026 (Oral). [arXiv:2510.21450](https://arxiv.org/abs/2510.21450). Official CUDA: [apple/ml-pararnn](https://github.com/apple/ml-pararnn).
+- Sereda. *ParaSLSTM*. [doi:10.5281/zenodo.22302587](https://doi.org/10.5281/zenodo.22302587).
 - Beck et al. *xLSTM*. [arXiv:2405.04517](https://arxiv.org/abs/2405.04517).
 - Lim et al. *DEER*. ICLR 2024. [arXiv:2309.12252](https://arxiv.org/abs/2309.12252).
 - Merrill et al. *The Illusion of State in State-Space Models*. [arXiv:2404.08819](https://arxiv.org/abs/2404.08819).

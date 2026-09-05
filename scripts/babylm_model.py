@@ -141,6 +141,21 @@ class BabyLMModel(nn.Module):
             out.extend(block.rnn.last_stats)
         return out
 
+    def rnn_io_at_layer(self, tokens: Tensor, layer: int) -> tuple[Tensor, Tensor]:
+        """Post-LN input and RNN hidden at ``layer``. Stem is blocks ``[:layer]``."""
+        n = len(self.blocks)
+        if not 0 <= layer < n:
+            raise IndexError(f"layer={layer} outside [0, {n})")
+        _b, t = tokens.shape
+        pos = torch.arange(t, device=tokens.device)
+        h = self.embed(tokens) + self.pos(pos)
+        for i, block in enumerate(self.blocks):
+            if i == layer:
+                x_in = block.norm_rnn(h)
+                return x_in, block.rnn(x_in)
+            h = block(h)
+        raise RuntimeError("rnn_io_at_layer fell through the stack")
+
 
 def _mix_solver(cell_type: str, n_heads: int) -> tuple[str, str, int | None]:
     if cell_type == "dense":

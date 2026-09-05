@@ -1,7 +1,8 @@
 cff-version: 1.2.0
 title: pararnn-torch
 message: >-
-  If you use this software, please cite both this repository and the ParaRNN paper below.
+  If you use this software, please cite the ParaSLSTM preprint and the
+  ParaRNN paper below.
 type: software
 authors:
   - family-names: Sereda
@@ -9,10 +10,17 @@ authors:
 repository-code: "https://github.com/bugkira/pararnn-torch"
 url: "https://github.com/bugkira/pararnn-torch"
 license: MIT
+doi: 10.5281/zenodo.22302587
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22302587
+    description: ParaSLSTM preprint on Zenodo
 abstract: >-
-  PyTorch implementation of ParaRNN (Danieli et al., ICLR 2026): parallel
-  training of nonlinear RNNs via Newton iterations and an associative scan.
-  Official CUDA kernels: https://github.com/apple/ml-pararnn (custom license).
+  PyTorch sequence module for parallel training of nonlinear RNNs
+  (GRU, LSTM, sLSTM) via Newton iterations and an associative scan.
+  The ParaSLSTM cell is a tropical warm-start plus channelwise 4x4
+  monoid for exponentially gated sLSTM. The Newton-scan framework is
+  Danieli et al., ICLR 2026.
 keywords:
   - rnn
   - lstm
@@ -24,22 +32,37 @@ keywords:
   - pytorch
   - triton
 preferred-citation:
-  type: conference-paper
+  type: generic
   authors:
-    - family-names: Danieli
-      given-names: Federico
-    - family-names: Rodriguez
-      given-names: Pau
-    - family-names: Sarabia
-      given-names: Miguel
-    - family-names: Suau
-      given-names: Xavier
-    - family-names: Zappella
-      given-names: Luca
+    - family-names: Sereda
+      given-names: Daniil
   title: >-
-    ParaRNN: Unlocking Parallel Training of Nonlinear RNNs for Large Language Models
+    ParaSLSTM: Work-Efficient Parallel Training of Nonlinear sLSTM
+    via Tropical Warm-Starts
   year: 2026
-  conference:
-    name: International Conference on Learning Representations
-  url: "https://arxiv.org/abs/2510.21450"
-  doi: 10.48550/arXiv.2510.21450
+  month: 9
+  publisher:
+    name: Zenodo
+  doi: 10.5281/zenodo.22302587
+  url: "https://doi.org/10.5281/zenodo.22302587"
+references:
+  - type: conference-paper
+    authors:
+      - family-names: Danieli
+        given-names: Federico
+      - family-names: Rodriguez
+        given-names: Pau
+      - family-names: Sarabia
+        given-names: Miguel
+      - family-names: Suau
+        given-names: Xavier
+      - family-names: Zappella
+        given-names: Luca
+    title: >-
+      ParaRNN: Unlocking Parallel Training of Nonlinear RNNs for Large
+      Language Models
+    year: 2026
+    conference:
+      name: International Conference on Learning Representations
+    url: "https://arxiv.org/abs/2510.21450"
+    doi: 10.48550/arXiv.2510.21450

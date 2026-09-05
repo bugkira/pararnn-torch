@@ -20,6 +20,13 @@ def _tanh(x):
 
 
 @triton.jit
+def _bt_row(pid, bt_ptr, HAS_BT: tl.constexpr):
+    if HAS_BT:
+        return tl.load(bt_ptr + pid)
+    return pid
+
+
+@triton.jit
 def is_seg_head(offs_t, cs_ptr, n_seq):
     """True where ``offs_t`` equals a packed start (``cu_seqlens[:-1]``)."""
     head = (offs_t * 0) != 0
@@ -38,14 +45,20 @@ def gather_h0_heads(
     n_seq,
     stride_h0b,
     stride_h0d,
+    bt_ptr,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    HAS_BT: tl.constexpr,
 ):
-    """``h0[s]`` at packed heads, zeros elsewhere. Shape ``(BLOCK_T, BLOCK_D)``."""
+    """``h0[s]`` at packed heads, zeros elsewhere. Shape ``(BLOCK_T, BLOCK_D)``.
+
+    ``HAS_BT``: packed sequence ``s`` reads pool row ``block_table[s]``.
+    """
     acc = tl.zeros((BLOCK_T, BLOCK_D), dtype=tl.float32)
     for s in range(n_seq):
         start = tl.load(cs_ptr + s)
-        h0s = load_acc(h0_ptr + s * stride_h0b + offs_d * stride_h0d, dmask, 0.0)
+        row = _bt_row(s, bt_ptr, HAS_BT)
+        h0s = load_acc(h0_ptr + row * stride_h0b + offs_d * stride_h0d, dmask, 0.0)
         acc = tl.where((offs_t == start)[:, None], h0s[None, :], acc)
     return acc
 
@@ -69,9 +82,10 @@ def _store_state(s_ptr, val, pid_b, offs_t, offs_d, slot, mask, sb, st, ss, sd):
 
 
 @triton.jit
-def _load_h0(h0_ptr, pid_b, offs_d, slot, dmask, sb, ss, sd):
+def _load_h0(h0_ptr, pid_b, offs_d, slot, dmask, sb, ss, sd, bt_ptr, HAS_BT: tl.constexpr):
+    row = _bt_row(pid_b, bt_ptr, HAS_BT)
     return load_acc(
-        h0_ptr + pid_b * sb + slot * ss + offs_d * sd,
+        h0_ptr + row * sb + slot * ss + offs_d * sd,
         dmask,
         0.0,
     )
@@ -86,6 +100,42 @@ def prepare_h0(wx: Tensor, h0: Tensor | None, shape: tuple[int, ...]) -> Tensor:
     if h0.dtype != wx.dtype:
         h0 = h0.to(dtype=wx.dtype)
     return h0
+
+
+def prepare_h0_block_table(
+    wx: Tensor,
+    h0: Tensor | None,
+    dense_batch: int,
+    tail: tuple[int, ...],
+    block_table: Tensor | None,
+) -> tuple[Tensor, Tensor, bool]:
+    """Dense ``h0`` of batch ``dense_batch``, or a pool plus ``(dense_batch,)`` ids.
+
+    Returns ``(h0, bt, has_bt)``. When ``has_bt`` is false, ``bt`` is a dummy
+    pointer (``h0``) so Triton still gets a tensor.
+    """
+    if block_table is None:
+        h0 = prepare_h0(wx, h0, (dense_batch, *tail))
+        return h0, h0, False
+    if h0 is None:
+        raise ValueError("block_table needs h0 as a pool (C, …)")
+    bt = block_table.to(device=wx.device, dtype=torch.int32).contiguous()
+    if bt.dim() != 1:
+        raise ValueError(f"block_table must be 1-D (B,), got {tuple(bt.shape)}")
+    if int(bt.numel()) != dense_batch:
+        raise ValueError(f"block_table B={int(bt.numel())} != {dense_batch}")
+    h0 = h0.contiguous()
+    if h0.dtype != wx.dtype:
+        h0 = h0.to(dtype=wx.dtype)
+    if tuple(h0.shape[1:]) != tail:
+        raise ValueError(f"pool h0 tail {tuple(h0.shape[1:])} != {tail}")
+    if int(h0.shape[0]) < 1:
+        raise ValueError("pool h0 is empty")
+    mx = int(bt.max().item()) if bt.numel() else -1
+    mn = int(bt.min().item()) if bt.numel() else 0
+    if mn < 0 or mx >= int(h0.shape[0]):
+        raise ValueError(f"block_table slots [{mn}, {mx}] outside pool capacity {int(h0.shape[0])}")
+    return h0, bt, True
 
 
 def time_tiles(

@@ -81,6 +81,7 @@ def _newton_forward_picard_adapt(
     h0: Tensor | None,
     stats: NewtonStats | None,
     cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
 ) -> Tensor:
     """Re-run Alg. 1 at the next P rung when the guess was outside the basin."""
     from pararnn.solvers.newton import _fill_stats, _newton_solve
@@ -89,7 +90,9 @@ def _newton_forward_picard_adapt(
     while True:
         st = stats if stats is not None else NewtonStats()
         quiet = replace(cfg, residual_fail=None)
-        states = _newton_solve(cell, x, quiet, h0=h0, stats=st, cu_seqlens=cu_seqlens)
+        states = _newton_solve(
+            cell, x, quiet, h0=h0, stats=st, cu_seqlens=cu_seqlens, block_table=block_table
+        )
         res = st.max_residual
         nxt = slstm_picard_next(int(cfg.picard_iters or 0))
         if _picard_retry_needed(res, config) and nxt is not None:
@@ -121,6 +124,7 @@ def _newton_forward_picard_adapt(
                 residual_history=st.residual_history,
                 known_residual=res,
                 cu_seqlens=cu_seqlens,
+                block_table=block_table,
             )
         return states
 

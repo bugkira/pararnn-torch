@@ -27,6 +27,7 @@ def fused_newton(
     fused_time_loop: bool = False,
     fused_window_len: int | None = None,
     cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
 ) -> Tensor:
     if isinstance(cell, ParaGRU):
         if log_coords:
@@ -49,6 +50,7 @@ def fused_newton(
             omega=omega,
             h0=h0,
             cu_seqlens=cu_seqlens,
+            block_table=block_table,
         )
     if isinstance(cell, ParaLSTM):
         if log_coords:
@@ -63,7 +65,16 @@ def fused_newton(
 
         a_f, a_z, a_o, c_f, c_o = cell.clipped_recurrent()
         return newton_lstm_fused(
-            wx, a_f, a_z, a_o, c_f, c_o, max_iters=max_iters, omega=omega, h0=h0
+            wx,
+            a_f,
+            a_z,
+            a_o,
+            c_f,
+            c_o,
+            max_iters=max_iters,
+            omega=omega,
+            h0=h0,
+            block_table=block_table,
         )
     if isinstance(cell, ParaSLSTM):
         if cell.mix != "diag":
@@ -74,10 +85,13 @@ def fused_newton(
             slstm_zero_hidden_init,
         )
 
+        h0_init = h0
+        if block_table is not None and h0 is not None:
+            h0_init = h0.index_select(0, block_table.long())
         if picard_iters:
-            states = slstm_picard_init(cell, wx, h0=h0, n_picard=picard_iters)
+            states = slstm_picard_init(cell, wx, h0=h0_init, n_picard=picard_iters)
         else:
-            states = slstm_zero_hidden_init(wx, eps=cell.eps, h0=h0)
+            states = slstm_zero_hidden_init(wx, eps=cell.eps, h0=h0_init)
         return newton_slstm_fused(
             wx,
             cell.clipped_r(),
@@ -90,6 +104,7 @@ def fused_newton(
             scan_tile=scan_tile,
             time_loop=fused_time_loop,
             window_len=fused_window_len,
+            block_table=block_table,
         )
     raise TypeError(
         f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM(diag) only; got {type(cell).__name__}"

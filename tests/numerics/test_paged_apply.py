@@ -13,6 +13,7 @@ from pararnn import (
     paged_apply,
     sequential_apply,
 )
+from pararnn.layout import SLSTM_HIDDEN
 from pararnn.solvers.newton import newton_apply
 
 _ATOL = 1e-4
@@ -112,3 +113,105 @@ def test_two_layer_pool() -> None:
     g0, g1 = pool.gather(ids)
     torch.testing.assert_close(g0, h0[:, -1], atol=_ATOL, rtol=_RTOL)
     torch.testing.assert_close(g1, h1[:, -1], atol=_ATOL, rtol=_RTOL)
+
+
+def test_offload_reload_decode_matches_dense() -> None:
+    torch.manual_seed(6)
+    d, t_pre, t_dec = 8, 5, 3
+    cfg = NewtonConfig(max_iters=3, residual_atol=None, residual_fail=None)
+    model = ParaRNN(ParaGRU(d, d), config=cfg)
+    x_pre = torch.randn(1, t_pre, d)
+    x_dec = torch.randn(1, t_dec, d)
+    ref = sequential_apply(model.layers[0], torch.cat((x_pre, x_dec), dim=1))
+    pool = PagedStatePool(model, capacity=1)
+    ids = pool.allocate(1)
+    paged_apply(pool, ids, x_pre, solver="sequential")
+    host = pool.offload(ids)
+    ids = pool.reload(host)
+    y_dec = paged_apply(pool, ids, x_dec, solver="sequential")
+    torch.testing.assert_close(y_dec, ref[:, t_pre:], atol=_ATOL, rtol=_RTOL)
+    torch.testing.assert_close(pool.gather(ids), ref[:, -1], atol=_ATOL, rtol=_RTOL)
+
+
+def test_offload_reload_two_layer_slstm() -> None:
+    torch.manual_seed(7)
+    d, b, t = 8, 2, 4
+    cfg = NewtonConfig(max_iters=3, residual_atol=None, residual_fail=None)
+    model = ParaRNN(ParaSLSTM(d, d, mix="diag"), num_layers=2, config=cfg)
+    x = torch.randn(b, t, d)
+    pool = PagedStatePool(model, capacity=4)
+    ids = pool.allocate(b)
+    paged_apply(pool, ids, x, solver="sequential")
+    g0, g1 = pool.gather(ids)
+    saved = (g0.clone(), g1.clone())
+    host = pool.offload(ids)
+    ids = pool.reload(host)
+    h0, h1 = pool.gather(ids)
+    torch.testing.assert_close(h0, saved[0], atol=_ATOL, rtol=_RTOL)
+    torch.testing.assert_close(h1, saved[1], atol=_ATOL, rtol=_RTOL)
+
+
+def test_offload_reload_cuda_t1(cuda_device: torch.device) -> None:
+    torch.manual_seed(8)
+    d, t_pre = 8, 4
+    cfg = NewtonConfig(max_iters=3, residual_atol=None, residual_fail=None)
+    model = ParaRNN(ParaGRU(d, d), config=cfg).to(cuda_device)
+    x_pre = torch.randn(1, t_pre, d, device=cuda_device)
+    x_dec = torch.randn(1, 1, d, device=cuda_device)
+    ref = sequential_apply(model.layers[0], torch.cat((x_pre, x_dec), dim=1))
+    pool = PagedStatePool(model, capacity=2)
+    assert pool.host_buffers[0].is_pinned
+    ids = pool.allocate(1)
+    paged_apply(pool, ids, x_pre, solver="sequential")
+    host = pool.offload(ids)
+    ids = pool.reload(host)
+    y_dec = paged_apply(pool, ids, x_dec, solver="sequential")
+    torch.testing.assert_close(y_dec, ref[:, t_pre:], atol=_ATOL, rtol=_RTOL)
+    torch.testing.assert_close(pool.gather(ids), ref[:, -1], atol=_ATOL, rtol=_RTOL)
+
+
+@torch.no_grad()
+def test_paged_newton_block_table_matches_dense(cuda_device: torch.device) -> None:
+    torch.manual_seed(9)
+    d, b, t = 16, 3, 8
+    cfg = NewtonConfig(max_iters=3, residual_atol=None, residual_fail=None)
+    model = ParaRNN(ParaGRU(d, d), config=cfg).to(cuda_device)
+    x = torch.randn(b, t, d, device=cuda_device)
+    h0 = torch.randn(b, d, device=cuda_device)
+    ref = newton_apply(model.layers[0], x, cfg, h0=h0)
+    pool = PagedStatePool(model, capacity=8)
+    ids = pool.allocate(b)
+    pool.scatter(ids, h0)
+    y = paged_apply(pool, ids, x, solver="newton")
+    torch.testing.assert_close(y, ref, atol=2e-4, rtol=2e-4)
+    torch.testing.assert_close(pool.gather(ids), ref[:, -1], atol=2e-4, rtol=2e-4)
+
+
+@torch.no_grad()
+def test_paged_newton_slstm_block_table(cuda_device: torch.device) -> None:
+    torch.manual_seed(10)
+    d, b, t = 16, 2, 6
+    cfg = NewtonConfig(max_iters=3, residual_atol=None, residual_fail=None)
+    model = ParaRNN(ParaSLSTM(d, d, mix="diag"), config=cfg).to(cuda_device)
+    x = torch.randn(b, t, d, device=cuda_device)
+    ref = newton_apply(model.layers[0], x, cfg)
+    pool = PagedStatePool(model, capacity=6)
+    ids = pool.allocate(b)
+    y = paged_apply(pool, ids, x, solver="newton")
+    torch.testing.assert_close(y, ref[:, :, SLSTM_HIDDEN, :], atol=2e-4, rtol=2e-4)
+    torch.testing.assert_close(pool.gather(ids), ref[:, -1], atol=2e-4, rtol=2e-4)
+
+
+@torch.no_grad()
+def test_paged_sequential_t_gt_1_block_table(cuda_device: torch.device) -> None:
+    torch.manual_seed(11)
+    d, b, t = 16, 3, 5
+    cfg = NewtonConfig(max_iters=3, residual_atol=None, residual_fail=None)
+    model = ParaRNN(ParaGRU(d, d), config=cfg).to(cuda_device)
+    x = torch.randn(b, t, d, device=cuda_device)
+    ref = sequential_apply(model.layers[0], x)
+    pool = PagedStatePool(model, capacity=8)
+    ids = pool.allocate(b)
+    y = paged_apply(pool, ids, x, solver="sequential")
+    torch.testing.assert_close(y, ref, atol=_ATOL, rtol=_RTOL)
+    torch.testing.assert_close(pool.gather(ids), ref[:, -1], atol=_ATOL, rtol=_RTOL)

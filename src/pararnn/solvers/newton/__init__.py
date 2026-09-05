@@ -79,6 +79,7 @@ def newton_apply(
     h0: Tensor | None = None,
     stats: NewtonStats | None = None,
     cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
 ) -> Tensor:
     """Parallel forward: Newton on F(H)=0, inner solve via associative scan.
 
@@ -89,6 +90,9 @@ def newton_apply(
     ParaGRU walks packed heads in-kernel. LSTM/sLSTM ``fused`` falls back to
     Triton scan with ``J=0`` at heads. ``eager`` keeps Hillis–Steele.
 
+    ``block_table`` is ``(B,)`` or ``(S,)`` slot ids: ``h0`` is then a pool
+    ``(C, …)`` and fused kernels load ``h0[block_table[b]]``. Inference only.
+
     If gradients are enabled, the backward is eq. 2.6 (one reverse scan).
     ``chunk_len`` windows that scan as well: each window is a local reverse
     scan, and ``∇_{h0}`` of window ``i+1`` adds into the last step of window
@@ -97,18 +101,29 @@ def newton_apply(
     config = config or NewtonConfig()
     _validate_config(config)
     config = _resolve_backend(cell, x, config)
+    if block_table is not None:
+        if config.chunk_len is not None:
+            raise ValueError("block_table cannot be combined with chunk_len")
+        if config.scan_backend != "fused":
+            raise ValueError("block_table newton needs scan_backend='fused' (or auto on CUDA)")
     cs = None
     if cu_seqlens is not None:
         if config.scan_backend == "fused" and not isinstance(cell, ParaGRU):
+            if block_table is not None:
+                raise ValueError("block_table packed fused is ParaGRU only")
             config = replace(config, scan_backend="triton")
-        cs = _prepare_ragged(x, h0, config, cu_seqlens)
+        cs = _prepare_ragged(x, h0, config, cu_seqlens, block_table=block_table)
     params = tuple(cell.parameters())
     has_h0 = h0 is not None
     needs_grad = torch.is_grad_enabled() and (
         x.requires_grad or (has_h0 and h0.requires_grad) or any(p.requires_grad for p in params)
     )
+    if block_table is not None and needs_grad:
+        raise RuntimeError("block_table newton is inference-only")
     if not needs_grad:
-        return _newton_forward(cell, x, config, h0=h0, stats=stats, cu_seqlens=cs)
+        return _newton_forward(
+            cell, x, config, h0=h0, stats=stats, cu_seqlens=cs, block_table=block_table
+        )
 
     # Nested Autograd.Function.apply takes tensors. cell/config/stats close
     # over this frame; a module-level class storing them is racy under
@@ -176,6 +191,8 @@ def _prepare_ragged(
     h0: Tensor | None,
     config: NewtonConfig,
     cu_seqlens: Tensor,
+    *,
+    block_table: Tensor | None = None,
 ) -> Tensor:
     if x.shape[0] != 1:
         raise ValueError(f"cu_seqlens packs x with batch=1, got batch={x.shape[0]}")
@@ -185,7 +202,7 @@ def _prepare_ragged(
         raise ValueError("fused_time_loop cannot be combined with cu_seqlens")
     cs = validate_cu_seqlens(cu_seqlens, x.shape[1])
     n_seq = int(cs.numel()) - 1
-    if h0 is not None and h0.shape[0] != n_seq:
+    if h0 is not None and block_table is None and h0.shape[0] != n_seq:
         raise ValueError(f"h0 batch {h0.shape[0]} != n_seq {n_seq}")
     if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
         log.debug(
@@ -208,14 +225,23 @@ def _newton_forward(
     h0: Tensor | None = None,
     stats: NewtonStats | None = None,
     cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
 ) -> Tensor:
     if config.chunk_len is not None:
         return _newton_chunked(cell, x, config, h0=h0, stats=stats)
     if config.picard_adapt and isinstance(cell, ParaSLSTM) and not torch.compiler.is_compiling():
         return _newton_forward_picard_adapt(
-            cell, x, config, h0=h0, stats=stats, cu_seqlens=cu_seqlens
+            cell,
+            x,
+            config,
+            h0=h0,
+            stats=stats,
+            cu_seqlens=cu_seqlens,
+            block_table=block_table,
         )
-    return _newton_solve(cell, x, config, h0=h0, stats=stats, cu_seqlens=cu_seqlens)
+    return _newton_solve(
+        cell, x, config, h0=h0, stats=stats, cu_seqlens=cu_seqlens, block_table=block_table
+    )
 
 
 def _newton_solve(
@@ -226,6 +252,7 @@ def _newton_solve(
     h0: Tensor | None = None,
     stats: NewtonStats | None = None,
     cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
 ) -> Tensor:
     if config.chunk_len is not None:
         return _newton_chunked(cell, x, config, h0=h0, stats=stats)
@@ -234,7 +261,9 @@ def _newton_solve(
             "fused_time_loop requires scan_backend='fused' (or auto on CUDA ParaSLSTM)"
         )
     if config.scan_backend == "fused":
-        states = _newton_fused(cell, x, config, h0=h0, cu_seqlens=cu_seqlens)
+        states = _newton_fused(
+            cell, x, config, h0=h0, cu_seqlens=cu_seqlens, block_table=block_table
+        )
         # Fused kernels run exactly max_iters (no residual early-stop).
         _fill_stats(
             cell,
@@ -245,6 +274,7 @@ def _newton_solve(
             iters=config.max_iters,
             stats=stats,
             cu_seqlens=cu_seqlens,
+            block_table=block_table,
         )
         return states
     wx = _wx_if_analytic(cell, x, config.jacobian)
@@ -401,11 +431,15 @@ def _fill_stats(
     residual_history: list[float] | tuple[float, ...] = (),
     known_residual: float | None = None,
     cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
 ) -> None:
     if stats is None and config.residual_fail is None:
         return
+    h0_use = h0
+    if block_table is not None and h0 is not None:
+        h0_use = h0.index_select(0, block_table.to(device=h0.device, dtype=torch.long))
     if known_residual is None:
-        pred = cell.step(_prepend(states, h0, cu_seqlens), x)
+        pred = cell.step(_prepend(states, h0_use, cu_seqlens), x)
         res = float((pred - states).detach().abs().amax())
     else:
         res = known_residual
@@ -452,6 +486,7 @@ def _newton_fused(
     *,
     h0: Tensor | None = None,
     cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
 ) -> Tensor:
     """Alg. 1 with cell+J+scan in Triton. ``W_x(x)`` is still one PyTorch GEMM."""
     wx = _input_affine(cell, x)
@@ -474,6 +509,7 @@ def _newton_fused(
             "scan_tile": config.scan_tile,
             "fused_time_loop": config.fused_time_loop,
             "fused_window_len": window,
+            "block_table": block_table is not None,
         },
     )
     from pararnn.kernels.fused_newton import fused_newton
@@ -490,6 +526,7 @@ def _newton_fused(
         fused_time_loop=config.fused_time_loop,
         fused_window_len=window,
         cu_seqlens=cu_seqlens,
+        block_table=block_table,
     )
 
 

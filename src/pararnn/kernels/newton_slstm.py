@@ -26,7 +26,7 @@ from pararnn.kernels._fused_common import (
     fp32_omega_add,
     log_fused_done,
     log_fused_iter,
-    prepare_h0,
+    prepare_h0_block_table,
     time_tiles,
 )
 from pararnn.kernels._scan_common import (
@@ -1091,12 +1091,14 @@ def _slstm_init_kernel(
     stride_h0b,
     stride_h0s,
     stride_h0d,
+    bt_ptr,
     SLOT_C: tl.constexpr,
     SLOT_N: tl.constexpr,
     SLOT_M: tl.constexpr,
     SLOT_H: tl.constexpr,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    HAS_BT: tl.constexpr,
 ):
     """App. A: only t=0 sees ``h0``; later t still ``f(0, x_t)``."""
     pid_b = tl.program_id(0)
@@ -1115,10 +1117,18 @@ def _slstm_init_kernel(
     r_f = _load_r_gate(r_ptr, 1, offs_d, dmask, stride_rg, stride_rd)
     r_z = _load_r_gate(r_ptr, 2, offs_d, dmask, stride_rg, stride_rd)
     r_o = _load_r_gate(r_ptr, 3, offs_d, dmask, stride_rg, stride_rd)
-    c0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_C, dmask, stride_h0b, stride_h0s, stride_h0d)
-    n0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_N, dmask, stride_h0b, stride_h0s, stride_h0d)
-    m0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_M, dmask, stride_h0b, stride_h0s, stride_h0d)
-    h0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_H, dmask, stride_h0b, stride_h0s, stride_h0d)
+    c0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_C, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
+    n0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_N, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
+    m0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_M, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
+    h0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_H, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
     is_t0 = (offs_t == 0)[:, None]
     c_prev = tl.where(is_t0, c0[None, :], 0.0)
     n_prev = tl.where(is_t0, n0[None, :], 0.0)
@@ -1182,6 +1192,7 @@ def _slstm_cell_local_scan_kernel(
     stride_arc,
     stride_ars,
     stride_ard,
+    bt_ptr,
     SLOT_C: tl.constexpr,
     SLOT_N: tl.constexpr,
     SLOT_M: tl.constexpr,
@@ -1191,6 +1202,7 @@ def _slstm_cell_local_scan_kernel(
     LOG: tl.constexpr,
     SEQ: tl.constexpr,
     THOMAS_C: tl.constexpr,
+    HAS_BT: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -1263,10 +1275,18 @@ def _slstm_cell_local_scan_kernel(
         stride_ss,
         stride_sd,
     )
-    c0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_C, dmask, stride_h0b, stride_h0s, stride_h0d)
-    n0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_N, dmask, stride_h0b, stride_h0s, stride_h0d)
-    m0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_M, dmask, stride_h0b, stride_h0s, stride_h0d)
-    h0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_H, dmask, stride_h0b, stride_h0s, stride_h0d)
+    c0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_C, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
+    n0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_N, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
+    m0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_M, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
+    h0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_H, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
     is_t0 = (offs_t == 0)[:, None]
     c_prev = tl.where(is_t0, c0[None, :], c_prev)
     n_prev = tl.where(is_t0, n0[None, :], n_prev)
@@ -2282,6 +2302,7 @@ def _slstm_window_walk_kernel(
     stride_wd,
     stride_rg,
     stride_rd,
+    bt_ptr,
     SLOT_C: tl.constexpr,
     SLOT_N: tl.constexpr,
     SLOT_M: tl.constexpr,
@@ -2291,6 +2312,7 @@ def _slstm_window_walk_kernel(
     SEQ: tl.constexpr,
     THOMAS_C: tl.constexpr,
     MAX_ITERS: tl.constexpr,
+    HAS_BT: tl.constexpr,
 ):
     """Windowed Newton: sequential ``BLOCK_T`` tiles, solved-state carry in DRAM.
 
@@ -2308,10 +2330,18 @@ def _slstm_window_walk_kernel(
     r_f = _load_r_gate(r_ptr, 1, offs_d, dmask, stride_rg, stride_rd)
     r_z = _load_r_gate(r_ptr, 2, offs_d, dmask, stride_rg, stride_rd)
     r_o = _load_r_gate(r_ptr, 3, offs_d, dmask, stride_rg, stride_rd)
-    c0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_C, dmask, stride_h0b, stride_h0s, stride_h0d)
-    n0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_N, dmask, stride_h0b, stride_h0s, stride_h0d)
-    m0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_M, dmask, stride_h0b, stride_h0s, stride_h0d)
-    h0 = _load_h0(h0_ptr, pid_b, offs_d, SLOT_H, dmask, stride_h0b, stride_h0s, stride_h0d)
+    c0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_C, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
+    n0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_N, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
+    m0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_M, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
+    h0 = _load_h0(
+        h0_ptr, pid_b, offs_d, SLOT_H, dmask, stride_h0b, stride_h0s, stride_h0d, bt_ptr, HAS_BT
+    )
     for pid_c in tl.range(n_tiles):
         t0 = pid_c * BLOCK_T
         offs_t = t0 + tl.arange(0, BLOCK_T)
@@ -2594,6 +2624,8 @@ def _slstm_fused_windows(
     eps: float,
     scan_tile: str,
     window_len: int,
+    bt: Tensor,
+    has_bt: bool,
 ) -> Tensor:
     """In-kernel windowed Newton: ``window_len`` tiles, solved-state DRAM carry.
 
@@ -2642,6 +2674,7 @@ def _slstm_fused_windows(
         *h0.stride(),
         *wx.stride(),
         *r.stride(),
+        bt,
         SLOT_C=SLSTM_CELL,
         SLOT_N=SLSTM_NORMALIZER,
         SLOT_M=SLSTM_STABILIZER,
@@ -2651,6 +2684,7 @@ def _slstm_fused_windows(
         SEQ=seq,
         THOMAS_C=thomas_c,
         MAX_ITERS=max_iters,
+        HAS_BT=has_bt,
     )
     return states
 
@@ -2668,6 +2702,7 @@ def newton_slstm_fused(
     scan_tile: str = "assoc",
     time_loop: bool = False,
     window_len: int | None = None,
+    block_table: Tensor | None = None,
 ) -> Tensor:
     """Alg. 1 for diag-mix ParaSLSTM. ``wx`` is ``W_x(x)`` with shape ``(B, T, 4 d_h)``.
 
@@ -2681,6 +2716,7 @@ def newton_slstm_fused(
     prefers Thomas. ``time_loop``: in-kernel windowed Newton (carry in DRAM).
     ``window_len``: 32, 64 (default), or 128 — Triton scan length per window.
     64 from T=1024 d_h=256 P=3 vs sequential ~2e-4 (this repo); 32 residual_high.
+    ``block_table`` is ``(B,)`` slot ids into a pool-shaped ``h0``.
     """
     from pararnn.solvers.slstm_log import (
         slstm_clamp_log_coords,
@@ -2696,7 +2732,9 @@ def newton_slstm_fused(
         raise ValueError(f"r shape {tuple(r.shape)} != {(4, d_h)}")
     if four_d != 4 * d_h:
         raise ValueError(f"wx last dim {four_d} != 4 * d_h={4 * d_h}")
-    h0 = prepare_h0(wx, h0, (batch, SLSTM_SLOTS, d_h))
+    if log_coords and block_table is not None:
+        raise TypeError("block_table fused sLSTM is native coords only")
+    h0, bt, has_bt = prepare_h0_block_table(wx, h0, batch, (SLSTM_SLOTS, d_h), block_table)
     validate_cuda_tensors(wx, r, h0, name="newton_slstm_fused")
     if states is not None:
         validate_cuda_tensors(wx, states, name="newton_slstm_fused")
@@ -2724,12 +2762,14 @@ def newton_slstm_fused(
             *states.stride(),
             *r.stride(),
             *h0.stride(),
+            bt,
             SLOT_C=SLSTM_CELL,
             SLOT_N=SLSTM_NORMALIZER,
             SLOT_M=SLSTM_STABILIZER,
             SLOT_H=SLSTM_HIDDEN,
             BLOCK_T=_BLOCK_T,
             BLOCK_D=_BLOCK_D,
+            HAS_BT=has_bt,
         )
     else:
         if states.shape != (batch, time, SLSTM_SLOTS, d_h):
@@ -2760,6 +2800,8 @@ def newton_slstm_fused(
             eps=eps,
             scan_tile=scan_tile,
             window_len=int(window_len) if window_len is not None else FUSED_WINDOW_DEFAULT,
+            bt=bt,
+            has_bt=has_bt,
         )
         if work.dtype != wx.dtype:
             return work.to(dtype=wx.dtype)
@@ -2795,6 +2837,7 @@ def newton_slstm_fused(
             *r_loc.stride(),
             *agg_j.stride(),
             *agg_r.stride(),
+            bt,
             SLOT_C=SLSTM_CELL,
             SLOT_N=SLSTM_NORMALIZER,
             SLOT_M=SLSTM_STABILIZER,
@@ -2804,6 +2847,7 @@ def newton_slstm_fused(
             LOG=log_coords,
             SEQ=seq,
             THOMAS_C=thomas_c,
+            HAS_BT=has_bt,
         )
         if states32 is not None and r32 is not None:
             fp32_omega_add(work, r_loc, omega_f, states32, r32)

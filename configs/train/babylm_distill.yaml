@@ -1,0 +1,44 @@
+# Distill one BabyLM dense (head-mix) sLSTM slot into mix='diag'.
+# Teacher: checkpoints/babylm/dense.pt. Student: ParaRNN(ParaSLSTM mix=diag).
+# Only the last residual block's RNN I/O (layer 5 of 6). The LM head reads
+# that mixer; middle layers are the BERT probing default (Tenney et al.).
+
+task: babylm_distill_l5
+teacher_ckpt: checkpoints/babylm/dense.pt
+teacher_cell_type: dense
+student_cell_type: diag_fused
+# Last block (0-based). num_layers comes from babylm.yaml via inherit.
+layer: -1
+epochs: 2
+
+# Inherit data / stack from the mixing ablation.
+inherit: configs/train/babylm.yaml
+
+# MSE on a ~0.6M cell (W_x + R). 1e-3 is the middle of a Shallue 3-point
+# {3e-4, 1e-3, 3e-3}; BabyLM CE used 6e-4 on 20M params. wd=0 so AdamW
+# does not pull the copy of teacher W_x / diag(R_head) toward zero.
+# Warmup 50 of ~2×603 steps, same absolute warmup as the LM run.
+lr: 1.0e-3
+warmup_steps: 50
+weight_decay: 0.0
+adam_betas: [0.9, 0.95]
+grad_clip: 1.0
+batch: 16
+grad_accum: 1
+eval_every: 50
+
+# fp16 memmap: ~15 GB for 10M tokens × T=512 × d=384 × {x,y}.
+# fp32 dump is ~30 GB; disk on this box is ~30 GB free.
+cache_dtype: float16
+activation_cache_dir: data/babylm/distill_l5
+dump_batch: 32
+
+ckpt_dir: checkpoints/babylm
+results_dir: results
+mlflow_experiment: babylm-10m
+mlflow_run_prefix: babylm-distill-dense-l5
+
+why: |
+  Layer-wise distillation: freeze dense BabyLM stem, match last-block
+  ParaSLSTM mix=head hidden with mix=diag fused Newton. One layer's (x, h)
+  only. Two epochs over the packed Strict-Small cache.

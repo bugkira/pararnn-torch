@@ -54,3 +54,70 @@ def test_freed_slot_is_zero() -> None:
     ids2 = pool.allocate(1)
     got = pool.gather(ids2)
     assert torch.equal(got, torch.zeros_like(got))
+
+
+def test_offload_frees_gpu_slot() -> None:
+    torch.manual_seed(0)
+    model = _gru(4)
+    pool = PagedStatePool(model, capacity=2, host_capacity=2)
+    ids = pool.allocate(2)
+    x = torch.randn(2, 3, 4)
+    paged_apply(pool, ids, x, solver="sequential")
+    host = pool.offload(ids[:1])
+    assert pool.allocator.n_used == 1
+    assert pool.host_allocator.n_used == 1
+    reused = pool.allocate(1)
+    assert pool.allocator.n_used == 2
+    assert int(reused.item()) in set(ids.tolist())
+    got = pool.gather(reused)
+    assert torch.equal(got, torch.zeros_like(got))
+    pool.free_host(host)
+
+
+def test_offload_reload_roundtrip() -> None:
+    torch.manual_seed(1)
+    model = _gru(4)
+    pool = PagedStatePool(model, capacity=2)
+    ids = pool.allocate(1)
+    x = torch.randn(1, 5, 4)
+    paged_apply(pool, ids, x, solver="sequential")
+    saved = pool.gather(ids).clone()
+    host = pool.offload(ids)
+    assert pool.allocator.n_used == 0
+    back = pool.reload(host)
+    assert pool.host_allocator.n_used == 0
+    torch.testing.assert_close(pool.gather(back), saved)
+
+
+def test_host_oom() -> None:
+    pool = PagedStatePool(_gru(), capacity=2, host_capacity=1)
+    ids = pool.allocate(2)
+    pool.offload(ids[:1])
+    with pytest.raises(RuntimeError, match="paged host OOM"):
+        pool.offload(ids[1:])
+
+
+def test_reload_gpu_oom_keeps_host() -> None:
+    torch.manual_seed(2)
+    model = _gru(4)
+    pool = PagedStatePool(model, capacity=1, host_capacity=1)
+    ids = pool.allocate(1)
+    paged_apply(pool, ids, torch.randn(1, 3, 4), solver="sequential")
+    host = pool.offload(ids)
+    pool.allocate(1)
+    with pytest.raises(RuntimeError, match="paged cache OOM"):
+        pool.reload(host)
+    assert pool.host_allocator.n_used == 1
+
+
+def test_offload_unknown_slot_raises() -> None:
+    pool = PagedStatePool(_gru(), capacity=2)
+    with pytest.raises(KeyError, match="not allocated"):
+        pool.offload([0])
+
+
+def test_duplicate_offload_raises() -> None:
+    pool = PagedStatePool(_gru(), capacity=2)
+    ids = pool.allocate(1)
+    with pytest.raises(ValueError, match="duplicate"):
+        pool.offload(torch.cat((ids, ids)))
