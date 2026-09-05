@@ -11,6 +11,12 @@ All notable changes to this project are documented here. Format follows [Keep a 
   \(\mathbb{Z}_2\) parity vs S4D-Real SSM, T=1 `decode_step`, citation
   ([`notebooks/README.md`](notebooks/README.md)).
 
+### Changed
+
+- Parity demo / [`examples/parity.py`](examples/parity.py): explicit `picard_iters=3`
+  at \(T{=}16\) (library auto is P=1) and quiet `pararnn.solvers.newton` WARNING
+  so `newton_residual_high` does not flood Colab / stdout; divergence still raises.
+
 ## [0.7.0] - 2026-09-05
 
 Compile-safe Newton, paged decode path, and OSS front-door polish.

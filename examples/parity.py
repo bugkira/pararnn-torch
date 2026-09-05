@@ -22,6 +22,9 @@ SEQ_LEN, EVAL_SEQ_LEN = 16, 32
 BATCH, D_H, NUM_LAYERS = 16, 32, 2
 STEPS, WARMUP_FRAC = 2000, 0.1
 NEWTON_ITERS, SCAN_BACKEND = 3, "auto"
+# Auto Picard at T=16 is P=1; under Adam many steps land max|F| > 1e-3 and
+# spam ``newton_residual_high``. P=3 matches the mid-length warm-start rung.
+PICARD_ITERS = 3
 LR, WEIGHT_DECAY = 1e-3, 1e-6
 ADAM_BETAS = (0.9, 0.999)
 SEED = 0
@@ -155,7 +158,11 @@ def _train_arm(device: torch.device, arm: str) -> dict:
     torch.manual_seed(SEED)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(SEED)
-    cfg = NewtonConfig(max_iters=NEWTON_ITERS, scan_backend=SCAN_BACKEND)
+    cfg = NewtonConfig(
+        max_iters=NEWTON_ITERS,
+        picard_iters=PICARD_ITERS,
+        scan_backend=SCAN_BACKEND,
+    )
     model = _ParityNet(D_H, NUM_LAYERS, arm, cfg).to(device)
     model.train()
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY, betas=ADAM_BETAS)
@@ -218,6 +225,11 @@ def _train_arm(device: torch.device, arm: str) -> dict:
 
 
 if __name__ == "__main__":
+    import logging
+
+    # Keep step metrics readable; NewtonDivergenceError still raises at ERROR.
+    logging.getLogger("pararnn.solvers.newton").setLevel(logging.ERROR)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     assert device.type == "cuda", "parity smoke expects a CUDA GPU"
     print(f"parity start: {torch.cuda.get_device_name(device)} lr={LR}")

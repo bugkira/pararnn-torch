@@ -86,6 +86,7 @@ code(
     """
 import math
 import time
+import logging
 
 import matplotlib.pyplot as plt
 import torch
@@ -103,9 +104,15 @@ from pararnn import (
 )
 from pararnn.solvers.scan import scan_diag
 
+# Library logs WARNING ``newton_residual_high`` when max|F| > 1e-3 after K
+# (still under residual_fail). Demo stdout stays on step metrics; divergence
+# still raises NewtonDivergenceError at ERROR.
+logging.getLogger("pararnn.solvers.newton").setLevel(logging.ERROR)
+
 torch.manual_seed(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dtype = torch.float32
+# K=3: Danieli et al. App. A. P auto: 1 if T≤64, 3 if T≤2048, else 5.
 cfg = NewtonConfig(max_iters=3, scan_backend="auto")
 
 print(f"pararnn OK | torch {torch.__version__} | device={device}")
@@ -246,6 +253,8 @@ md(
 Last-token accuracy on running XOR (Merrill et al.): label at \(t\) is the prefix product on \(\mathbb{Z}_2\). Train at \(T{=}16\), also eval at \(T{=}32\).
 
 Arms: **ParaSLSTM Newton** and a compact **S4D-Real** diagonal SSM (same width). Protocol matches [`examples/parity.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/parity.py) (2000 AdamW steps; ~1–2 min on a T4-class GPU).
+
+Solver knobs: **K=3** (Danieli et al. App. A). **P=3** warm-start is set explicitly — library auto would pick P=1 at train length \(T{=}16\), which leaves `max|F|` above the 1e-3 warn band on many Adam steps.
 """
 )
 
@@ -351,8 +360,8 @@ def train_arm(arm: str) -> dict:
     torch.manual_seed(SEED)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(SEED)
-# Fresh config per arm (do not share with the trust/bench cells).
-    train_cfg = NewtonConfig(max_iters=3, scan_backend="auto")
+    # K=3 App. A. P=3: auto at T=16 is P=1; under Adam that trips residual_high.
+    train_cfg = NewtonConfig(max_iters=3, picard_iters=3, scan_backend="auto")
     model = ParityNet(D_H, NUM_LAYERS, arm, train_cfg).to(device)
     model.train()
     opt = torch.optim.AdamW(
