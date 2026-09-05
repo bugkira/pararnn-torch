@@ -132,6 +132,8 @@ API notes stay in [`docs/distributed.md`](docs/distributed.md).
 - **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM` — recurrent maps \(f(h_{t-1}, x_t)\).
 - **Sequence module:** `ParaRNN(cell, config=NewtonConfig(max_iters=3))` — stacks one or more cells.
 - **Trunk block:** `ParaSLSTMBlock(d_model, mlp_ratio=4)` — RMSNorm + ParaSLSTM + SwiGLU residuals for LM stacks (`docs/xlstm.md`).
+- **CausalLM / vLLM:** `ParaSLSTMForCausalLM` + `BlockStackPool` continuous batch +
+  `vllm.general_plugins` registration (`docs/vllm.md`, `examples/continuous_batch.py`).
 - **Solver config:** `NewtonConfig(scan_backend="auto")` picks fused Triton on CUDA when available, else Triton scan + `step`, else eager Blelloch.
 - **Low-level solvers** (bypass `ParaRNN`):
 
@@ -146,7 +148,7 @@ h = sequential_apply(cell, x)
 - **Paged state:** `PagedStatePool` / `paged_apply` — O(1) slot per request; sequential CUDA and fused Newton index the pool through `block_table`. `offload` / `reload` park a slot on pinned host RAM.
 - **Decode step:** `decode_step` — T=1 Triton recurrent step (gates + mix). `out=` reuses a buffer; `block_table` is slot ids into a pool. `decode_wx` fills `W_x(x)` for CUDA graphs. `can_decode_step` reports whether the kernel will run.
 
-**Details:** output shapes, `mix=`, LSTM layout, scan backends — [`docs/xlstm.md`](docs/xlstm.md#api-notes). Data / tensor parallel — [`docs/distributed.md`](docs/distributed.md). Repo layout — [`docs/structure.md`](docs/structure.md).
+**Details:** output shapes, `mix=`, LSTM layout, scan backends — [`docs/xlstm.md`](docs/xlstm.md#api-notes). Data / tensor parallel — [`docs/distributed.md`](docs/distributed.md). vLLM plugin — [`docs/vllm.md`](docs/vllm.md). Repo layout — [`docs/structure.md`](docs/structure.md).
 
 ## Compatibility
 

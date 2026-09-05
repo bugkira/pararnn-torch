@@ -103,6 +103,18 @@ class SlotAllocator:
             if ii not in self._used:
                 raise KeyError(f"{self._item} {ii} is not allocated")
 
+    def adopt(self, ids: Sequence[int]) -> None:
+        """Mark existing ids as used (external cache bind). Ids must be free."""
+        for i in ids:
+            ii = int(i)
+            if ii < 0 or ii >= self.capacity:
+                raise ValueError(f"{self._item} {ii} outside capacity {self.capacity}")
+            if ii in self._used:
+                continue
+            if ii not in self._free:
+                raise KeyError(f"{self._item} {ii} is not free")
+            self._free.remove(ii)
+            self._used.add(ii)
 
 class PagedStatePool:
     """One physical buffer per ``ParaRNN`` layer, shared slot ids.
@@ -118,19 +130,41 @@ class PagedStatePool:
     is longer; ``offload`` raises ``paged host OOM`` when it is full.
     """
 
-    def __init__(self, model: ParaRNN, capacity: int, *, host_capacity: int | None = None) -> None:
+    def __init__(
+        self,
+        model: ParaRNN,
+        capacity: int,
+        *,
+        host_capacity: int | None = None,
+        allocator: SlotAllocator | None = None,
+        host_allocator: SlotAllocator | None = None,
+    ) -> None:
         if not model.layers:
             raise ValueError("model has no layers")
         param = next(model.parameters())
         self.device = param.device
         self.dtype = param.dtype
-        self.allocator = SlotAllocator(capacity)
+        # Shared allocators: one slot id across a stack of ``ParaRNN`` pools
+        # (``BlockStackPool`` / continuous-batch CausalLM).
+        if allocator is not None and allocator.capacity != capacity:
+            raise ValueError(
+                f"allocator.capacity={allocator.capacity} != capacity={capacity}"
+            )
+        self.allocator = allocator if allocator is not None else SlotAllocator(capacity)
         n_host = capacity if host_capacity is None else host_capacity
-        self.host_allocator = SlotAllocator(
-            n_host,
-            oom="paged host OOM",
-            unit="pages",
-            item="host page",
+        if host_allocator is not None and host_allocator.capacity != n_host:
+            raise ValueError(
+                f"host_allocator.capacity={host_allocator.capacity} != host_capacity={n_host}"
+            )
+        self.host_allocator = (
+            host_allocator
+            if host_allocator is not None
+            else SlotAllocator(
+                n_host,
+                oom="paged host OOM",
+                unit="pages",
+                item="host page",
+            )
         )
         pin = self.device.type == "cuda"
         self.buffers: list[Tensor] = []

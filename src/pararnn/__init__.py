@@ -3,7 +3,9 @@ from importlib.metadata import PackageNotFoundError, version
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM, RNNCell
 from pararnn.kernels import can_decode_step, decode_step, decode_wx
 from pararnn.layers import ParaRNN, ParaSLSTMBlock, SwiGLU
+from pararnn.models import ParaSLSTMConfig, ParaSLSTMForCausalLM
 from pararnn.paged import PagedStatePool, paged_apply
+from pararnn.serve import BlockStackPool
 from pararnn.solvers import (
     NewtonConfig,
     NewtonDivergenceError,
@@ -14,6 +16,7 @@ from pararnn.solvers import (
 from pararnn.speculative import LinearDraftResult, verify_linear_draft
 
 __all__ = [
+    "BlockStackPool",
     "LinearDraftResult",
     "NewtonConfig",
     "NewtonDivergenceError",
@@ -24,6 +27,8 @@ __all__ = [
     "ParaRNN",
     "ParaSLSTM",
     "ParaSLSTMBlock",
+    "ParaSLSTMConfig",
+    "ParaSLSTMForCausalLM",
     "RNNCell",
     "SwiGLU",
     "can_decode_step",

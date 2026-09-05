@@ -19,6 +19,18 @@ All notable changes to this project are documented here. Format follows [Keep a 
   between fused Newton steps (fixed K remains the train default).
 - `ParaSLSTMBlock` / `SwiGLU`: pre-norm RMSNorm + fused-ready `ParaSLSTM` +
   SwiGLU residual trunk (`layers/para_slstm_block.py`).
+- Standalone `ParaSLSTMForCausalLM` + `ParaSLSTMConfig` (`pararnn.models`):
+  HF-shaped `config.json`, tied LM head, `generate()` via `decode_step`.
+- Continuous-batch serve path: `BlockStackPool` / `forward_continuous`
+  (packed `cu_seqlens` + shared `slot_ids` → `paged_apply` /
+  `decode_step(..., block_table=)`). Example
+  [`examples/continuous_batch.py`](examples/continuous_batch.py).
+- vLLM engine path: `ParaSLSTMRecurrentLayer` (`MambaBase`, `mamba_type=MAMBA1`)
+  consumes worker cache pages + `Mamba1AttentionMetadata` indices; decoder
+  stack + `get_mamba_state_*` / copy funcs (`docs/vllm.md`).
+- vLLM out-of-tree plugin: `vllm.general_plugins` entry
+  `pararnn_paraslstm` → `ModelRegistry.register_model("ParaSLSTMForCausalLM", …)`
+  (lazy string). Optional extra `vllm`.
 
 ### Changed
 

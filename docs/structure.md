@@ -11,11 +11,15 @@ ParaRNN/
 ├── docs/
 │   ├── xlstm.md
 │   ├── distributed.md          # DDP / FSDP2 / TP / context-parallel scan
+│   ├── vllm.md                 # vLLM general_plugins + CausalLM
 │   ├── structure.md
 │   └── backward-scan-cap.md
 ├── src/pararnn/
 │   ├── cells/                  # ParaGRU, ParaLSTM, ParaSLSTM
-│   ├── layers/                 # ParaRNN
+│   ├── layers/                 # ParaRNN, ParaSLSTMBlock
+│   ├── models/                 # ParaSLSTMConfig + CausalLM
+│   ├── serve/                  # BlockStackPool continuous batch
+│   ├── vllm_plugin/            # ModelRegistry entry point
 │   ├── solvers/                # sequential, Newton, scan, VJP
 │   ├── kernels/                # Triton scans + fused Newton + T=1 decode_step
 │   ├── distributed.py          # warmup + unwrap for DDP/FSDP

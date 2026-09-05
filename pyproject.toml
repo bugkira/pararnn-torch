@@ -51,6 +51,13 @@ lm = [
     "datasets>=3.0",
     "tokenizers>=0.21",
 ]
+# Serve path: plugin registers ParaSLSTMForCausalLM; see docs/vllm.md.
+vllm = [
+    "vllm>=0.8",
+]
+
+[project.entry-points."vllm.general_plugins"]
+pararnn_paraslstm = "pararnn.vllm_plugin:register"
 
 [build-system]
 requires = ["uv_build>=0.9.7,<0.10.0"]
