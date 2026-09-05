@@ -78,6 +78,13 @@ class NewtonConfig:
     # newton_residual_high (~8e-2) at T=1024 d_h=256 P=3; 64 matched assoc
     # (~3e-5, vs sequential ~4e-7). 128 if 64 stays >1e-3.
     fused_window_len: int | None = None
+    # False (Level 1): IFT saves H* on the Autograd Function; 0 extra FLOPs
+    # (Danieli et al. eq. 2.6). True (Level 2): drop H* from save_for_backward
+    # and rematerialize via a second Newton forward in backward — for ultra-long
+    # train T (≳64k…128k) when VRAM of S* is the limiter; sketch +15–20% FLOPs
+    # / −70–80% of the Function-held trajectory (this repo IDEAS). Prefer outer
+    # ``torch.utils.checkpoint`` on short T; combine both only if measured.
+    recompute: bool = False
 
 
 # Lengths compiled as Triton BLOCK_T in the fused walk kernel. Not Apple App. C.

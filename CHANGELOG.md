@@ -12,6 +12,9 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Fused CUDA numerics for odd \(d_h\) / odd \(T\) (GRU/LSTM/sLSTM, incl. \(T{=}127\)).
 - Overflow-stress tests: NaN / exploded sLSTM → `NewtonDivergenceError`;
   log-decode huge \(n\) stays finite (`tests/numerics/test_overflow_stress.py`).
+- `NewtonConfig(recompute=True)`: Level-2 selective activation checkpointing —
+  rematerialize \(H^\star\) in eq. 2.6 backward for ultra-long train T
+  (`tests/numerics/test_recompute.py`).
 
 ### Changed
 

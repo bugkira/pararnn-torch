@@ -77,8 +77,9 @@ y = slstm(torch.randn(4, 128, 64, device=device))
 
 ## Results
 
-Interactive walkthrough: [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb)
+Interactive API tour: [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb)
 ([Open in Colab](https://colab.research.google.com/github/bugkira/pararnn-torch/blob/main/notebooks/paraslstm_demo.ipynb); private clones need a `GITHUB_TOKEN` secret — see [`notebooks/README.md`](notebooks/README.md)).
+\(\mathbb{Z}_2\) training lives in [`examples/parity.py`](examples/parity.py).
 
 Diag-sLSTM forward median latency (ms), \(B{=}8\), \(d_h{=}256\), float32,
 RTX 2080 Ti, 10 seeds (`scripts/slstm_vs_flashrnn.py` / paper Tier-A timing).
@@ -150,7 +151,7 @@ h = sequential_apply(cell, x)
 
 - **`torch.compile`:** with the compile-safe preset (fixed K, no residual host sync), `newton_apply` traces as a single graph (`fullgraph=True`) on eager and fused paths. Fused Alg. 1 kernels are `pararnn::newton_*_fused` custom ops with `register_fake` (`tests/numerics/test_compile.py`, `kernels/custom_ops.py`). Eq. 2.6 stays on the module-level `Autograd.Function` (fused ops do not carry `W_x`).
 - **Precision / AMP:** put the module and `x` in fp16/bf16/fp32 explicitly. Under outer `torch.autocast`, Newton opts out and stays in the tensor dtype so the eq. 2.6 VJP keeps one dtype (`tests/numerics/test_autocast.py`).
-- **DDP / FSDP / checkpoint:** wrap `ParaRNN` with DDP or FSDP2 (`docs/distributed.md`, `examples/ddp_fsdp.py`). Non-reentrant `torch.utils.checkpoint` and `state_dict` round-trip: `tests/numerics/test_checkpoint.py`.
+- **DDP / FSDP / checkpoint:** wrap `ParaRNN` with DDP or FSDP2 (`docs/distributed.md`, `examples/ddp_fsdp.py`). Non-reentrant `torch.utils.checkpoint` and `state_dict` round-trip: `tests/numerics/test_checkpoint.py`. For ultra-long train \(T\), `NewtonConfig(recompute=True)` rematerializes \(H^\star\) in the eq. 2.6 backward (`tests/numerics/test_recompute.py`).
 
 ## Method
 

@@ -10,4 +10,9 @@ Leaf pads: LSTM ``64×64=4096``, unfused sLSTM scan ``64×32=2048``, fused sLSTM
 
 ## Remaining
 
-VRAM of the stored trajectory still bounds train T (sequence-parallel / checkpointing). Windowed fused sLSTM (``fused_time_loop``) keeps its own tile pad. Host-loop superchunks on the diagonal path are polish at T≫10⁶.
+VRAM of the stored trajectory still bounds train T. Opt-in Level 2:
+``NewtonConfig(recompute=True)`` rematerializes \(H^\star\) in backward (eq. 2.6
+unchanged; extra Newton forward FLOPs). Outer ``torch.utils.checkpoint`` and
+sequence-parallel remain complementary. Windowed fused sLSTM
+(``fused_time_loop``) keeps its own tile pad. Host-loop superchunks on the
+diagonal path are polish at T≫10⁶.

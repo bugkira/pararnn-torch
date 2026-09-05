@@ -111,6 +111,10 @@ class _NewtonFixedPoint(torch.autograd.Function):
         # Everything backward needs — on ctx (autograd worker threads safe).
         ctx.cell = cell
         ctx.has_h0 = has_h0
+        ctx.recompute = bool(config.recompute)
+        # Rematerialize with the same resolved config (incl. fused). Eq. 2.6
+        # reverse scan maps fused → triton (no fused reverse kernel).
+        ctx.fwd_config = config
         ctx.scan_backend = "triton" if config.scan_backend == "fused" else config.scan_backend
         ctx.jacobian = config.jacobian
         ctx.jac_structure = config.jac_structure
@@ -119,14 +123,32 @@ class _NewtonFixedPoint(torch.autograd.Function):
         saved_cs = (
             cu_seqlens if isinstance(cu_seqlens, Tensor) else x_in.new_zeros(0, dtype=torch.long)
         )
-        ctx.save_for_backward(states, x_in, h0_in, saved_cs)
+        if ctx.recompute:
+            # Level 2: do not retain H* on the Function; rematerialize in backward.
+            ctx.save_for_backward(x_in, h0_in, saved_cs)
+        else:
+            ctx.save_for_backward(states, x_in, h0_in, saved_cs)
         return states
 
     @staticmethod
     def backward(ctx, grad_states: Tensor):
-        states, x_in, h0_in, saved_cs = ctx.saved_tensors
-        h0_fwd = h0_in if ctx.has_h0 else None
-        cs_bwd = saved_cs if ctx.has_cu_seqlens else None
+        if ctx.recompute:
+            x_in, h0_in, saved_cs = ctx.saved_tensors
+            h0_fwd = h0_in if ctx.has_h0 else None
+            cs_bwd = saved_cs if ctx.has_cu_seqlens else None
+            with torch.no_grad():
+                states = _newton_forward(
+                    ctx.cell,
+                    x_in,
+                    ctx.fwd_config,
+                    h0=h0_fwd,
+                    stats=None,
+                    cu_seqlens=cs_bwd,
+                )
+        else:
+            states, x_in, h0_in, saved_cs = ctx.saved_tensors
+            h0_fwd = h0_in if ctx.has_h0 else None
+            cs_bwd = saved_cs if ctx.has_cu_seqlens else None
         with _newton_precision_region(x_in.device):
             if ctx.chunk_len is not None:
                 grad_x, param_grads, grad_h0 = _eq26_vjp_chunked(
@@ -204,6 +226,10 @@ def newton_apply(
     ``chunk_len`` windows that scan as well: each window is a local reverse
     scan, and ``∇_{h0}`` of window ``i+1`` adds into the last step of window
     ``i`` (the forward carry).
+
+    ``recompute=True`` (Level 2): rematerialize H* in backward instead of
+    saving it on the Autograd Function. Same grads as the default IFT path;
+    extra Newton forward FLOPs for long-T VRAM.
     """
     config = config or NewtonConfig()
     _validate_config(config)
