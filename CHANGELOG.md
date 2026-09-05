@@ -7,16 +7,20 @@ All notable changes to this project are documented here. Format follows [Keep a 
 ### Added
 
 - Colab / Jupyter demo [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb):
-  drop-in API, sequential↔Newton trust table, latency vs \(T\), short
-  \(\mathbb{Z}_2\) parity vs S4D-Real SSM, T=1 `decode_step`, citation
+  short API tour (forward, trust, latency, decode) plus citation links
   ([`notebooks/README.md`](notebooks/README.md)).
+- Fused CUDA numerics for odd \(d_h\) / odd \(T\) (GRU/LSTM/sLSTM, incl. \(T{=}127\)).
+- Overflow-stress tests: NaN / exploded sLSTM → `NewtonDivergenceError`;
+  log-decode huge \(n\) stays finite (`tests/numerics/test_overflow_stress.py`).
 
 ### Changed
 
+- Direct Triton pin on Linux: `triton>=3.6.0,<3.7` (matches torch 2.11 cu128).
 - Parity demo / [`examples/parity.py`](examples/parity.py): explicit `picard_iters=3`
   at \(T{=}16\) (library auto is P=1) and quiet `pararnn.solvers.newton` WARNING
   so `newton_residual_high` does not flood Colab / stdout; divergence still raises.
-- Expressivity section split into models / train / plot cells (Colab-sized chunks).
+- Demo notebook is an API poke only; \(\mathbb{Z}_2\) training stays in
+  [`examples/parity.py`](examples/parity.py).
 
 ## [0.7.0] - 2026-09-05
 

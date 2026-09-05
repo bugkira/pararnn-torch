@@ -2946,6 +2946,7 @@ dependencies = [
     { name = "numpy", version = "2.5.2", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "python_full_version >= '3.12'" },
     { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform != 'darwin'" },
+    { name = "triton", marker = "sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
@@ -2981,6 +2982,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "tokenizers", marker = "extra == 'lm'", specifier = ">=0.21" },
     { name = "torch", specifier = ">=2.11.0" },
+    { name = "triton", marker = "sys_platform == 'linux'", specifier = ">=3.6.0,<3.7" },
 ]
 provides-extras = ["train", "flashrnn", "lm"]
 

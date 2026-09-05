@@ -1017,6 +1017,32 @@ def test_slstm_scan_seq_fused_matches_assoc(cuda_device: torch.device) -> None:
 
 @pytest.mark.cuda
 @torch.no_grad()
+@pytest.mark.parametrize(
+    "d_h,t",
+    [(7, 127), (80, 127), (5, 63)],
+    ids=["dh7_T127", "dh80_T127", "dh5_T63"],
+)
+def test_slstm_fused_odd_dh_and_t_match_sequential(
+    cuda_device: torch.device,
+    d_h: int,
+    t: int,
+) -> None:
+    """Fused sLSTM PCR: odd d_h and non-power-of-two T vs sequential."""
+    torch.manual_seed(127)
+    cell = ParaSLSTM(d_in=4, d_h=d_h, mix="diag").to(cuda_device)
+    x = 0.3 * torch.randn(2, t, 4, device=cuda_device)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(
+        cell,
+        x,
+        NewtonConfig(max_iters=3, scan_backend="fused", picard_iters=1),
+    )
+    err = (par - seq).abs().amax()
+    assert err < 2e-4, (d_h, t, float(err))
+
+
+@pytest.mark.cuda
+@torch.no_grad()
 def test_slstm_fused_bf16_scan_tiles_match(cuda_device: torch.device) -> None:
     """fp32 Newton work: scan tiles agree on the same bf16 ``W_x`` problem.
 

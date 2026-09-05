@@ -484,6 +484,35 @@ def test_paralstm_newton_fused_matches_sequential(cuda_device: torch.device) -> 
 
 
 @pytest.mark.cuda
+@torch.no_grad()
+@pytest.mark.parametrize(
+    "cell_ctor,d_in,d_h,t",
+    [
+        (ParaGRU, 8, 7, 127),
+        (ParaLSTM, 8, 7, 127),
+        (ParaGRU, 8, 7, 63),
+        (ParaLSTM, 8, 5, 127),
+    ],
+    ids=["gru_dh7_T127", "lstm_dh7_T127", "gru_dh7_T63", "lstm_dh5_T127"],
+)
+def test_newton_fused_odd_dh_and_t_match_sequential(
+    cuda_device: torch.device,
+    cell_ctor,
+    d_in: int,
+    d_h: int,
+    t: int,
+) -> None:
+    """Fused PCR pads odd T / odd d_h; must still match sequential unroll."""
+    torch.manual_seed(127)
+    cell = cell_ctor(d_in=d_in, d_h=d_h).to(cuda_device)
+    x = torch.randn(2, t, d_in, device=cuda_device)
+    seq = sequential_apply(cell, x)
+    par = newton_apply(cell, x, NewtonConfig(max_iters=3, scan_backend="fused"))
+    err = (par - seq).abs().amax()
+    assert err < 1e-4, (cell_ctor.__name__, d_h, t, float(err))
+
+
+@pytest.mark.cuda
 def test_paragru_newton_fused_bwd_matches_sequential_bptt(
     cuda_device: torch.device,
 ) -> None:

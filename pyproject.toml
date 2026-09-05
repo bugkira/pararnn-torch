@@ -32,6 +32,8 @@ classifiers = [
 dependencies = [
     "numpy>=2.2.6",
     "torch>=2.11.0",
+    # Torch 2.11 cu128 ships Triton 3.6.x; pin the dialect for fused/PCR kernels.
+    "triton>=3.6.0,<3.7; sys_platform == 'linux'",
 ]
 
 [project.urls]
