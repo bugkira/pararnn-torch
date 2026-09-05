@@ -4,19 +4,12 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-06
+
+LM trunk, continuous-batch serve, vLLM plugin, and public API docs.
+
 ### Added
 
-- Colab / Jupyter demo [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb):
-  short API tour (forward, trust, latency, decode) plus citation links
-  ([`notebooks/README.md`](notebooks/README.md)).
-- Fused CUDA numerics for odd \(d_h\) / odd \(T\) (GRU/LSTM/sLSTM, incl. \(T{=}127\)).
-- Overflow-stress tests: NaN / exploded sLSTM → `NewtonDivergenceError`;
-  log-decode huge \(n\) stays finite (`tests/numerics/test_overflow_stress.py`).
-- `NewtonConfig(recompute=True)`: Level-2 selective activation checkpointing —
-  rematerialize \(H^\star\) in eq. 2.6 backward for ultra-long train T
-  (`tests/numerics/test_recompute.py`).
-- Experimental `NewtonConfig(fused_early_exit=True)`: host ``max|F|`` stop
-  between fused Newton steps (fixed K remains the train default).
 - `ParaSLSTMBlock` / `SwiGLU`: pre-norm RMSNorm + fused-ready `ParaSLSTM` +
   SwiGLU residual trunk (`layers/para_slstm_block.py`).
 - Standalone `ParaSLSTMForCausalLM` + `ParaSLSTMConfig` (`pararnn.models`):
@@ -34,6 +27,27 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - `pararnn.determinism`: under `torch.use_deterministic_algorithms(True)`, one-shot
   warnings for missing `CUBLAS_WORKSPACE_CONFIG` and packed eq. 2.6 param-grad
   drift; wired from `cell_vjp` (`tests/numerics/test_vjp_determinism.py`).
+- Numpydoc-style docstrings on root `__all__` (cells, Newton config/apply,
+  paged/decode, CausalLM); Triton `@jit` kernels stay module-level
+  (`docs/README.md`).
+
+## [0.8.0] - 2026-09-06
+
+Solver coverage, long-T memory knobs, and the Colab API demo.
+
+### Added
+
+- Colab / Jupyter demo [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb):
+  short API tour (forward, trust, latency, decode) plus citation links
+  ([`notebooks/README.md`](notebooks/README.md)).
+- Fused CUDA numerics for odd \(d_h\) / odd \(T\) (GRU/LSTM/sLSTM, incl. \(T{=}127\)).
+- Overflow-stress tests: NaN / exploded sLSTM → `NewtonDivergenceError`;
+  log-decode huge \(n\) stays finite (`tests/numerics/test_overflow_stress.py`).
+- `NewtonConfig(recompute=True)`: Level-2 selective activation checkpointing —
+  rematerialize \(H^\star\) in eq. 2.6 backward for ultra-long train T
+  (`tests/numerics/test_recompute.py`).
+- Experimental `NewtonConfig(fused_early_exit=True)`: host ``max|F|`` stop
+  between fused Newton steps (fixed K remains the train default).
 
 ### Changed
 
@@ -241,7 +255,9 @@ installable surface.
 - Generic-cell autograd path and sequential reference solver.
 - Numerics tests: parallel vs sequential agreement, layer forward/backward.
 
-[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/bugkira/pararnn-torch/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/bugkira/pararnn-torch/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/bugkira/pararnn-torch/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/bugkira/pararnn-torch/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/bugkira/pararnn-torch/compare/v0.4.0...v0.5.0
