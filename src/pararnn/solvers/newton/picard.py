@@ -20,10 +20,22 @@ _PICARD_RUNGS = (1, 3, 5)
 
 
 def slstm_auto_picard(seq_len: int) -> int:
-    """Library Picard P for ParaSLSTM: 1 if T≤64, 3 if T≤2048, else 5.
+    """Library Picard P for ParaSLSTM by sequence length.
 
-    Measured at ``d_h=256``, ``x_scale=1``, K=3 (para-slstm.md). Explicit 0 is
-    zero-hidden only. Fallback if ``residual_fail`` fires: raise ``picard_iters``.
+    Returns 1 if ``T≤64``, 3 if ``T≤2048``, else 5. Measured at
+    ``d_h=256``, ``x_scale=1``, K=3 (para-slstm.md). Explicit
+    ``picard_iters=0`` selects zero-hidden init only. Fallback when
+    ``residual_fail`` fires: raise ``picard_iters`` via ``slstm_picard_next``.
+
+    Parameters
+    ----------
+    seq_len : int
+        Sequence length ``T`` (``x.shape[1]``).
+
+    Returns
+    -------
+    int
+        Picard iteration count in ``{1, 3, 5}``.
     """
     t = int(seq_len)
     if t <= 64:
@@ -34,9 +46,20 @@ def slstm_auto_picard(seq_len: int) -> int:
 
 
 def slstm_picard_next(picard_iters: int) -> int | None:
-    """Next auto Picard rung after ``picard_iters``, or None at the cap (5).
+    """Next auto Picard rung after ``picard_iters``.
 
-    Ladder is ``{1, 3, 5}`` (slstm_auto_picard / para-slstm.md).
+    Ladder is ``{1, 3, 5}`` (``slstm_auto_picard`` / para-slstm.md).
+    Returns ``None`` when already at the cap (5).
+
+    Parameters
+    ----------
+    picard_iters : int
+        Current Picard iteration count.
+
+    Returns
+    -------
+    int or None
+        Next rung, or ``None`` if ``picard_iters >= 5``.
     """
     p = int(picard_iters)
     for rung in _PICARD_RUNGS:

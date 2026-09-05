@@ -11,13 +11,33 @@ from pararnn.solvers.newton import NewtonConfig, NewtonStats
 
 
 class SwiGLU(nn.Module):
-    """Gated MLP used in LLaMA-style blocks (SiLU(u) * v).
+    """Gated MLP used in LLaMA-style blocks (``SiLU(u) * v``).
 
-    ``mlp_ratio=4`` → hidden width ``4 * d_model`` (BabyLM / common LLM default).
-    Intermediate is ``2 * hidden`` before the gate split.
+    ``mlp_ratio=4`` yields hidden width ``4 * d_model`` (BabyLM / common
+    LLM default). The up-projection is ``2 * hidden`` before the gate split.
+
+    Attributes
+    ----------
+    up : nn.Linear
+        Projection ``d_model → 2 * hidden``.
+    down : nn.Linear
+        Projection ``hidden → d_model``.
     """
 
     def __init__(self, d_model: int, *, mlp_ratio: float = 4.0) -> None:
+        """
+        Parameters
+        ----------
+        d_model : int
+            Model / residual stream width.
+        mlp_ratio : float, default=4.0
+            Expansion factor: ``hidden = int(mlp_ratio * d_model)``.
+
+        Raises
+        ------
+        ValueError
+            When ``mlp_ratio <= 0`` or the resulting ``hidden`` is ``< 1``.
+        """
         super().__init__()
         if mlp_ratio <= 0:
             raise ValueError(f"mlp_ratio must be > 0, got {mlp_ratio!r}")
@@ -28,24 +48,42 @@ class SwiGLU(nn.Module):
         self.down = nn.Linear(hidden, d_model)
 
     def forward(self, x: Tensor) -> Tensor:
+        """
+        Parameters
+        ----------
+        x : Tensor
+            Input. Tensor of shape ``(..., d_model)``.
+
+        Returns
+        -------
+        y : Tensor
+            Output. Tensor of shape ``(..., d_model)``.
+        """
         u, v = self.up(x).chunk(2, dim=-1)
         return self.down(F.silu(u) * v)
 
 
 class ParaSLSTMBlock(nn.Module):
-    """One pre-norm residual layer around fused-ready ``ParaSLSTM``.
+    """Pre-norm residual: RMSNorm → ParaRNN(ParaSLSTM) → + → RMSNorm → SwiGLU → +.
 
-    ::
+    Attributes
+    ----------
+    d_model : int
+        Residual stream width (also ``ParaSLSTM`` ``d_in`` / ``d_h``).
+    norm_rnn : nn.RMSNorm
+        Pre-norm before the recurrent branch.
+    rnn : ParaRNN
+        Single-layer ``ParaSLSTM`` wrapper with ``output_hidden=True``.
+    norm_mlp : nn.RMSNorm
+        Pre-norm before the SwiGLU branch.
+    mlp : SwiGLU
+        Feed-forward network.
+    drop : nn.Dropout or nn.Identity
+        Residual dropout.
 
-        x → RMSNorm → ParaRNN(ParaSLSTM) → + → RMSNorm → SwiGLU → +
-
-    For people stacking an LM / torchtitan-style trunk without the NX-AI
-    ``xlstm`` package. The recurrent core stays ``ParaRNN`` + ``ParaSLSTM``;
-    LayerNorm/FFN are not part of the Newton cell.
-
-    ``mix='diag'`` (default) is the fused training cell. ``mix='head'`` /
-    ``'dense'`` stay ablations (unfused scan). No FlashAttention hybrid here —
-    that is a separate stack composition.
+    See Also
+    --------
+    ParaSLSTM, ParaRNN, SwiGLU
     """
 
     def __init__(
@@ -61,6 +99,36 @@ class ParaSLSTMBlock(nn.Module):
         dropout: float = 0.0,
         eps: float = 1e-6,
     ) -> None:
+        """
+        Parameters
+        ----------
+        d_model : int
+            Model width (``>= 1``).
+        mlp_ratio : float, default=4.0
+            SwiGLU expansion factor.
+        mix : {'diag', 'head', 'dense'}, default='diag'
+            ``ParaSLSTM`` recurrent mixing mode.
+        n_heads : int or None, default=None
+            Required when ``mix='head'``.
+        config : NewtonConfig or None, default=None
+            Newton settings. Defaults to ``NewtonConfig(max_iters=3)``
+            (paper uses 3 Newton iterations for ParaGRU/ParaLSTM; sLSTM
+            training in this repo follows the same ``K=3`` default).
+        solver : {'auto', 'newton', 'sequential'}, default='auto'
+            Forwarded to ``ParaRNN``.
+        max_recurrent_norm : float or None, default=0.5
+            App. C.1 clip on ``R`` (Danieli / this repo BabyLM default).
+        dropout : float, default=0.0
+            Residual dropout probability.
+        eps : float, default=1e-6
+            Epsilon for both ``RMSNorm`` layers.
+
+        Raises
+        ------
+        ValueError
+            When ``d_model < 1``, ``mix='head'`` lacks ``n_heads``, or
+            ``n_heads`` is set with a non-head mix.
+        """
         super().__init__()
         if d_model < 1:
             raise ValueError(f"d_model must be >= 1, got {d_model!r}")
@@ -86,9 +154,28 @@ class ParaSLSTMBlock(nn.Module):
 
     @property
     def last_stats(self) -> list[NewtonStats]:
+        """Per-layer Newton stats from the most recent recurrent forward."""
         return list(self.rnn.last_stats)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Apply pre-norm RNN and SwiGLU residual branches.
+
+        Parameters
+        ----------
+        x : Tensor
+            Input. Tensor of shape ``(batch, time, d_model)``.
+
+        Returns
+        -------
+        y : Tensor
+            Output. Tensor of shape ``(batch, time, d_model)``.
+
+        Raises
+        ------
+        ValueError
+            When ``x`` is not rank-3 or the last dim differs from
+            ``d_model``.
+        """
         if x.dim() != 3 or x.shape[-1] != self.d_model:
             raise ValueError(
                 f"expected x (B, T, {self.d_model}), got {tuple(x.shape)}"

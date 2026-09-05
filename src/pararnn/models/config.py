@@ -10,10 +10,43 @@ from typing import Any
 
 @dataclass
 class ParaSLSTMConfig:
-    """Config for the library CausalLM / vLLM architecture name.
+    """Config for ``ParaSLSTMForCausalLM`` / vLLM ``ModelRegistry``.
 
-    ``architectures`` matches what vLLM ``ModelRegistry`` looks up after the
-    ``vllm.general_plugins`` entry point registers ``ParaSLSTMForCausalLM``.
+    ``architectures`` is the registry name after ``register()``. Fields
+    ``state_size``, ``conv_kernel``, … are Mamba-shaped placeholders so
+    vLLM cache helpers can size a slot; the carry is
+    ``(SLSTM_SLOTS, hidden_size)``.
+
+    Attributes
+    ----------
+    model_type : str
+        Default ``"paraslstm"``.
+    architectures : list of str
+        Default ``["ParaSLSTMForCausalLM"]``.
+    vocab_size, hidden_size, num_hidden_layers : int
+    mlp_ratio : float
+        Sets ``intermediate_size`` when that field is ``None``.
+    max_recurrent_norm : float or None
+        App. C.1 clip on ``R`` (BabyLM default ``0.5``); ``None`` disables.
+    mix : {"diag", "head", "dense"}
+        ``"head"`` needs ``n_heads``.
+    n_heads : int or None
+    rms_norm_eps : float
+    tie_word_embeddings : bool
+    newton_iters : int
+        Training / prefill ``K`` (App. A default 3). Decode uses ``decode_step``.
+    scan_backend : str
+    picard_iters : int or None
+        ``None`` → ``slstm_auto_picard(T)``; ``0`` → zero-hidden only.
+    intermediate_size : int or None
+    state_size, conv_kernel, time_step_rank : int
+        vLLM cache-layout placeholders.
+    use_conv_bias, use_bias : bool
+        Unused by ParaSLSTM algebra.
+    hidden_act : str
+        HF / vLLM config parity.
+    layer_norm_epsilon : float or None
+        Alias of ``rms_norm_eps`` after ``__post_init__``.
     """
 
     model_type: str = "paraslstm"

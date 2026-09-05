@@ -1,3 +1,9 @@
+"""Parallel Newton training and O(1) decode for nonlinear RNNs (Danieli et al.).
+
+Public surface is ``__all__``: cells / ``ParaRNN``, ``newton_apply``,
+paged pool + decode, ``ParaSLSTMForCausalLM``, speculative verify.
+"""
+
 from importlib.metadata import PackageNotFoundError, version
 
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM, RNNCell

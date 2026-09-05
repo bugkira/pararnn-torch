@@ -27,19 +27,36 @@ def sequential_apply(
     step: Callable[[Tensor, Tensor], Tensor] | None = None,
     cu_seqlens: Tensor | None = None,
 ) -> Tensor:
-    """Unroll ``cell.step`` along time. ``x`` is (batch, time, d_in).
+    """Unroll ``cell.step`` along time (sequential oracle).
 
-    ``h0`` is the paper's ``h_0`` (default 0). Output ``[:, t]`` is ``h_{t+1}``.
-    Eager Python loop: correctness oracle. For a timing baseline see
-    ``sequential_apply_compiled``. When ``cell`` has ``W_x``, compute it once
-    over ``(B, T)`` (eq. 3.1). Custom ``step`` is unchanged.
+    Output at ``t`` is ``h_{t+1}``. Shared ``W_x`` GEMM over ``(B, T)`` when
+    present. CUDA ``T=1`` without grad uses ``decode_step``.
 
-    ``cu_seqlens`` packs sequences into ``x`` of shape ``(1, N, …)``; ``h0``
-    is ``(S, …)``. Each packed span is an independent unroll.
+    Parameters
+    ----------
+    cell : nn.Module
+        Cell with ``step(h_prev, x_t)`` (optional ``wx=``).
+    x : Tensor of shape (batch, time, d_in)
+        With ``cu_seqlens``, shape ``(1, N, d_in)``.
+    h0 : Tensor, optional
+        Paper ``h_0`` (default zeros); packed ``(S, ...)``.
+    step : callable, optional
+        Override ``cell.step`` (skips shared ``W_x`` and ``T=1`` decode).
+    cu_seqlens : Tensor of shape (S + 1,), optional
+        Packed offsets.
 
-    On CUDA, ``T=1`` with gradients disabled uses ``decode_step`` (one Triton
-    launch for the recurrent step). ``W_x`` is still a GEMM. Custom ``step``
-    and ``T>1`` stay on this Python loop.
+    Returns
+    -------
+    H : Tensor of shape (batch, time, *state)
+
+    Raises
+    ------
+    ValueError
+        ``time < 1`` or packed shape mismatch.
+
+    See Also
+    --------
+    newton_apply, sequential_apply_compiled, decode_step
     """
     batch, time, _ = x.shape
     if time < 1:

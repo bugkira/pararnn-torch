@@ -8,7 +8,7 @@ from dataclasses import dataclass
 # tests use 1e-4. Stop a wasted extra iter below that and above fp32 noise.
 _DEFAULT_RESIDUAL_ATOL = 1e-5
 # Library contract: K=3 (App. A). sLSTM basin: raise picard_iters (para-slstm.md).
-LIBRARY_NEWTON_ITERS = 3
+LIBRARY_NEWTON_ITERS = 3  # default Newton K (Danieli et al. App. A)
 # After K steps, max|F| above this is divergence.
 # Sequential agreement is 1e-4…2e-3; diverged sLSTM is 1e2…1e14 (para-slstm.md).
 # 1.0 sits between. None disables (K-curves, P=0 timing benches).
@@ -19,12 +19,30 @@ _RESIDUAL_WARN = 1e-3
 
 
 class NewtonDivergenceError(RuntimeError):
-    """Newton residual exceeded residual_fail. For ParaSLSTM raise picard_iters."""
+    """Raised when ``max |F|`` exceeds ``NewtonConfig.residual_fail`` after ``K`` steps.
+
+    For ParaSLSTM, increase ``picard_iters`` (or leave ``None`` for auto)
+    before increasing ``max_iters``.
+    """
 
 
 @dataclass
 class NewtonStats:
-    """Filled by ``newton_apply(..., stats=)`` after the forward."""
+    """Filled by ``newton_apply(..., stats=)``; also ``ParaRNN.last_stats``.
+
+    Attributes
+    ----------
+    max_residual : float
+        Final ``max |F(H)|`` (NaN if unused).
+    iters : int
+        Newton residual evals (``<= max_iters``); may be lower with ``fused_early_exit``.
+    scan_backend : str
+        Resolved backend (``fused`` / ``triton`` / ``eager`` / ``context_parallel``).
+    picard_iters : int
+        Picard depth used (ParaSLSTM).
+    residual_history : tuple of float
+        Per-iter residuals when recorded.
+    """
 
     max_residual: float = float("nan")
     # Residual evaluations in the Newton loop (≤ max_iters), including the
@@ -38,6 +56,55 @@ class NewtonStats:
 
 @dataclass
 class NewtonConfig:
+    """Knobs for the parallel Newton+scan forward (Danieli et al. App. A).
+
+    Default ``max_iters=3`` matches App. A for GRU/LSTM. ParaSLSTM usually
+    also needs ``picard_iters`` (``None`` = auto from ``T``).
+
+    Attributes
+    ----------
+    max_iters : int
+        Newton steps ``K`` (default ``LIBRARY_NEWTON_ITERS`` = 3).
+    omega : float
+        Step damping (``1.0`` = undamped; ``(0, 1)`` damps).
+    scan_backend : str
+        ``"auto"`` | ``"eager"`` | ``"triton"`` | ``"fused"`` |
+        ``"context_parallel"``.
+    jacobian : str
+        ``"auto"`` | ``"analytic"`` | ``"autograd"``.
+    jac_structure : str or None
+        ``"diag"`` | ``"block2"`` | ``"block4"`` | ``"head"`` | ``"dense"``,
+        or ``None`` to infer.
+    residual_atol : float or None
+        Early-stop threshold on ``max |F|`` (default ``1e-5``; ``None`` = run all ``K``).
+    residual_fail : float or None
+        Raise :exc:`NewtonDivergenceError` above this (default ``1.0``; ``None`` disables).
+    coords : str
+        ``"native"`` or ``"log"`` (ParaSLSTM LSE cell).
+    chunk_len : int or None
+        Windowed solve length; ``None`` = full ``T``.
+    picard_iters : int or None
+        ParaSLSTM warm-start depth ``P``; ``None`` = auto ``{1,3,5}``; ``0`` = zero-hidden.
+    picard_adapt : bool or None
+        Auto-raise ``P`` on large residual when ``picard_iters`` was auto.
+    picard_retry_atol : float or None
+        Residual threshold for that retry (default ``1e-3``).
+    scan_tile : str
+        Fused/Triton tile algebra: ``"assoc"`` (default) | ``"seq"`` | Thomas variants.
+    fused_time_loop : bool
+        Windowed fused walk with state carry (default ``False`` = global scan).
+    fused_window_len : int or None
+        Window size when ``fused_time_loop`` (``32``/``64``/``128``; default ``64``).
+    recompute : bool
+        Rematerialize ``H*`` in backward (VRAM trade); default stores ``H*`` (IFT).
+    fused_early_exit : bool
+        Host-sync early-stop inside fused ``K`` (experimental; needs ``residual_atol``).
+
+    See Also
+    --------
+    newton_apply, NewtonStats, NewtonDivergenceError
+    """
+
     # App. A: K=3. ParaSLSTM at long T uses Picard (picard_iters).
     max_iters: int = LIBRARY_NEWTON_ITERS
     omega: float = 1.0  # 1 = vanilla Newton; <1 damps (Gonzalez et al. ELK)

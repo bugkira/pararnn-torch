@@ -6,8 +6,8 @@ draft as a length-K sequence from ``h0``. Readout on
 draft is k*; the kept state is h_{k*} (h0 when k* = 0). The leftover
 logit is the bonus token.
 
-A draft tree (Medusa / tree attention) is a different scan (branch mask
-or batched branches). This module is the chain of K tokens.
+Draft trees (Medusa / tree attention) need a different scan (branch mask
+or batched branches).
 """
 
 from __future__ import annotations
@@ -39,13 +39,24 @@ _Readout = Callable[[Tensor], Tensor]
 
 @dataclass
 class LinearDraftResult:
-    """Greedy verify of a length-K token chain.
+    """Greedy verify result for a length-K token chain.
 
-    ``n_accepted`` is the exclusive length of the matching prefix (0..K).
-    ``hidden`` is ``h0`` when that length is 0, else the last-layer (or
-    per-layer) state after the last accepted draft token. ``bonus_ids`` is
-    the target greedy token at the first mismatch, or the extra token after
-    a full accept.
+    ``n_accepted`` is the exclusive length of the matching prefix
+    (``0..K``). ``hidden`` is ``h0`` when that length is 0, else the
+    last-layer (or per-layer) state after the last accepted draft token.
+    ``bonus_ids`` is the target greedy token at the first mismatch, or
+    the extra token after a full accept.
+
+    Attributes
+    ----------
+    n_accepted : Tensor of shape (batch,)
+        Accepted prefix lengths (int64).
+    hidden : Tensor or tuple of Tensor
+        Kept carry after verify (one tensor, or one per layer).
+    bonus_ids : Tensor of shape (batch,)
+        Next target token id after the accepted prefix.
+    logits : Tensor of shape (batch, K + 1, vocab)
+        Target logits on ``cat(h0, H[:, :K])``.
     """
 
     n_accepted: Tensor
@@ -64,14 +75,36 @@ def verify_linear_draft(
     h0: Tensor | Sequence[Tensor] | None = None,
     solver: Literal["newton", "sequential"] = "newton",
 ) -> LinearDraftResult:
-    """Verify a linear draft with one parallel (or sequential) unroll.
+    """Verify a length-K linear draft against the target ``ParaRNN``.
 
-    ``draft_x``: ``(B, K, d_in)`` embeddings of the drafted tokens.
-    ``draft_ids``: ``(B, K)`` int64 token ids. ``readout`` maps
-    ``(B, T, d_h)`` hidden slots to ``(B, T, vocab)`` logits.
+    Parameters
+    ----------
+    model : ParaRNN
+        Target stack (``batch_first=True``).
+    draft_x : Tensor of shape (batch, K, d_in)
+        Draft token embeddings.
+    draft_ids : Tensor of shape (batch, K)
+        Draft token ids (int64).
+    readout : callable
+        ``(B, T, d_h) → (B, T, vocab)`` logits.
+    h0 : Tensor or sequence of Tensor, optional
+        Initial carries (one per layer when a sequence).
+    solver : {"newton", "sequential"}, default "newton"
+        How ``H`` is produced (model ``NewtonConfig`` for newton).
 
-    ``solver='newton'`` is the serving path (Alg. 1, App. A K=3 on the
-    model's ``NewtonConfig``). ``'sequential'`` is the ``step`` oracle.
+    Returns
+    -------
+    LinearDraftResult
+        ``n_accepted``, kept ``hidden``, ``bonus_ids``, ``logits``.
+
+    Raises
+    ------
+    ValueError
+        Bad shapes, ``batch_first=False``, or unknown ``solver``.
+
+    See Also
+    --------
+    LinearDraftResult, newton_apply, sequential_apply
     """
     if solver not in ("newton", "sequential"):
         raise ValueError(f"solver must be 'newton' or 'sequential', got {solver!r}")

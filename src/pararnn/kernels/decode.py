@@ -2,8 +2,8 @@
 
 ``W_x(x)`` stays a cuBLAS GEMM (eq. 3.1). This kernel is the rest of
 ``cell.step``: load ``h`` / slots, ``a_*`` / ``R``, and ``wx`` into SRAM,
-write the next state. Serving path (``.eval()`` + ``T=1``); gradients stay
-on eager ``cell.step``.
+write the next state. Serving path is ``.eval()`` + ``T=1``; training
+gradients use eager ``cell.step``.
 
 ``out=`` reuses a buffer (CUDA graphs, decode loops). ``block_table`` is
 ``(B,)`` int32 slot ids into a pool-shaped ``state`` / ``out``
@@ -53,10 +53,23 @@ _BLOCK_D = 128
 
 
 def can_decode_step(cell: nn.Module, ref: Tensor) -> bool:
-    """Whether ``decode_step`` can run the T=1 Triton kernel on ``ref``'s device.
+    """Whether ``decode_step`` can run the T=1 Triton kernel on ``ref``.
 
-    ParaGRU / ParaLSTM, and ParaSLSTM ``mix='diag'``. CUDA fp32/fp16; bf16
-    needs SM ≥ 8.0. Head/dense mix and CPU stay on eager ``cell.step``.
+    Supports ParaGRU / ParaLSTM and ParaSLSTM with ``mix='diag'`` on CUDA
+    with fp32/fp16 (bf16 needs SM ≥ 8.0). Head/dense mix and CPU keep
+    the eager ``cell.step`` path inside ``decode_step``.
+
+    Parameters
+    ----------
+    cell : nn.Module
+        Recurrent cell (``ParaGRU``, ``ParaLSTM``, or ``ParaSLSTM``).
+    ref : Tensor
+        Device / dtype reference (typically ``x`` or ``wx``).
+
+    Returns
+    -------
+    bool
+        ``True`` when the fused decode kernel is available.
     """
     if not ref.is_cuda:
         return False
@@ -68,9 +81,26 @@ def can_decode_step(cell: nn.Module, ref: Tensor) -> bool:
 
 
 def decode_wx(cell: nn.Module, x: Tensor, *, out: Tensor | None = None) -> Tensor:
-    """``W_x(x)`` (eq. 3.1). ``out`` is the GEMM destination for CUDA graphs.
+    """Apply ``W_x(x)`` (eq. 3.1), optionally into a preallocated buffer.
 
-    ``x`` is ``(B, d_in)`` or ``(B, 1, d_in)``.
+    Parameters
+    ----------
+    cell : nn.Module
+        Cell exposing ``W_x`` (``nn.Linear``).
+    x : Tensor of shape (batch, d_in) or (batch, 1, d_in)
+        Token / residual input for one step.
+    out : Tensor of shape (batch, d_wx), optional
+        GEMM destination for CUDA-graph capture; written in place.
+
+    Returns
+    -------
+    Tensor of shape (batch, d_wx)
+        Affine projection ``W_x(x)`` (+ bias when present).
+
+    Raises
+    ------
+    TypeError
+        If ``cell`` has no ``W_x``.
     """
     lin = getattr(cell, "W_x", None)
     if lin is None:
@@ -93,12 +123,45 @@ def decode_step(
     out: Tensor | None = None,
     block_table: Tensor | None = None,
 ) -> Tensor:
-    """One sequential step. Triton on CUDA when ``can_decode_step``; else ``cell.step``.
+    """One sequential recurrent step (Triton on CUDA when eligible).
 
-    ``wx`` is optional ``W_x(x)`` (eq. 3.1). ``out`` is a preallocated next-state
-    buffer (same shape as ``state``). ``block_table`` is ``(B,)`` slot ids:
-    ``state`` / ``out`` are then a pool ``(C, …)``; default ``out`` is in-place
-    into ``state``. Gradients use eager ``cell.step``.
+    Else eager ``cell.step``. ``wx`` is optional precomputed ``W_x(x)``.
+    ``block_table`` indexes pool-shaped ``state`` / ``out``.
+
+    Parameters
+    ----------
+    cell : nn.Module
+        ``ParaGRU``, ``ParaLSTM``, or ``ParaSLSTM``.
+    state : Tensor
+        Carry ``(batch, …)`` or pool ``(capacity, …)``.
+    x : Tensor of shape (batch, d_in) or (batch, 1, d_in), optional
+        Required when ``wx`` is omitted.
+    wx : Tensor of shape (batch, d_wx), optional
+        Precomputed ``W_x(x)``.
+    out : Tensor, optional
+        Next-state destination (CUDA graphs / decode loops).
+    block_table : Tensor of shape (batch,), optional
+        Slot ids into pool-shaped buffers.
+
+    Returns
+    -------
+    Tensor
+        Next state (``out`` when provided).
+
+    Raises
+    ------
+    ValueError
+        Both ``x`` and ``wx`` omitted.
+    RuntimeError
+        ``block_table`` outside CUDA Triton decode, or CUDA-graph
+        contiguity / ``out`` requirements fail.
+    TypeError
+        No Triton kernel for ``cell``.
+
+    See Also
+    --------
+    can_decode_step : Eligibility for the Triton path.
+    decode_wx : Input projection GEMM.
     """
     ref = wx if wx is not None else x
     if ref is None:

@@ -117,17 +117,29 @@ class SlotAllocator:
             self._used.add(ii)
 
 class PagedStatePool:
-    """One physical buffer per ``ParaRNN`` layer, shared slot ids.
+    """One GPU state buffer per ``ParaRNN`` layer; shared slot ids.
 
-    Buffer layout: ``(capacity, *state_tail)`` — GRU ``(C, d_h)``, LSTM
-    ``(C, 2, d_h)``, sLSTM ``(C, 4, d_h)`` = (c, n, m, h).
+    Layout ``(capacity, *state_tail)``: GRU ``(C, d_h)``, LSTM ``(C, 2, d_h)``,
+    sLSTM ``(C, 4, d_h)``. ``host_capacity`` (default = ``capacity``) sizes
+    pinned swap for ``offload`` / ``reload``.
 
-    ``capacity`` is max GPU-resident requests (vLLM ``max_num_seqs`` analogue;
-    the example uses 8 as a toy bound). ``host_capacity`` defaults to the same
-    value: one full GPU batch can sit in pinned RAM while another occupies
-    the device (vLLM ``swap_space`` oversubscribe; RNN state is O(d_h),
-    so GiB sizing is unnecessary). Raise ``host_capacity`` if the pause queue
-    is longer; ``offload`` raises ``paged host OOM`` when it is full.
+    Parameters
+    ----------
+    model : ParaRNN
+    capacity : int
+        GPU slots.
+    host_capacity : int, optional
+        Pinned host pages; defaults to ``capacity``.
+    allocator, host_allocator : SlotAllocator, optional
+        Shared free-lists (e.g. from ``BlockStackPool``).
+
+    Attributes
+    ----------
+    device, dtype
+    allocator, host_allocator : SlotAllocator
+    buffers, host_buffers : list of Tensor
+    model : ParaRNN
+    capacity, host_capacity : int
     """
 
     def __init__(
@@ -193,13 +205,43 @@ class PagedStatePool:
         return self.host_allocator.capacity
 
     def allocate(self, n: int) -> Tensor:
-        """New requests. Slots are zeroed (fresh ``h0``)."""
+        """Allocate ``n`` fresh GPU slots (zeroed ``h0``).
+
+        Parameters
+        ----------
+        n : int
+            Number of slots (``>= 1``).
+
+        Returns
+        -------
+        Tensor of shape (n,)
+            Slot ids on ``self.device`` (dtype ``long``).
+
+        Raises
+        ------
+        ValueError
+            If ``n < 1``.
+        RuntimeError
+            If the free-list cannot satisfy ``n`` (paged cache OOM).
+        """
         ids = self.allocator.allocate(n)
         slot_ids = torch.tensor(ids, dtype=torch.long, device=self.device)
         self._zero(self.buffers, slot_ids)
         return slot_ids
 
     def free(self, slot_ids: Tensor | Sequence[int]) -> None:
+        """Release GPU slots and zero their buffer rows.
+
+        Parameters
+        ----------
+        slot_ids : Tensor or sequence of int
+            Allocated slot ids to free.
+
+        Raises
+        ------
+        KeyError
+            If an id is not currently allocated.
+        """
         ids = _as_id_list(slot_ids)
         self.allocator.free(ids)
         self._zero(self.buffers, torch.tensor(ids, dtype=torch.long, device=self.device))
@@ -207,8 +249,25 @@ class PagedStatePool:
     def offload(self, slot_ids: Tensor | Sequence[int]) -> Tensor:
         """Copy GPU slots to pinned host pages and free the GPU slots.
 
-        Returns host page ids. The GPU slot ids may be reused. Copy finishes
-        before the GPU rows are zeroed.
+        Copy finishes before GPU rows are zeroed. Returned host page ids
+        may later feed ``reload``; GPU slot ids may be reused meanwhile.
+
+        Parameters
+        ----------
+        slot_ids : Tensor or sequence of int
+            Allocated GPU slot ids.
+
+        Returns
+        -------
+        Tensor of shape (n,)
+            Host page ids on ``self.device``.
+
+        Raises
+        ------
+        KeyError
+            If a GPU id is not allocated.
+        RuntimeError
+            If the host free-list is exhausted (paged host OOM).
         """
         gpu_list = _as_id_list(slot_ids)
         n = len(gpu_list)
@@ -241,8 +300,25 @@ class PagedStatePool:
     def reload(self, host_ids: Tensor | Sequence[int]) -> Tensor:
         """Allocate GPU slots, copy host pages back, free the host pages.
 
-        Returns new GPU slot ids (they may differ from the ids at ``offload``).
-        Host pages stay allocated if GPU allocate raises.
+        New GPU slot ids may differ from the ids used at ``offload``. Host
+        pages stay allocated if GPU ``allocate`` raises.
+
+        Parameters
+        ----------
+        host_ids : Tensor or sequence of int
+            Allocated host page ids from ``offload``.
+
+        Returns
+        -------
+        Tensor of shape (n,)
+            New GPU slot ids.
+
+        Raises
+        ------
+        KeyError
+            If a host id is not allocated.
+        RuntimeError
+            If GPU allocate fails (paged cache OOM).
         """
         host_list = _as_id_list(host_ids)
         n = len(host_list)
@@ -271,19 +347,50 @@ class PagedStatePool:
         return gpu_ids
 
     def free_host(self, host_ids: Tensor | Sequence[int]) -> None:
-        """Discard paused state (request cancelled while off GPU)."""
+        """Discard paused host pages (request cancelled while off GPU).
+
+        Parameters
+        ----------
+        host_ids : Tensor or sequence of int
+            Host page ids to free and zero.
+        """
         ids = _as_id_list(host_ids)
         self.host_allocator.free(ids)
         self._zero(self.host_buffers, torch.tensor(ids, dtype=torch.long))
 
     def gather(self, slot_ids: Tensor) -> Tensor | tuple[Tensor, ...]:
-        """``h0`` for ``paged_apply``, one tensor per layer."""
+        """Gather ``h0`` rows for ``paged_apply``.
+
+        Parameters
+        ----------
+        slot_ids : Tensor of shape (S,)
+            Slot ids to index.
+
+        Returns
+        -------
+        Tensor or tuple of Tensor
+            One tensor per layer; a single layer returns the tensor alone.
+            Each row matches that layer's state tail.
+        """
         ids = slot_ids.to(device=self.device, dtype=torch.long)
         got = [buf.index_select(0, ids) for buf in self.buffers]
         return got[0] if len(got) == 1 else tuple(got)
 
     def scatter(self, slot_ids: Tensor, states: Tensor | Sequence[Tensor]) -> None:
-        """Write last states back. ``states`` matches ``gather``."""
+        """Write last states back into the pool.
+
+        Parameters
+        ----------
+        slot_ids : Tensor of shape (S,)
+            Destination slot ids.
+        states : Tensor or sequence of Tensor
+            Per-layer states matching ``gather`` layout.
+
+        Raises
+        ------
+        ValueError
+            If the number of layer states mismatches ``len(self.buffers)``.
+        """
         ids = slot_ids.to(device=self.device, dtype=torch.long)
         packed = (states,) if isinstance(states, Tensor) else tuple(states)
         if len(packed) != len(self.buffers):
@@ -315,12 +422,37 @@ def paged_apply(
     cu_seqlens: Tensor | None = None,
     solver: str = "newton",
 ) -> Tensor:
-    """Prefill or decode through the pool.
+    """Prefill or decode through a ``PagedStatePool``.
 
-    Dense: ``x`` is ``(B, T, d_in)`` with ``B == slot_ids.numel()``.
+    Dense: ``x`` is ``(batch, time, d_in)`` with ``batch == slot_ids.numel()``.
     Packed mix: ``x`` is ``(1, N, d_in)`` and ``cu_seqlens`` has ``S+1``
-    entries, ``S == slot_ids.numel()``. Decode is ``T=1`` (or a length-1
-    packed span). Last state of each request is scattered back.
+    entries with ``S == slot_ids.numel()``. Decode uses ``time=1`` (or a
+    length-1 packed span). The last state of each request is scattered
+    back into the pool.
+
+    Parameters
+    ----------
+    pool : PagedStatePool
+        State pages and owning ``ParaRNN``.
+    slot_ids : Tensor of shape (S,)
+        Request slot ids (``block_table``).
+    x : Tensor of shape (batch, time, d_in) or (1, N, d_in)
+        Layer input (dense or packed).
+    cu_seqlens : Tensor of shape (S + 1,), optional
+        Cumulative lengths for packed input.
+    solver : {"newton", "sequential"}, default "newton"
+        Parallel Newton scan or sequential unroll / Triton decode.
+
+    Returns
+    -------
+    Tensor of shape (batch, time, d_h) or (1, N, d_h)
+        Hidden outputs from the last layer (slot extracted for multi-slot
+        cells).
+
+    Raises
+    ------
+    ValueError
+        On bad ``solver``, non-``batch_first`` model, or shape mismatch.
     """
     if solver not in ("newton", "sequential"):
         raise ValueError(f"solver must be 'newton' or 'sequential', got {solver!r}")

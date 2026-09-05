@@ -26,7 +26,16 @@ _LAZY = "pararnn.vllm_plugin.modeling:VLLMParaSLSTMForCausalLM"
 
 
 def register() -> None:
-    """Idempotent ``ModelRegistry.register_model`` for the plugin entry point."""
+    """Register ``ParaSLSTMForCausalLM`` with vLLM ``ModelRegistry``.
+
+    Idempotent; safe to call from the ``vllm.general_plugins`` entry point
+    in every process. No-ops when ``vllm`` is not installed or the
+    architecture is already listed.
+
+    Returns
+    -------
+    None
+    """
     global _REGISTERED
     if _REGISTERED:
         return

@@ -1,5 +1,8 @@
 # Docs
 
+API: numpydoc docstrings on root ``__all__`` (``help(pararnn.NewtonConfig)``).
+Triton ``@jit`` kernels stay module-level one-liners.
+
 | File | What |
 |---|---|
 | [`xlstm.md`](xlstm.md) | `ParaSLSTM` cell, stacking examples, [API notes](xlstm.md#api-notes) (outputs, `mix=`, scan backends) |

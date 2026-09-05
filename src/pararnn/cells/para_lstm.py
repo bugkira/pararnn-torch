@@ -21,12 +21,35 @@ def _tanh_prime_from_act(act: Tensor) -> Tensor:
 
 
 class ParaLSTM(nn.Module):
-    """Coupled input-forget LSTM with peepholes (Greff et al. 2017), diagonal A/C.
+    """Coupled input-forget LSTM with peepholes and diagonal ``A`` / ``C``.
 
-    State layout ``(..., 2, hidden_size)``: index 0 = cell ``c``, 1 = hidden ``h``.
-    Candidate ``z`` uses tanh (σ_z in the paper). Forget/output: sigmoid.
-    ``max_recurrent_norm`` is an App. C.1 elementwise clamp of ``a_*`` / ``c_*``
-    to ``[-cap, cap]``.
+    CIFG peephole LSTM (Greff et al. 2017; Danieli et al. 2025 eq. 3.1b,
+    3.3). Candidate ``z`` uses tanh (``σ_z`` in the paper); forget and
+    output gates use sigmoid.
+
+    Attributes
+    ----------
+    input_size, d_in : int
+        Input feature width.
+    hidden_size, d_h : int
+        Channel width per state slot.
+    state_slots : int
+        Always ``2``. State layout ``(..., 2, d_h)``: index 0 = cell ``c``,
+        index 1 = hidden ``h``.
+    hidden_slot : int
+        Index of the hidden slot (``1``).
+    max_recurrent_norm : float or None
+        App. C.1 elementwise clamp of ``a_*`` / ``c_*`` to ``[-cap, cap]``.
+    a_f, a_z, a_o : Parameter
+        Diagonal recurrent vectors for forget, candidate, and output.
+    c_f, c_o : Parameter
+        Diagonal peephole vectors for forget and output.
+    W_x : nn.Linear
+        Input projection to three gates, ``d_in → 3 * d_h``.
+
+    See Also
+    --------
+    ParaGRU, ParaSLSTM, ParaRNN
     """
 
     def __init__(
@@ -40,6 +63,26 @@ class ParaLSTM(nn.Module):
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        input_size : int or None, default=None
+            Input feature width. Alias of ``d_in``.
+        hidden_size : int or None, default=None
+            Channel width. Alias of ``d_h``.
+        d_in : int or None, default=None
+            Alias for ``input_size``.
+        d_h : int or None, default=None
+            Alias for ``hidden_size``.
+        max_recurrent_norm : float or None, default=0.5
+            Elementwise clamp of ``a_*`` and ``c_*`` to
+            ``[-max_recurrent_norm, max_recurrent_norm]`` (App. C.1).
+            ``None`` disables clipping.
+        device : torch.device or str or None, default=None
+            Parameter device.
+        dtype : torch.dtype or None, default=None
+            Parameter dtype.
+        """
         super().__init__()
         input_size, hidden_size = resolve_layer_sizes(input_size, hidden_size, d_in=d_in, d_h=d_h)
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -87,19 +130,54 @@ class ParaLSTM(nn.Module):
         )
 
     def step(self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None) -> Tensor:
-        """One step (sequential unroll / decode).
+        """Advance one LSTM step (sequential unroll / decode).
 
-        ``wx`` is optional ``W_x(x)`` (eq. 3.1, independent of state).
+        Parameters
+        ----------
+        state_prev : Tensor
+            Previous state. Tensor of shape ``(..., 2, d_h)`` with slots
+            ``(c, h)``.
+        x : Tensor
+            Input at this step. Tensor of shape ``(..., d_in)``. Used when
+            ``wx`` is omitted.
+        wx : Tensor or None, default=None
+            Optional precomputed ``W_x(x)`` (eq. 3.1, independent of state).
+            When set, ``x`` is ignored for the input projection.
+
+        Returns
+        -------
+        state_new : Tensor
+            Next state. Tensor of shape ``(..., 2, d_h)``.
         """
         return self._recurrence(state_prev, x, wx=wx).state_new
 
     def step_with_jacobian(
         self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
     ) -> tuple[Tensor, Tensor]:
-        """``jac`` shape ``(..., 2, 2, d_h)`` with ``jac[..., out, in, :]``.
+        """Advance one step and return the 2×2 block Jacobian per channel.
 
-        ``out/in`` in {0: c, 1: h} matching eq. 3.2b:
-        [[Jcc, Jch], [Jhc, Jhh]].
+        Jacobian matches eq. 3.2b with diagonal ``A`` / ``C`` (elementwise
+        products):
+
+        ``[[J_cc, J_ch], [J_hc, J_hh]]`` with ``out`` / ``in`` in
+        ``{0: c, 1: h}``.
+
+        Parameters
+        ----------
+        state_prev : Tensor
+            Previous state. Tensor of shape ``(..., 2, d_h)``.
+        x : Tensor
+            Input at this step. Tensor of shape ``(..., d_in)``.
+        wx : Tensor or None, default=None
+            Optional precomputed ``W_x(x)``.
+
+        Returns
+        -------
+        state_new : Tensor
+            Next state. Tensor of shape ``(..., 2, d_h)``.
+        jac : Tensor
+            Block Jacobian. Tensor of shape ``(..., 2, 2, d_h)`` with
+            ``jac[..., out, in, :]``.
         """
         acts = self._recurrence(state_prev, x, wx=wx)
         f_p = _sigmoid_prime_from_act(acts.f)

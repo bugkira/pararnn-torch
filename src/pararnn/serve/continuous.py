@@ -18,10 +18,33 @@ log = logging.getLogger(__name__)
 class BlockStackPool:
     """Shared-slot pool across a stack of ``ParaSLSTMBlock`` modules.
 
-    Each block owns a one-layer ``ParaRNN``; every request keeps the **same**
-    slot id in every layer (vLLM ``state_indices`` / ``block_table`` analogue).
-    Prefill uses Newton or sequential ``paged_apply``; decode is ``T=1`` with
-    Triton ``decode_step(..., block_table=)`` when CUDA allows.
+    Each block owns a one-layer ``ParaRNN``; every request keeps the same
+    slot id in every layer (vLLM ``state_indices`` / ``block_table``
+    analogue). Prefill uses Newton or sequential ``paged_apply``; decode
+    is ``T=1`` with Triton ``decode_step(..., block_table=)`` when CUDA
+    allows.
+
+    Parameters
+    ----------
+    blocks : sequence of ParaSLSTMBlock
+        Non-empty block stack (order is layer order).
+    capacity : int
+        GPU slot count (``>= 1``).
+    host_capacity : int, optional
+        Pinned host page count; defaults to ``capacity``.
+
+    Attributes
+    ----------
+    blocks : list of ParaSLSTMBlock
+        Stored block stack.
+    pools : list of PagedStatePool
+        One pool per block, sharing ``allocator`` / ``host_allocator``.
+    allocator, host_allocator : SlotAllocator
+        Shared GPU and host free-lists.
+    device, dtype
+        Taken from the first pool.
+    capacity, host_capacity, n_layers : int
+        Limits and stack depth.
     """
 
     def __init__(
@@ -70,7 +93,18 @@ class BlockStackPool:
         return len(self.pools)
 
     def allocate(self, n: int) -> Tensor:
-        """Allocate ``n`` fresh slots (zeroed on every layer)."""
+        """Allocate ``n`` fresh slots (zeroed on every layer).
+
+        Parameters
+        ----------
+        n : int
+            Number of shared slot ids.
+
+        Returns
+        -------
+        Tensor of shape (n,)
+            Slot ids on ``self.device``.
+        """
         # Shared allocator: only ``pools[0]`` marks ids used; zero the rest.
         ids = self.pools[0].allocate(n)
         for pool in self.pools[1:]:
@@ -78,7 +112,13 @@ class BlockStackPool:
         return ids
 
     def free(self, slot_ids: Tensor | Sequence[int]) -> None:
-        """Free slots and zero every layer buffer row."""
+        """Free slots and zero every layer buffer row.
+
+        Parameters
+        ----------
+        slot_ids : Tensor or sequence of int
+            Allocated slot ids.
+        """
         id_list = _as_id_list(slot_ids)
         t = torch.tensor(id_list, dtype=torch.long, device=self.device)
         for pool in self.pools:
@@ -86,7 +126,18 @@ class BlockStackPool:
         self.allocator.free(id_list)
 
     def offload(self, slot_ids: Tensor | Sequence[int]) -> Tensor:
-        """Copy all layer slots to host; free GPU rows. Returns host page ids."""
+        """Copy all layer slots to host and free GPU rows.
+
+        Parameters
+        ----------
+        slot_ids : Tensor or sequence of int
+            Allocated GPU slot ids.
+
+        Returns
+        -------
+        Tensor of shape (n,)
+            Host page ids on ``self.device``.
+        """
         gpu_list = _as_id_list(slot_ids)
         n = len(gpu_list)
         self.allocator.require_used(gpu_list)
@@ -108,7 +159,18 @@ class BlockStackPool:
         return torch.tensor(host_list, dtype=torch.long, device=self.device)
 
     def reload(self, host_ids: Tensor | Sequence[int]) -> Tensor:
-        """Reload host pages onto (possibly new) GPU slots for every layer."""
+        """Reload host pages onto (possibly new) GPU slots for every layer.
+
+        Parameters
+        ----------
+        host_ids : Tensor or sequence of int
+            Host page ids from ``offload``.
+
+        Returns
+        -------
+        Tensor of shape (n,)
+            New GPU slot ids.
+        """
         host_list = _as_id_list(host_ids)
         n = len(host_list)
         self.host_allocator.require_used(host_list)
@@ -140,7 +202,19 @@ class BlockStackPool:
         """Point pool buffers at external tensors (vLLM-bound ``kv_cache``).
 
         Each ``layer_states[i]`` must be ``(C, SLSTM_SLOTS, d_h)`` matching
-        capacity. Ownership stays with the caller; we do not free them.
+        ``capacity``. Ownership stays with the caller.
+
+        Parameters
+        ----------
+        layer_states : sequence of Tensor
+            One ``(capacity, SLSTM_SLOTS, d_h)`` buffer per layer.
+        mark_used : sequence of int, optional
+            Slot ids to adopt as already allocated.
+
+        Raises
+        ------
+        ValueError
+            On layer count or shape mismatch.
         """
         if len(layer_states) != self.n_layers:
             raise ValueError(
@@ -174,7 +248,29 @@ class BlockStackPool:
         cu_seqlens: Tensor | None = None,
         solver: str = "sequential",
     ) -> Tensor:
-        """Run the block stack; update pool slots in place. Returns hidden ``h``."""
+        """Run the block stack and update pool slots in place.
+
+        Parameters
+        ----------
+        h : Tensor of shape (batch, time, d) or (1, N, d)
+            Residual-stream hidden states (dense or packed).
+        slot_ids : Tensor of shape (S,)
+            Shared slot ids across layers.
+        cu_seqlens : Tensor of shape (S + 1,), optional
+            Packed sequence boundaries.
+        solver : {"newton", "sequential"}, default "sequential"
+            Solver for each layer's ``paged_apply``.
+
+        Returns
+        -------
+        Tensor of shape (batch, time, d) or (1, N, d)
+            Updated residual stream after all blocks.
+
+        Raises
+        ------
+        ValueError
+            If ``h`` is not rank-3.
+        """
         if h.dim() != 3:
             raise ValueError(f"h must be (B, T, d) or packed (1, N, d), got {tuple(h.shape)}")
         ids = slot_ids.to(device=h.device, dtype=torch.long)
@@ -198,14 +294,41 @@ class BlockStackPool:
 
 
 def state_shape(hidden_size: int) -> tuple[int, int]:
-    """Per-layer recurrent page shape ``(SLSTM_SLOTS, d_h)``."""
+    """Per-layer recurrent page shape ``(SLSTM_SLOTS, d_h)``.
+
+    Parameters
+    ----------
+    hidden_size : int
+        Model width ``d_h``.
+
+    Returns
+    -------
+    tuple of int
+        ``(SLSTM_SLOTS, hidden_size)``.
+    """
     return (SLSTM_SLOTS, int(hidden_size))
 
 
 def state_shapes_for_vllm(hidden_size: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Mamba-shaped ``(conv, temporal)`` pair for ``get_mamba_state_shape_from_config``.
+    """Mamba-shaped ``(conv, temporal)`` pair for vLLM state calculators.
 
     Conv is a length-1 dummy (unused). Temporal is the sLSTM carry
     ``(SLSTM_SLOTS, d_h)`` that ``bind_external`` / ``decode_step`` consume.
+
+    Parameters
+    ----------
+    hidden_size : int
+        Model width ``d_h``.
+
+    Returns
+    -------
+    conv_shape : tuple of int
+        ``(1,)``.
+    temporal_shape : tuple of int
+        ``(SLSTM_SLOTS, hidden_size)``.
+
+    See Also
+    --------
+    state_shape : Temporal page shape alone.
     """
     return ((1,), state_shape(hidden_size))

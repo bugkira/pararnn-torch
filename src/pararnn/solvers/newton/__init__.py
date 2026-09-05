@@ -210,26 +210,52 @@ def newton_apply(
     cu_seqlens: Tensor | None = None,
     block_table: Tensor | None = None,
 ) -> Tensor:
-    """Parallel forward: Newton on F(H)=0, inner solve via associative scan.
+    """Solve ``F(H)=0`` with Newton + associative scan (Danieli et al. Alg. 1).
 
-    ``h0`` is the paper's ``h_0`` (default 0). Fused kernels prepend ``h0``.
+    Inner solve is a scan on the local Jacobian monoid. With gradients,
+    backward is one reverse scan (eq. 2.6). For train/eval switching use
+    :class:`~pararnn.layers.ParaRNN`; call this for custom cells or benches.
 
-    ``cu_seqlens`` packs sequences into ``x`` of shape ``(1, N, …)``; ``h0``
-    is then ``(S, …)``. The inner scan is segmented (head flags). Fused
-    ParaGRU walks packed heads in-kernel. LSTM/sLSTM ``fused`` falls back to
-    Triton scan with ``J=0`` at heads. ``eager`` keeps Hillis–Steele.
+    Parameters
+    ----------
+    cell : nn.Module
+        Cell with ``step`` (prefer ``step_with_jacobian``). Fused: ParaGRU,
+        ParaLSTM, ParaSLSTM ``mix='diag'``.
+    x : Tensor of shape (batch, time, d_in)
+        With ``cu_seqlens``, shape ``(1, N, d_in)``.
+    config : NewtonConfig, optional
+        Defaults to ``NewtonConfig()`` (``K=3``).
+    h0 : Tensor, optional
+        Paper ``h_0`` (default zeros). Packed: ``(S, ...)``. With
+        ``block_table``: pool ``(C, ...)``.
+    stats : NewtonStats, optional
+        Filled in-place with residual / backend info.
+    cu_seqlens : Tensor of shape (S + 1,), optional
+        Packed-batch offsets; segment heads use ``J=0``.
+    block_table : Tensor of shape (batch,) or (S,), optional
+        Slot ids into a paged ``h0`` pool (fused inference; no ``chunk_len``).
 
-    ``block_table`` is ``(B,)`` or ``(S,)`` slot ids: ``h0`` is then a pool
-    ``(C, …)`` and fused kernels load ``h0[block_table[b]]``. Inference only.
+    Returns
+    -------
+    H : Tensor of shape (batch, time, *state)
+        Solved trajectory (GRU ``d_h``; LSTM ``(2, d_h)``; sLSTM ``(4, d_h)``).
 
-    If gradients are enabled, the backward is eq. 2.6 (one reverse scan).
-    ``chunk_len`` windows that scan as well: each window is a local reverse
-    scan, and ``∇_{h0}`` of window ``i+1`` adds into the last step of window
-    ``i`` (the forward carry).
+    Raises
+    ------
+    NewtonDivergenceError
+        ``max |F|`` above ``config.residual_fail``.
+    ValueError
+        Bad ``block_table`` / backend / chunk combo.
 
-    ``recompute=True`` (Level 2): rematerialize H* in backward instead of
-    saving it on the Autograd Function. Same grads as the default IFT path;
-    extra Newton forward FLOPs for long-T VRAM.
+    See Also
+    --------
+    sequential_apply, ParaRNN, NewtonConfig
+
+    Notes
+    -----
+    Packed fused ParaGRU stays in-kernel; LSTM/sLSTM fused + ``cu_seqlens``
+    falls back to Triton scan. ``chunk_len`` windows forward and reverse.
+    ``recompute=True`` rematerializes ``H*`` in backward (Level 2).
     """
     config = config or NewtonConfig()
     _validate_config(config)

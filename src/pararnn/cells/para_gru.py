@@ -24,11 +24,28 @@ def _tanh_prime_from_act(act: Tensor) -> Tensor:
 class ParaGRU(nn.Module):
     """Fully gated GRU with diagonal recurrent weights.
 
-    Gates: update z, reset r, candidate n (paper's c). Activations: sigmoid /
-    sigmoid / tanh (Cho et al. 2014, as used in §3).
+    Gates: update ``z``, reset ``r``, candidate ``n`` (paper's ``c``).
+    Activations: sigmoid / sigmoid / tanh (Cho et al. 2014, as used in §3).
+    Recurrent matrices are diagonal (Danieli et al. 2025 eq. 3.1a, 3.3).
 
-    ``max_recurrent_norm`` is an App. C.1 elementwise clamp of ``a_*`` to
-    ``[-cap, cap]``.
+    Attributes
+    ----------
+    input_size, d_in : int
+        Input feature width.
+    hidden_size, d_h : int
+        Hidden width.
+    state_slots : int
+        Always ``1``; state layout is ``(..., d_h)``.
+    max_recurrent_norm : float or None
+        App. C.1 elementwise clamp of ``a_*`` to ``[-cap, cap]``.
+    a_z, a_r, a_n : Parameter
+        Diagonal recurrent vectors, each of shape ``(d_h,)``.
+    W_x : nn.Linear
+        Input projection to three gates, ``d_in → 3 * d_h``.
+
+    See Also
+    --------
+    ParaLSTM, ParaSLSTM, ParaRNN
     """
 
     def __init__(
@@ -42,6 +59,26 @@ class ParaGRU(nn.Module):
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        input_size : int or None, default=None
+            Input feature width. Alias of ``d_in``.
+        hidden_size : int or None, default=None
+            Hidden width. Alias of ``d_h``.
+        d_in : int or None, default=None
+            Alias for ``input_size``.
+        d_h : int or None, default=None
+            Alias for ``hidden_size``.
+        max_recurrent_norm : float or None, default=0.5
+            Elementwise clamp of ``a_z``, ``a_r``, ``a_n`` to
+            ``[-max_recurrent_norm, max_recurrent_norm]`` (App. C.1).
+            ``None`` disables clipping.
+        device : torch.device or str or None, default=None
+            Parameter device.
+        dtype : torch.dtype or None, default=None
+            Parameter dtype.
+        """
         super().__init__()
         input_size, hidden_size = resolve_layer_sizes(input_size, hidden_size, d_in=d_in, d_h=d_h)
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -81,20 +118,61 @@ class ParaGRU(nn.Module):
         )
 
     def step(self, h_prev: Tensor, x: Tensor | None = None, *, wx: Tensor | None = None) -> Tensor:
-        """One step. ``h_prev`` last dim ``d_h``; ``x`` last dim ``d_in``.
+        """Advance one GRU step (sequential unroll / decode).
 
-        Sequential unroll / decode. ``wx`` is optional ``W_x(x)`` (eq. 3.1,
-        independent of ``h``) so Newton can reuse one GEMM across init + ``K``
-        iterations. Pass ``x`` or ``wx``; ``wx`` wins if both are set.
+        Parameters
+        ----------
+        h_prev : Tensor
+            Previous hidden state. Tensor of shape ``(..., d_h)``.
+        x : Tensor or None, default=None
+            Input at this step. Tensor of shape ``(..., d_in)``. Required
+            when ``wx`` is omitted.
+        wx : Tensor or None, default=None
+            Optional precomputed ``W_x(x)`` (eq. 3.1, independent of ``h``)
+            so Newton can reuse one GEMM across init and ``K`` iterations.
+            When both ``x`` and ``wx`` are set, ``wx`` is used.
+
+        Returns
+        -------
+        h_new : Tensor
+            Next hidden state. Tensor of shape ``(..., d_h)``.
+
+        Raises
+        ------
+        ValueError
+            When both ``x`` and ``wx`` are ``None``.
         """
         return self._recurrence(h_prev, x, wx=wx).h_new
 
     def step_with_jacobian(
         self, h_prev: Tensor, x: Tensor | None = None, *, wx: Tensor | None = None
     ) -> tuple[Tensor, Tensor]:
-        """Return ``(h_new, j_diag)`` with ``j_diag = ∂h_new/∂h_prev`` (diagonal).
+        """Advance one step and return the diagonal Jacobian.
 
-        Jacobian: eq. 3.2a with A_* diagonal, so products are elementwise.
+        Jacobian follows eq. 3.2a with diagonal ``A_*``, so all products are
+        elementwise.
+
+        Parameters
+        ----------
+        h_prev : Tensor
+            Previous hidden state. Tensor of shape ``(..., d_h)``.
+        x : Tensor or None, default=None
+            Input at this step. Tensor of shape ``(..., d_in)``.
+        wx : Tensor or None, default=None
+            Optional precomputed ``W_x(x)``. When both ``x`` and ``wx`` are
+            set, ``wx`` is used.
+
+        Returns
+        -------
+        h_new : Tensor
+            Next hidden state. Tensor of shape ``(..., d_h)``.
+        j_diag : Tensor
+            ``∂h_new/∂h_prev`` as a diagonal. Tensor of shape ``(..., d_h)``.
+
+        Raises
+        ------
+        ValueError
+            When both ``x`` and ``wx`` are ``None``.
         """
         acts = self._recurrence(h_prev, x, wx=wx)
         z_p = _sigmoid_prime_from_act(acts.z)

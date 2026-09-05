@@ -25,32 +25,29 @@ _HIDDEN_LAYOUTS = ("paper", "pytorch")
 
 
 class ParaRNN(nn.Module):
-    """Stack of RNN cells as a sequence module.
+    """Stacked RNN cells: Newton+scan in ``train()``, sequential ``step`` in ``eval()``.
 
-    ``solver='auto'`` (default) follows ``self.training``: Newton+scan while
-    training, sequential ``step`` in ``eval()``. ``solver='newton'`` /
-    ``'sequential'`` force that path. The switch is ``self.training``.
+    ``solver='auto'`` follows ``self.training``; ``'newton'`` / ``'sequential'``
+    force a path. Default layout is batch-first ``(B, T, d_in)``. Multi-slot
+    cells (LSTM / sLSTM) emit the hidden slot unless ``output_hidden=False``.
+    See ``__init__`` / ``forward`` for packed ``cu_seqlens`` and
+    ``hidden_layout='pytorch'``.
 
-    Default ``x`` is ``(batch, time, d_in)``. ``batch_first=False`` takes
-    ``nn.LSTM`` ``(time, batch, …)`` and permutes at this wrapper only.
-    ``h0`` stays batch-leading ``(B, …)``.
+    Attributes
+    ----------
+    layers : nn.ModuleList
+    config : NewtonConfig
+    return_hidden, output_hidden : bool
+    solver : {'auto', 'newton', 'sequential'}
+    batch_first : bool
+    hidden_layout : {'paper', 'pytorch'}
+    dropout : float
+    last_stats : list of NewtonStats
+        Per-layer diagnostics from the last Newton forward.
 
-    Default output is the last cell's **hidden slot** when that cell has
-    ``state_slots > 1`` (LSTM / sLSTM → ``(B, T, d_h)``). GRU is unchanged
-    ``(B, T, d_h)``. ``output_hidden=False`` keeps the full trajectory
-    (LSTM ``(B, T, 2, d_h)``, sLSTM ``(B, T, 4, d_h)``). Intermediate
-    multi-slot layers still feed only the hidden slot into the next layer.
-
-    ``dropout`` is between layers, same as ``nn.LSTM`` (a no-op at
-    ``num_layers==1`` besides the warning). Packed sequences: ``cu_seqlens``
-    on ``forward``, ``x`` shaped ``(1, N, …)`` (batch-first), ``h0`` is
-    ``(S, …)``. ``bidirectional`` and ``proj_size`` are outside the API.
-
-    ``hidden_layout='pytorch'`` swaps LSTM ``h0`` slots and returns
-    ``(output, (h_n, c_n))`` with ``h_n``/``c_n`` shaped ``(num_layers, B, H)``
-    like ``nn.LSTM`` (independent of ``batch_first``). Paper
-    ``return_hidden`` last state is the last layer only. Kernels stay paper
-    ``[c, h]``. LSTM only.
+    See Also
+    --------
+    newton_apply, sequential_apply, ParaSLSTMBlock, RNNCell
     """
 
     def __init__(
@@ -68,6 +65,38 @@ class ParaRNN(nn.Module):
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        cell : nn.Module or sequence of nn.Module
+            Template cell, or one cell per layer. With a single cell and
+            ``num_layers > 1``, deeper layers use ``input_size = hidden_size``.
+        num_layers : int, default=1
+            Stack depth (must match ``len(cell)`` when ``cell`` is a sequence).
+        config : NewtonConfig or None, default=None
+            Defaults to ``NewtonConfig()``.
+        return_hidden : bool, default=False
+            Also return last-step state of the final layer (paper layout).
+        output_hidden : bool or None, default=None
+            Emit only the hidden slot; default True when last cell is multi-slot.
+        solver : {'auto', 'newton', 'sequential'}, default='auto'
+            ``'auto'``: Newton while ``training``, sequential in ``eval()``.
+        batch_first : bool, default=True
+            ``(B, T, …)`` vs ``(T, B, …)``.
+        hidden_layout : {'paper', 'pytorch'}, default='paper'
+            LSTM packing; ``'pytorch'`` needs ``ParaLSTM`` layers.
+        dropout : float, default=0.0
+            Between-layer dropout in ``[0, 1]``.
+        device, dtype : optional
+            Applied to constructed / provided cells.
+
+        Raises
+        ------
+        ValueError
+            Invalid ``solver``, ``hidden_layout``, ``dropout``, or layer counts.
+        TypeError
+            ``hidden_layout='pytorch'`` on non-LSTM cells, or ``check_cell`` fails.
+        """
         super().__init__()
         if solver not in _SOLVERS:
             raise ValueError(f"solver must be one of {_SOLVERS}, got {solver!r}")
@@ -133,6 +162,42 @@ class ParaRNN(nn.Module):
         h0: Tensor | Sequence[Tensor] | None = None,
         cu_seqlens: Tensor | None = None,
     ) -> Tensor | tuple[Tensor, Tensor] | tuple[Tensor, tuple[Tensor, Tensor]]:
+        """
+        Parameters
+        ----------
+        x : Tensor
+            Input sequence. Tensor of shape ``(batch, time, d_in)`` when
+            ``batch_first=True``, else ``(time, batch, d_in)``. With
+            ``cu_seqlens``, use packed batch-first layout ``(1, N, d_in)``.
+        h0 : Tensor or sequence of Tensor or None, default=None
+            Initial state(s). Batch-leading. For one layer, a single state
+            tensor; for ``num_layers > 1``, a sequence of length
+            ``num_layers``. Shape matches each cell's
+            ``(batch, …, d_h)`` / ``(batch, state_slots, d_h)``. With
+            packing, ``batch`` is the number of sequences ``S``.
+        cu_seqlens : Tensor or None, default=None
+            Cumulative sequence lengths for packed input
+            (``int32`` / ``int64``, length ``S + 1``).
+
+        Returns
+        -------
+        output : Tensor
+            Sequence output. Tensor of shape ``(batch, time, d_h)`` (or
+            ``(time, batch, d_h)``) when ``output_hidden`` extracts the
+            hidden slot; full multi-slot trajectories keep the slot axis.
+        h_n : Tensor, optional
+            With ``return_hidden`` and ``hidden_layout='paper'``: last
+            time-step state of the final layer.
+        (h_n, c_n) : tuple of Tensor, optional
+            With ``hidden_layout='pytorch'``: ``nn.LSTM``-style finals,
+            each Tensor of shape ``(num_layers, batch, hidden_size)``.
+
+        Raises
+        ------
+        ValueError
+            When input rank/features, ``h0`` shapes, or packed batch size
+            are invalid.
+        """
         _validate_input(x, self.layers[0], batch_first=self.batch_first)
         if not self.batch_first:
             x = x.transpose(0, 1)

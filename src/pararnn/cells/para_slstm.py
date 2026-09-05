@@ -1,12 +1,13 @@
 """sLSTM (Beck et al. 2024) as a Newton cell.
 
-State ``(..., 4, hidden_size)`` = (c, n, m, h). Stabilizer ``max``, exp
+State ``(..., 4, hidden_size)`` = ``(c, n, m, h)``. Stabilizer ``max``, exp
 input/forget, normalizer ``n``, memory mixing ``R h``.
 
 ``mix='diag'`` is the fused path: channelwise ``R``, 4×4 Jacobian per
 feature, Triton Newton. ``mix='head'`` is Beck-style dense ``R`` inside a
-head (unfused ``scan_dense``); kept as an ablation, not a training default.
-``mix='dense'`` is a full-width ``R`` oracle for tests (``hidden_size`` cap).
+head (unfused ``scan_dense``), kept as an ablation. ``mix='dense'`` is a
+full-width ``R`` oracle for tests (``hidden_size`` capped at
+``DENSE_MAX_HIDDEN``).
 
 Newton init is the ``R h = 0`` unroll (running ``m``/``n``). Recurrent mix
 is exactly one of ``R`` / ``R_dense`` / ``R_head``.
@@ -45,14 +46,33 @@ _HEAD_ABLATION_WARN = (
 
 
 class ParaSLSTM(nn.Module):
-    """Four-slot sLSTM: state ``(..., 4, hidden_size)`` = (c, n, m, h).
+    """Four-slot sLSTM: state ``(..., 4, d_h)`` = ``(c, n, m, h)``.
 
-    ``max_recurrent_norm`` is an App. C.1 elementwise clamp of recurrent
-    mix entries. ``eps`` floors ``n`` in
-    ``h = o * c / n``. ``mix='head'`` needs ``n_heads`` dividing ``hidden_size``
-    and emits an ablation warning. ``mix='dense'`` requires
-    ``hidden_size <= DENSE_MAX_HIDDEN``.
-    Recurrent mix: ``R`` (diag), ``R_head`` (head), or ``R_dense`` (dense).
+    Beck et al. 2024 cell for Newton: exp gates, stabilizer ``m``, normalizer
+    ``n``, mix ``R h``. Default ``mix='diag'`` is the fused path; ``head`` /
+    ``dense`` are ablations (``dense`` capped at ``DENSE_MAX_HIDDEN``).
+
+    Attributes
+    ----------
+    input_size, d_in, hidden_size, d_h : int
+    state_slots : int
+        Always ``4`` (``c, n, m, h``).
+    hidden_slot : int
+    mix : {'diag', 'head', 'dense'}
+    jac_structure : str
+        ``block4`` / ``head`` / ``dense``.
+    n_heads, d_head : int or None
+    max_recurrent_norm : float or None
+        App. C.1 clamp on mix entries.
+    eps : float
+        Floor on ``n`` in the readout.
+    W_x : nn.Linear
+    R, R_head, R_dense
+        Active mix parameter for the chosen ``mix``.
+
+    See Also
+    --------
+    ParaGRU, ParaLSTM, ParaSLSTMBlock, pararnn.solvers.slstm_picard
     """
 
     def __init__(
@@ -69,6 +89,41 @@ class ParaSLSTM(nn.Module):
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        input_size : int or None, default=None
+            Input feature width. Alias of ``d_in``.
+        hidden_size : int or None, default=None
+            Channel width. Alias of ``d_h``.
+        d_in : int or None, default=None
+            Alias for ``input_size``.
+        d_h : int or None, default=None
+            Alias for ``hidden_size``.
+        mix : {'diag', 'head', 'dense'}, default='diag'
+            Recurrent mixing. ``'diag'`` uses channelwise ``R``.
+            ``'head'`` uses dense ``R`` per head and requires ``n_heads``
+            dividing ``hidden_size``. ``'dense'`` uses a full-width linear
+            mix and requires ``hidden_size <= DENSE_MAX_HIDDEN``.
+        n_heads : int or None, default=None
+            Head count for ``mix='head'`` only.
+        max_recurrent_norm : float or None, default=0.5
+            Elementwise clamp of mix entries to
+            ``[-max_recurrent_norm, max_recurrent_norm]`` (App. C.1).
+            ``None`` disables clipping.
+        eps : float, default=1e-6
+            Additive floor on the normalizer in ``h = o * c / (n + eps)``.
+        device : torch.device or str or None, default=None
+            Parameter device.
+        dtype : torch.dtype or None, default=None
+            Parameter dtype.
+
+        Raises
+        ------
+        ValueError
+            When ``mix`` is unknown, ``n_heads`` is misused, or
+            ``mix='dense'`` exceeds ``DENSE_MAX_HIDDEN``.
+        """
         super().__init__()
         if mix not in _MIX:
             raise ValueError(f"mix must be one of {_MIX}, got {mix!r}")
@@ -157,7 +212,25 @@ class ParaSLSTM(nn.Module):
         return self.R_head.clamp(-self.max_recurrent_norm, self.max_recurrent_norm)
 
     def step(self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None) -> Tensor:
-        """One sLSTM step. ``state_prev`` is ``(..., 4, d_h)``."""
+        """Advance one sLSTM step.
+
+        Parameters
+        ----------
+        state_prev : Tensor
+            Previous state. Tensor of shape ``(..., 4, d_h)`` with slots
+            ``(c, n, m, h)``.
+        x : Tensor
+            Input at this step. Tensor of shape ``(..., d_in)``. Used when
+            ``wx`` is omitted.
+        wx : Tensor or None, default=None
+            Optional precomputed ``W_x(x)``. When set, ``x`` is ignored for
+            the input projection.
+
+        Returns
+        -------
+        state_new : Tensor
+            Next state. Tensor of shape ``(..., 4, d_h)``.
+        """
         if wx is None:
             wx = self.W_x(x)
         h = state_prev[..., SLSTM_HIDDEN, :]
@@ -166,11 +239,32 @@ class ParaSLSTM(nn.Module):
     def step_with_jacobian(
         self, state_prev: Tensor, x: Tensor, *, wx: Tensor | None = None
     ) -> tuple[Tensor, Tensor]:
-        """``(state_new, J)``. Layout follows ``jac_structure``.
+        """Advance one step and return the structured Jacobian.
 
-        The channelwise skeleton is ``mix='diag'``. We also chain ``tanh`` of
-        the candidate, ``σ`` of the output gate, and ``n+ε`` (the forward
-        uses ``eps``). ``torch.maximum`` at ties splits 0.5/0.5.
+        Layout follows ``jac_structure``. The channelwise skeleton is
+        ``mix='diag'``. The Jacobian also chains ``tanh`` of the candidate,
+        ``σ`` of the output gate, and ``n + eps``. At ties,
+        ``torch.maximum`` splits the subgradient ``0.5 / 0.5``.
+
+        Parameters
+        ----------
+        state_prev : Tensor
+            Previous state. Tensor of shape ``(..., 4, d_h)``.
+        x : Tensor
+            Input at this step. Tensor of shape ``(..., d_in)``.
+        wx : Tensor or None, default=None
+            Optional precomputed ``W_x(x)``.
+
+        Returns
+        -------
+        state_new : Tensor
+            Next state. Tensor of shape ``(..., 4, d_h)``.
+        jac : Tensor
+            Jacobian whose layout matches ``jac_structure``:
+
+            - ``'block4'`` (``mix='diag'``): ``(..., 4, 4, d_h)``
+            - ``'head'``: ``(..., n_heads, 4*d_head, 4*d_head)``
+            - ``'dense'``: ``(..., 4*d_h, 4*d_h)``
         """
         if wx is None:
             wx = self.W_x(x)
@@ -185,8 +279,21 @@ class ParaSLSTM(nn.Module):
         return acts.state_new, jac
 
     def step_head(self, state: Tensor, wx_head: Tensor, r: Tensor) -> Tensor:
-        """One head: ``state`` / ``wx_head`` are ``(4, d_head)``;
-        ``r`` is ``(4, d_head, d_head)``.
+        """Advance one head with packed head-local tensors.
+
+        Parameters
+        ----------
+        state : Tensor
+            Head state. Tensor of shape ``(4, d_head)``.
+        wx_head : Tensor
+            Head input pre-activations. Tensor of shape ``(4, d_head)``.
+        r : Tensor
+            Head recurrent mix. Tensor of shape ``(4, d_head, d_head)``.
+
+        Returns
+        -------
+        state_new : Tensor
+            Next head state. Tensor of shape ``(4, d_head)``.
         """
         h = state[SLSTM_HIDDEN]
         pre = wx_head + torch.einsum("d,gde->ge", h, r)

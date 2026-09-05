@@ -28,12 +28,26 @@ def _newton_config(cfg: ParaSLSTMConfig) -> NewtonConfig:
 
 
 class ParaSLSTMForCausalLM(nn.Module):
-    """Library CausalLM for export and as the vLLM architecture payload.
+    """Embed + ``ParaSLSTMBlock`` stack + LM head.
 
-    Prefill / training: ``ParaSLSTMBlock`` (Newton while ``.train()``).
-    Autoregressive decode: per-layer ``decode_step`` on full sLSTM carries.
-    Continuous batch: ``attach_pool`` + ``forward_continuous`` (packed
-    ``cu_seqlens`` + shared ``slot_ids`` / ``block_table``).
+    Prefill / train: Newton via each block's ``ParaRNN``. Autoregressive
+    decode: ``decode_step`` on full sLSTM carries. Continuous batch:
+    ``attach_pool`` + ``forward_continuous``.
+
+    Parameters
+    ----------
+    config : ParaSLSTMConfig
+
+    Attributes
+    ----------
+    config : ParaSLSTMConfig
+    embed : nn.Embedding
+    blocks : nn.ModuleList of ParaSLSTMBlock
+    norm : nn.RMSNorm
+    lm_head : nn.Linear
+        Tied to ``embed`` when ``config.tie_word_embeddings``.
+    pool : BlockStackPool or None
+        Set by ``attach_pool``.
     """
 
     config_class = ParaSLSTMConfig
@@ -67,7 +81,21 @@ class ParaSLSTMForCausalLM(nn.Module):
     def attach_pool(
         self, capacity: int, *, host_capacity: int | None = None
     ) -> BlockStackPool:
-        """Create / replace the continuous-batch ``BlockStackPool``."""
+        """Create or replace the continuous-batch ``BlockStackPool``.
+
+        Parameters
+        ----------
+        capacity : int
+            Max GPU-resident request slots (shared across all layers).
+        host_capacity : int, optional
+            Pinned host pages for ``offload`` / ``reload``. Defaults to
+            ``capacity``.
+
+        Returns
+        -------
+        BlockStackPool
+            The attached pool (also stored on ``self.pool``).
+        """
         self._pool = BlockStackPool(
             list(self.blocks), capacity, host_capacity=host_capacity
         )
@@ -84,6 +112,25 @@ class ParaSLSTMForCausalLM(nn.Module):
         return self._pool
 
     def forward(self, input_ids: Tensor, *, positions: Tensor | None = None) -> Tensor:
+        """Dense prefill / training forward through the block stack.
+
+        Parameters
+        ----------
+        input_ids : Tensor of shape (batch, time)
+            Token ids.
+        positions : Tensor, optional
+            Ignored; accepted for HF / vLLM call-site compatibility.
+
+        Returns
+        -------
+        Tensor of shape (batch, time, vocab_size)
+            LM-head logits.
+
+        Raises
+        ------
+        ValueError
+            If ``input_ids`` is not rank-2.
+        """
         del positions
         if input_ids.dim() != 2:
             raise ValueError(f"input_ids must be (B, T), got {tuple(input_ids.shape)}")
@@ -102,12 +149,38 @@ class ParaSLSTMForCausalLM(nn.Module):
         solver: str = "sequential",
         pool: BlockStackPool | None = None,
     ) -> Tensor:
-        """Prefill / decode through the paged block stack.
+        """Prefill or decode through the paged block stack.
 
-        Dense: ``input_ids`` is ``(B, T)`` with ``B == slot_ids.numel()``.
-        Packed mix: ``input_ids`` is ``(1, N)`` and ``cu_seqlens`` has ``S+1``
-        entries (``S == slot_ids.numel()``). Decode is ``T=1`` (or a length-1
-        packed span). Pool slots are updated in place via ``block_table``.
+        Dense layout: ``input_ids`` is ``(batch, time)`` with
+        ``batch == slot_ids.numel()``. Packed mix: ``input_ids`` is
+        ``(1, N)`` and ``cu_seqlens`` has ``S+1`` entries with
+        ``S == slot_ids.numel()``. Decode uses ``time=1`` (or a length-1
+        packed span). Pool slots update in place via ``block_table``.
+
+        Parameters
+        ----------
+        input_ids : Tensor of shape (batch, time) or (1, N)
+            Token ids (dense or packed).
+        slot_ids : Tensor of shape (S,)
+            GPU pool slot ids for each request (``block_table``).
+        cu_seqlens : Tensor of shape (S + 1,), optional
+            Cumulative sequence lengths for packed ``(1, N)`` input.
+        solver : {"newton", "sequential"}, default "sequential"
+            Prefill / decode solver passed to ``paged_apply``.
+        pool : BlockStackPool, optional
+            Override for ``self.pool``.
+
+        Returns
+        -------
+        Tensor of shape (batch, time, vocab_size) or (1, N, vocab_size)
+            LM-head logits matching the input layout.
+
+        Raises
+        ------
+        RuntimeError
+            If no pool is attached and ``pool`` is omitted.
+        ValueError
+            If ``input_ids`` rank is invalid.
         """
         eng = pool if pool is not None else self._pool
         if eng is None:
@@ -132,7 +205,31 @@ class ParaSLSTMForCausalLM(nn.Module):
         max_new_tokens: int = 32,
         temperature: float = 0.0,
     ) -> Tensor:
-        """Greedy (default) or sampled continuation with O(1) recurrent steps."""
+        """Autoregressive continuation with O(1) recurrent steps per token.
+
+        Uses the attached ``BlockStackPool`` when batch fits ``capacity``;
+        otherwise keeps per-layer carries on the device. ``temperature=0``
+        is greedy argmax; positive temperature samples from softmax.
+
+        Parameters
+        ----------
+        input_ids : Tensor of shape (batch, time)
+            Prompt token ids.
+        max_new_tokens : int, default 32
+            Number of new tokens to append (must be ``>= 1``).
+        temperature : float, default 0.0
+            Sampling temperature; ``0`` selects greedy decoding.
+
+        Returns
+        -------
+        Tensor of shape (batch, time + max_new_tokens)
+            Prompt concatenated with generated ids.
+
+        Raises
+        ------
+        ValueError
+            If ``max_new_tokens < 1``.
+        """
         if max_new_tokens < 1:
             raise ValueError(f"max_new_tokens must be >= 1, got {max_new_tokens}")
         self.eval()
