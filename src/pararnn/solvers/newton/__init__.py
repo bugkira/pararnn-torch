@@ -11,8 +11,10 @@ back to Triton scan with ``J=0`` at segment heads.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
+from collections.abc import Iterator
 from dataclasses import replace
 
 import torch
@@ -70,6 +72,115 @@ _head_slot_unpack = dispatch._head_slot_unpack
 
 log = logging.getLogger(__name__)
 
+# Pack for the duration of ``_NewtonFixedPoint.apply`` only (forward thread).
+# Backward reads ``ctx`` alone — never this pack (autograd may run on another
+# worker thread). Overlapping concurrent ``newton_apply`` calls are unsupported;
+# no ``threading.Lock`` here (Dynamo cannot trace that context manager).
+_fwd_pack: dict[str, object] = {}
+
+
+class _NewtonFixedPoint(torch.autograd.Function):
+    """Eq. 2.6 backward. Module-level so Dynamo does not hit ``__build_class__``.
+
+    Non-tensor state for backward lives on ``ctx`` (legal and thread-safe).
+    ``_fwd_pack`` is only read inside ``forward``, then discarded.
+    """
+
+    @staticmethod
+    def forward(ctx, x_in: Tensor, h0_in: Tensor, *param_tensors: Tensor) -> Tensor:
+        del param_tensors
+        cell = _fwd_pack["cell"]
+        config = _fwd_pack["config"]
+        cu_seqlens = _fwd_pack["cu_seqlens"]
+        stats = _fwd_pack["stats"]
+        has_h0 = bool(_fwd_pack["has_h0"])
+        block_table = _fwd_pack["block_table"]
+        assert isinstance(cell, nn.Module)
+        assert isinstance(config, NewtonConfig)
+        h0_fwd = h0_in if has_h0 else None
+        with torch.no_grad():
+            states = _newton_forward(
+                cell,
+                x_in,
+                config,
+                h0=h0_fwd,
+                stats=stats,  # type: ignore[arg-type]
+                cu_seqlens=cu_seqlens,  # type: ignore[arg-type]
+                block_table=block_table,  # type: ignore[arg-type]
+            )
+        # Everything backward needs — on ctx (autograd worker threads safe).
+        ctx.cell = cell
+        ctx.has_h0 = has_h0
+        ctx.scan_backend = (
+            "triton" if config.scan_backend == "fused" else config.scan_backend
+        )
+        ctx.jacobian = config.jacobian
+        ctx.jac_structure = config.jac_structure
+        ctx.chunk_len = config.chunk_len
+        ctx.has_cu_seqlens = cu_seqlens is not None
+        saved_cs = (
+            cu_seqlens
+            if isinstance(cu_seqlens, Tensor)
+            else x_in.new_zeros(0, dtype=torch.long)
+        )
+        ctx.save_for_backward(states, x_in, h0_in, saved_cs)
+        return states
+
+    @staticmethod
+    def backward(ctx, grad_states: Tensor):
+        states, x_in, h0_in, saved_cs = ctx.saved_tensors
+        h0_fwd = h0_in if ctx.has_h0 else None
+        cs_bwd = saved_cs if ctx.has_cu_seqlens else None
+        with _newton_precision_region(x_in.device):
+            if ctx.chunk_len is not None:
+                grad_x, param_grads, grad_h0 = _eq26_vjp_chunked(
+                    ctx.cell,
+                    states,
+                    x_in,
+                    grad_states,
+                    chunk_len=int(ctx.chunk_len),
+                    backend=ctx.scan_backend,
+                    jacobian=ctx.jacobian,
+                    jac_structure=ctx.jac_structure,
+                    h0=h0_fwd,
+                )
+            else:
+                grad_x, param_grads, grad_h0 = _eq26_vjp(
+                    ctx.cell,
+                    states,
+                    x_in,
+                    grad_states,
+                    backend=ctx.scan_backend,
+                    jacobian=ctx.jacobian,
+                    jac_structure=ctx.jac_structure,
+                    h0=h0_fwd,
+                    cu_seqlens=cs_bwd,
+                )
+        if not x_in.requires_grad:
+            grad_x = None
+        if not ctx.has_h0 or not h0_in.requires_grad:
+            grad_h0 = None
+        return (grad_x, grad_h0, *param_grads)
+
+
+@contextlib.contextmanager
+def _newton_precision_region(device: torch.device) -> Iterator[None]:
+    """Keep Newton / eq. 2.6 in the tensor dtype under outer ``autocast``.
+
+    AMP would half ``W_x(x)`` while states stay in the module dtype and break
+    the VJP dtype check. Disable autocast for the solve; callers that want
+    fp16/bf16 Newton put the module and ``x`` in that dtype explicitly.
+    """
+    if device.type == "cuda" and torch.is_autocast_enabled("cuda"):
+        with torch.autocast(device_type="cuda", enabled=False):
+            yield
+        return
+    if device.type == "cpu" and torch.is_autocast_enabled("cpu"):
+        with torch.autocast(device_type="cpu", enabled=False):
+            yield
+        return
+    yield
+
 
 def newton_apply(
     cell: nn.Module,
@@ -120,70 +231,26 @@ def newton_apply(
     )
     if block_table is not None and needs_grad:
         raise RuntimeError("block_table newton is inference-only")
-    if not needs_grad:
-        return _newton_forward(
-            cell, x, config, h0=h0, stats=stats, cu_seqlens=cs, block_table=block_table
+    with _newton_precision_region(x.device):
+        if not needs_grad:
+            return _newton_forward(
+                cell, x, config, h0=h0, stats=stats, cu_seqlens=cs, block_table=block_table
+            )
+
+        h0_leaf = h0 if has_h0 else x.new_zeros(())
+        _fwd_pack.clear()
+        _fwd_pack.update(
+            cell=cell,
+            config=config,
+            cu_seqlens=cs,
+            stats=stats,
+            has_h0=has_h0,
+            block_table=block_table,
         )
-
-    # Nested Autograd.Function.apply takes tensors. cell/config/stats close
-    # over this frame; a module-level class storing them is racy under
-    # concurrent newton_apply. h0 is an apply() input so ∇_{h0} L = J_0^T μ_0
-    # (eq. 2.6).
-    h0_leaf = h0 if has_h0 else x.new_zeros(())
-
-    class _NewtonFixedPoint(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, x_in: Tensor, h0_in: Tensor, *param_tensors: Tensor) -> Tensor:
-            del param_tensors
-            h0_fwd = h0_in if has_h0 else None
-            with torch.no_grad():
-                states = _newton_forward(cell, x_in, config, h0=h0_fwd, stats=stats, cu_seqlens=cs)
-            ctx.has_h0 = has_h0
-            ctx.scan_backend = "triton" if config.scan_backend == "fused" else config.scan_backend
-            ctx.jacobian = config.jacobian
-            ctx.jac_structure = config.jac_structure
-            ctx.chunk_len = config.chunk_len
-            ctx.has_cu_seqlens = cs is not None
-            saved_cs = cs if cs is not None else x_in.new_zeros(0, dtype=torch.long)
-            ctx.save_for_backward(states, x_in, h0_in, saved_cs)
-            return states
-
-        @staticmethod
-        def backward(ctx, grad_states: Tensor):
-            states, x_in, h0_in, saved_cs = ctx.saved_tensors
-            h0_fwd = h0_in if ctx.has_h0 else None
-            cs_bwd = saved_cs if ctx.has_cu_seqlens else None
-            if ctx.chunk_len is not None:
-                grad_x, param_grads, grad_h0 = _eq26_vjp_chunked(
-                    cell,
-                    states,
-                    x_in,
-                    grad_states,
-                    chunk_len=int(ctx.chunk_len),
-                    backend=ctx.scan_backend,
-                    jacobian=ctx.jacobian,
-                    jac_structure=ctx.jac_structure,
-                    h0=h0_fwd,
-                )
-            else:
-                grad_x, param_grads, grad_h0 = _eq26_vjp(
-                    cell,
-                    states,
-                    x_in,
-                    grad_states,
-                    backend=ctx.scan_backend,
-                    jacobian=ctx.jacobian,
-                    jac_structure=ctx.jac_structure,
-                    h0=h0_fwd,
-                    cu_seqlens=cs_bwd,
-                )
-            if not x_in.requires_grad:
-                grad_x = None
-            if not ctx.has_h0 or not h0_in.requires_grad:
-                grad_h0 = None
-            return (grad_x, grad_h0, *param_grads)
-
-    return _NewtonFixedPoint.apply(x, h0_leaf, *params)
+        try:
+            return _NewtonFixedPoint.apply(x, h0_leaf, *params)
+        finally:
+            _fwd_pack.clear()
 
 
 def _prepare_ragged(
@@ -204,7 +271,7 @@ def _prepare_ragged(
     n_seq = int(cs.numel()) - 1
     if h0 is not None and block_table is None and h0.shape[0] != n_seq:
         raise ValueError(f"h0 batch {h0.shape[0]} != n_seq {n_seq}")
-    if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
+    if not torch.compiler.is_compiling() and log.isEnabledFor(logging.DEBUG):
         log.debug(
             "newton_ragged",
             extra={
@@ -260,23 +327,63 @@ def _newton_solve(
         raise ValueError(
             "fused_time_loop requires scan_backend='fused' (or auto on CUDA ParaSLSTM)"
         )
+    compiling = torch.compiler.is_compiling()
     if config.scan_backend == "fused":
         states = _newton_fused(
             cell, x, config, h0=h0, cu_seqlens=cu_seqlens, block_table=block_table
         )
-        # Fused kernels run exactly max_iters (no residual early-stop).
+        if not compiling:
+            _fill_stats(
+                cell,
+                x,
+                states,
+                h0,
+                config,
+                iters=config.max_iters,
+                stats=stats,
+                cu_seqlens=cu_seqlens,
+                block_table=block_table,
+            )
+        return states
+
+    states, iters_done, history, last_res, residual_is_current = _newton_forward_pure(
+        cell,
+        x,
+        config,
+        h0=h0,
+        cu_seqlens=cu_seqlens,
+        early_stop=bool(config.residual_atol is not None and not compiling),
+    )
+    if not compiling:
         _fill_stats(
             cell,
             x,
             states,
             h0,
             config,
-            iters=config.max_iters,
+            iters=iters_done,
             stats=stats,
+            residual_history=history,
+            known_residual=last_res if residual_is_current else None,
             cu_seqlens=cu_seqlens,
-            block_table=block_table,
         )
-        return states
+    return states
+
+
+def _newton_forward_pure(
+    cell: nn.Module,
+    x: Tensor,
+    config: NewtonConfig,
+    *,
+    h0: Tensor | None = None,
+    cu_seqlens: Tensor | None = None,
+    early_stop: bool = False,
+) -> tuple[Tensor, int, list[float], float, bool]:
+    """Tensor Newton loop. No logging, no ``NewtonStats``, no fused path.
+
+    ``early_stop=False`` (compile / ``residual_atol=None``): fixed ``max_iters``.
+    ``early_stop=True``: host ``float(amax)`` + break — eager debug only.
+    """
     wx = _wx_if_analytic(cell, x, config.jacobian)
     if isinstance(cell, ParaSLSTM):
         states = _slstm_newton_guess(cell, x, config, h0=h0, wx=wx, cu_seqlens=cu_seqlens)
@@ -305,18 +412,13 @@ def _newton_solve(
         else:
             h0_loop = slstm_encode_log(h0, eps=eps)
         cell = SLSTMLogCoords(native)
-        if not torch.compiler.is_compiling():
-            log.debug(
-                "newton_slstm_log_coords",
-                extra={"seq_len": x.shape[1], "batch": x.shape[0], "d_h": native.d_h},
-            )
 
     structure = config.jac_structure or getattr(cell, "jac_structure", None)
     iters_done = 0
     last_res = float("nan")
     history: list[float] = []
     residual_is_current = False
-    atol = config.residual_atol
+    atol = config.residual_atol if early_stop else None
     for it in range(config.max_iters):
         h_prev = _prepend(states, h0_loop, cu_seqlens)
         pred, jac = step_and_jacobian(
@@ -333,36 +435,12 @@ def _newton_solve(
             last_res = float(residual.detach().abs().amax())
             history.append(last_res)
             residual_is_current = True
-        if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
-            log.debug(
-                "newton_iter",
-                extra={
-                    "iter": it,
-                    "max_residual": last_res,
-                    "seq_len": x.shape[1],
-                    "batch": x.shape[0],
-                    "jacobian": config.jacobian,
-                    "scan_backend": config.scan_backend,
-                    "coords": config.coords,
-                },
-            )
-        if atol is not None and last_res < atol:
-            if log.isEnabledFor(logging.INFO) and not torch.compiler.is_compiling():
-                log.info(
-                    "newton_early_stop",
-                    extra={
-                        "iters": iters_done,
-                        "max_residual": last_res,
-                        "atol": atol,
-                        "seq_len": x.shape[1],
-                        "coords": config.coords,
-                    },
-                )
-            break
+            if last_res < atol:
+                break
         delta = _scan(
             jac, residual, backend=config.scan_backend, structure=structure, cu_seqlens=cu_seqlens
         )
-        if states.dtype == torch.float16:
+        if states.dtype in (torch.float16, torch.bfloat16):
             states = (states.float() + config.omega * delta.float()).to(states.dtype)
         else:
             states = states + config.omega * delta
@@ -371,22 +449,10 @@ def _newton_solve(
         residual_is_current = False
     if config.coords == "log":
         states = slstm_decode_log(states, eps=native.eps)
-        cell = native
-        # last_res was in LSE coords; fail-loud / stats need native F.
         residual_is_current = False
-    _fill_stats(
-        cell,
-        x,
-        states,
-        h0,
-        config,
-        iters=iters_done,
-        stats=stats,
-        residual_history=history,
-        known_residual=last_res if residual_is_current else None,
-        cu_seqlens=cu_seqlens,
-    )
-    return states
+    if not early_stop:
+        iters_done = config.max_iters
+    return states, iters_done, history, last_res, residual_is_current
 
 
 def _newton_chunked(
@@ -433,6 +499,8 @@ def _fill_stats(
     cu_seqlens: Tensor | None = None,
     block_table: Tensor | None = None,
 ) -> None:
+    if torch.compiler.is_compiling():
+        return
     if stats is None and config.residual_fail is None:
         return
     h0_use = h0
@@ -464,18 +532,13 @@ def _fill_stats(
     }
     diverged = not math.isfinite(res) or (cap is not None and res > cap)
     if diverged and cap is not None:
-        if not torch.compiler.is_compiling():
-            log.error("newton_diverged", extra=extra)
+        log.error("newton_diverged", extra=extra)
         raise NewtonDivergenceError(
             f"Newton residual {res:.3e} after {iters} iters exceeds residual_fail="
             f"{cap:g} (seq_len={x.shape[1]}, picard={int(config.picard_iters or 0)}, "
             f"history={hist[-8:]!r}). For ParaSLSTM raise picard_iters."
         )
-    if (
-        res > _RESIDUAL_WARN
-        and log.isEnabledFor(logging.WARNING)
-        and not torch.compiler.is_compiling()
-    ):
+    if res > _RESIDUAL_WARN and log.isEnabledFor(logging.WARNING):
         log.warning("newton_residual_high", extra=extra)
 
 
@@ -488,30 +551,35 @@ def _newton_fused(
     cu_seqlens: Tensor | None = None,
     block_table: Tensor | None = None,
 ) -> Tensor:
-    """Alg. 1 with cell+J+scan in Triton. ``W_x(x)`` is still one PyTorch GEMM."""
+    """Alg. 1 with cell+J+scan in Triton. ``W_x(x)`` is still one PyTorch GEMM.
+
+    Fused kernels are ``pararnn::newton_*_fused`` custom ops (``register_fake``)
+    so Dynamo does not trace into Triton. Eq. 2.6 stays on ``_NewtonFixedPoint``.
+    """
     wx = _input_affine(cell, x)
     if wx is None:
         raise TypeError(f"fused Newton needs cell.W_x; got {type(cell).__name__}")
     window = config.fused_window_len
     if config.fused_time_loop and window is None:
         window = FUSED_WINDOW_DEFAULT
-    log.debug(
-        "newton_fused",
-        extra={
-            "cell": type(cell).__name__,
-            "seq_len": x.shape[1],
-            "batch": x.shape[0],
-            "d_h": cell.d_h,
-            "max_iters": config.max_iters,
-            "device": str(x.device),
-            "h0": h0 is not None,
-            "picard_iters": int(config.picard_iters or 0),
-            "scan_tile": config.scan_tile,
-            "fused_time_loop": config.fused_time_loop,
-            "fused_window_len": window,
-            "block_table": block_table is not None,
-        },
-    )
+    if not torch.compiler.is_compiling():
+        log.debug(
+            "newton_fused",
+            extra={
+                "cell": type(cell).__name__,
+                "seq_len": x.shape[1],
+                "batch": x.shape[0],
+                "d_h": cell.d_h,
+                "max_iters": config.max_iters,
+                "device": str(x.device),
+                "h0": h0 is not None,
+                "picard_iters": int(config.picard_iters or 0),
+                "scan_tile": config.scan_tile,
+                "fused_time_loop": config.fused_time_loop,
+                "fused_window_len": window,
+                "block_table": block_table is not None,
+            },
+        )
     from pararnn.kernels.fused_newton import fused_newton
 
     return fused_newton(

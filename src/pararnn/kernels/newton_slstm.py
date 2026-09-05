@@ -2689,7 +2689,7 @@ def _slstm_fused_windows(
     return states
 
 
-def newton_slstm_fused(
+def _newton_slstm_fused_impl(
     wx: Tensor,
     r: Tensor,
     *,
@@ -2704,20 +2704,7 @@ def newton_slstm_fused(
     window_len: int | None = None,
     block_table: Tensor | None = None,
 ) -> Tensor:
-    """Alg. 1 for diag-mix ParaSLSTM. ``wx`` is ``W_x(x)`` with shape ``(B, T, 4 d_h)``.
-
-    ``r`` is clipped ``R`` ``(4, d_h)``. ``h0`` is paper ``h_0`` (default zeros),
-    shape ``(B, 4, d_h)``. ``states`` is the Newton guess (zero-hidden init);
-    if omitted, App. A ``f(0, x_t)`` is used. ``log_coords`` runs Newton in
-    ``(u, log n, m, h)`` and returns native ``(c, n, m, h)``.
-    ``scan_tile``: ``'assoc'`` (default PCR), ``'seq'`` (serial tile prefix),
-    ``'thomas'`` / ``'thomas4'`` (C=4 sequential compose then PCR of T/C),
-    ``'thomas2'`` (C=2). Default stays assoc until a bench on this GPU
-    prefers Thomas. ``time_loop``: in-kernel windowed Newton (carry in DRAM).
-    ``window_len``: 32, 64 (default), or 128 — Triton scan length per window.
-    64 from T=1024 d_h=256 P=3 vs sequential ~2e-4 (this repo); 32 residual_high.
-    ``block_table`` is ``(B,)`` slot ids into a pool-shaped ``h0``.
-    """
+    """Alg. 1 for diag-mix ParaSLSTM. Public entry: ``pararnn::newton_slstm_fused``."""
     from pararnn.solvers.slstm_log import (
         slstm_clamp_log_coords,
         slstm_decode_log,

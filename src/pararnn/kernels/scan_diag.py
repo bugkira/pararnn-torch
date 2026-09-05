@@ -330,13 +330,14 @@ def scan_chunk_aggregates(agg_j: Tensor, agg_r: Tensor) -> Tensor:
     return incl_r
 
 
-def scan_diag_triton(
+def _scan_diag_triton_impl(
     jac: Tensor, residual: Tensor, *, cu_seqlens: Tensor | None = None
 ) -> Tensor:
     """Same contract as ``scan_diag``: ``δ_t = jac_t * δ_{t-1} + residual_t``.
 
     ``cu_seqlens`` is ``(S+1,)`` packed starts. The local tile zeros ``J`` at
-    those heads. ``None`` is the rectangular scan.
+    those heads. ``None`` is the rectangular scan. Public entry is the
+    ``pararnn::scan_diag`` custom op in ``custom_ops``.
     """
     if jac.shape != residual.shape or jac.dim() != 3:
         raise ValueError("jac and residual must be (batch, time, d)")

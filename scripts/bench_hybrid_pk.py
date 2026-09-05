@@ -40,7 +40,7 @@ from torch.nn import functional as F
 from examples.dyck_language import VOCAB, sample_dyck1
 from scripts.slstm_vs_flashrnn import _NewtonDyckLM
 from pararnn import NewtonConfig, ParaSLSTM
-from pararnn.kernels.newton_slstm import newton_slstm_fused
+from pararnn.kernels.custom_ops import newton_slstm_fused
 from pararnn.layout import SLSTM_HIDDEN, prepend_state
 from pararnn.solvers import NewtonStats, newton_apply, sequential_apply
 from pararnn.solvers.scan import scan_diag
@@ -160,10 +160,12 @@ def _ssm_newton(cell: ParaSLSTM, x: Tensor, max_iters: int) -> Tensor:
     return newton_slstm_fused(
         wx,
         cell.clipped_r(),
+        None,
+        states,
+        None,
         max_iters=max_iters,
         omega=1.0,
         eps=cell.eps,
-        states=states,
     )
 
 

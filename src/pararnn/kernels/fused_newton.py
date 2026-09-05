@@ -38,7 +38,7 @@ def fused_newton(
             raise TypeError("fused scan_tile is ParaSLSTM only")
         if fused_time_loop:
             raise TypeError("fused_time_loop is ParaSLSTM only")
-        from pararnn.kernels.newton_gru import newton_gru_fused
+        from pararnn.kernels.custom_ops import newton_gru_fused
 
         a_z, a_r, a_n = cell.clipped_a()
         return newton_gru_fused(
@@ -46,11 +46,11 @@ def fused_newton(
             a_z,
             a_r,
             a_n,
+            h0,
+            cu_seqlens,
+            block_table,
             max_iters=max_iters,
             omega=omega,
-            h0=h0,
-            cu_seqlens=cu_seqlens,
-            block_table=block_table,
         )
     if isinstance(cell, ParaLSTM):
         if log_coords:
@@ -61,7 +61,7 @@ def fused_newton(
             raise TypeError("fused scan_tile is ParaSLSTM only")
         if fused_time_loop:
             raise TypeError("fused_time_loop is ParaSLSTM only")
-        from pararnn.kernels.newton_lstm import newton_lstm_fused
+        from pararnn.kernels.custom_ops import newton_lstm_fused
 
         a_f, a_z, a_o, c_f, c_o = cell.clipped_recurrent()
         return newton_lstm_fused(
@@ -71,15 +71,15 @@ def fused_newton(
             a_o,
             c_f,
             c_o,
+            h0,
+            block_table,
             max_iters=max_iters,
             omega=omega,
-            h0=h0,
-            block_table=block_table,
         )
     if isinstance(cell, ParaSLSTM):
         if cell.mix != "diag":
             raise TypeError(f"fused Newton is mix='diag' only (4x4 SRAM); got mix={cell.mix!r}")
-        from pararnn.kernels.newton_slstm import newton_slstm_fused
+        from pararnn.kernels.custom_ops import newton_slstm_fused
         from pararnn.solvers.slstm_picard import (
             slstm_picard_init,
             slstm_zero_hidden_init,
@@ -95,16 +95,16 @@ def fused_newton(
         return newton_slstm_fused(
             wx,
             cell.clipped_r(),
+            h0,
+            states,
+            block_table,
             max_iters=max_iters,
             omega=omega,
             eps=cell.eps,
-            h0=h0,
-            states=states,
             log_coords=log_coords,
             scan_tile=scan_tile,
             time_loop=fused_time_loop,
-            window_len=fused_window_len,
-            block_table=block_table,
+            window_len=0 if fused_window_len is None else int(fused_window_len),
         )
     raise TypeError(
         f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM(diag) only; got {type(cell).__name__}"

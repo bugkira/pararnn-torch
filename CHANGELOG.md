@@ -4,21 +4,23 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
-### Changed
-
-- README citation: Zenodo DOI badge for the ParaSLSTM preprint, ParaRNN ICLR
-  2026 badge for the Newton-scan framework, and BibTeX for both.
-- FlashRNN Dyck comparison and IMU long-seq smoke live under `scripts/`
-  (`slstm_vs_flashrnn.py`, `imu_longseq_smoke.py`); examples stay onboarding.
-- Two-card TP / CP / paged-pool demos removed from `examples/` (history on
-  branch `archive/distributed-demos`). API + numerics tests stay;
-  `docs/distributed.md` keeps the architecture.
-- `examples/toy_copy.py` → `train_smoke.py`: standalone script (inlined knobs,
-  no YAML / repo `sys.path`); stderr only; per-step identity CE. Same style
-  across `examples/` (`print`, no MLflow; dyck/parity knobs in-file).
-
 ### Added
 
+- Compatibility tests: `torch._dynamo.explain` reports **0** graph breaks under
+  the compile-safe preset; `fullgraph=True` inference/training match eager;
+  `torch.autocast` smoke; non-reentrant checkpoint + `state_dict`
+  (`tests/numerics/test_{compile,autocast,checkpoint}.py`).
+- Eager Newton / Blelloch: fp32 accumulators for bf16 DRAM (same path as fp16).
+- Triton scans as `torch.library.custom_op` (`pararnn::scan_diag` /
+  `scan_block2` / `scan_block4`) with `register_fake` for Dynamo meta
+  (`kernels/custom_ops.py`, `tests/numerics/test_custom_ops.py`).
+- `newton_apply`: top-level `_NewtonFixedPoint`; non-tensor backward state on
+  `ctx` (no TLS — autograd may run backward on a worker thread). Pure fixed-K
+  loop (`_newton_forward_pure`); stats / residual early-stop / logging only
+  outside `torch.compiler.is_compiling()`.
+- Fused Alg. 1 as `pararnn::newton_{gru,lstm,slstm}_fused` custom ops with
+  `register_fake` (Dynamo-opaque Triton). Eq. 2.6 remains on
+  `_NewtonFixedPoint` (fused inputs lack `W_x`).
 - `PagedStatePool` / `paged_apply`: O(1) GPU slot per request (sLSTM
   `(c,n,m,h)`, LSTM `(c,h)`, GRU `h`). Host free-list, `index_select` /
   `index_copy_`, mixed packed prefill+decode via `cu_seqlens`. Sequential
@@ -32,6 +34,24 @@ All notable changes to this project are documented here. Format follows [Keep a 
   graph of GEMM → step does not allocate. `sequential_apply` / `ParaRNN.eval()`
   take this path on CUDA when `T=1` and gradients are off
   (`examples/decode_step.py`).
+
+### Changed
+
+- `newton_apply` disables outer CUDA/CPU autocast for the solve and eq. 2.6
+  backward so `W_x` and states share one dtype. Half-precision training still
+  uses explicit `.to(dtype)`.
+- README Compatibility blurb: compile (breaks allowed), AMP policy, DDP/FSDP /
+  checkpoint pointers.
+- README citation: Zenodo DOI badge for the ParaSLSTM preprint, ParaRNN ICLR
+  2026 badge for the Newton-scan framework, and BibTeX for both.
+- FlashRNN Dyck comparison and IMU long-seq smoke live under `scripts/`
+  (`slstm_vs_flashrnn.py`, `imu_longseq_smoke.py`); examples stay onboarding.
+- Two-card TP / CP / paged-pool demos removed from `examples/` (history on
+  branch `archive/distributed-demos`). API + numerics tests stay;
+  `docs/distributed.md` keeps the architecture.
+- `examples/toy_copy.py` → `train_smoke.py`: standalone script (inlined knobs,
+  no YAML / repo `sys.path`); stderr only; per-step identity CE. Same style
+  across `examples/` (`print`, no MLflow; dyck/parity knobs in-file).
 
 ## [0.6.0] - 2026-09-04
 

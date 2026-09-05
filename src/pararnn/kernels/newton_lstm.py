@@ -645,7 +645,7 @@ def _lstm_apply_update_kernel(
     )
 
 
-def newton_lstm_fused(
+def _newton_lstm_fused_impl(
     wx: Tensor,
     a_f: Tensor,
     a_z: Tensor,
@@ -658,11 +658,7 @@ def newton_lstm_fused(
     h0: Tensor | None = None,
     block_table: Tensor | None = None,
 ) -> Tensor:
-    """Alg. 1 for CIFG ParaLSTM. ``wx`` is ``W_x(x)`` with shape ``(B, T, 3 d_h)``.
-
-    ``h0`` is paper ``h_0`` (default zeros), shape ``(B, 2, d_h)``.
-    ``block_table`` is ``(B,)`` slot ids into a pool-shaped ``h0``.
-    """
+    """Alg. 1 for CIFG ParaLSTM. Public entry: ``pararnn::newton_lstm_fused``."""
     wx = wx.contiguous()
     a_f = a_f.contiguous()
     a_z = a_z.contiguous()

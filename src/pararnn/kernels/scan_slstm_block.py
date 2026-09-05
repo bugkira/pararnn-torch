@@ -1200,8 +1200,11 @@ def _apply_carry_kernel(
     )
 
 
-def scan_block4_triton(jac: Tensor, residual: Tensor) -> Tensor:
-    """Same contract as ``scan_block4``. ``jac`` is ``(B, T, 4, 4, d)``."""
+def _scan_block4_triton_impl(jac: Tensor, residual: Tensor) -> Tensor:
+    """Same contract as ``scan_block4``. ``jac`` is ``(B, T, 4, 4, d)``.
+
+    Public entry is ``pararnn::scan_block4`` in ``custom_ops``.
+    """
     return run_block_scan_triton(
         jac,
         residual,

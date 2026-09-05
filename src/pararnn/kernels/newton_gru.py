@@ -327,7 +327,7 @@ def _gru_apply_update_kernel(
     )
 
 
-def newton_gru_fused(
+def _newton_gru_fused_impl(
     wx: Tensor,
     a_z: Tensor,
     a_r: Tensor,
@@ -339,12 +339,7 @@ def newton_gru_fused(
     cu_seqlens: Tensor | None = None,
     block_table: Tensor | None = None,
 ) -> Tensor:
-    """Alg. 1 for diagonal ParaGRU. ``wx`` is ``W_x(x)`` with shape ``(B, T, 3 d_h)``.
-
-    ``h0`` is paper ``h_0`` (default zeros), shape ``(B, d_h)``. Packed
-    ``cu_seqlens`` uses ``wx`` of batch 1 and ``h0`` of shape ``(S, d_h)``.
-    ``block_table`` is ``(B,)`` or ``(S,)`` slot ids into a pool-shaped ``h0``.
-    """
+    """Alg. 1 for diagonal ParaGRU. Public entry: ``pararnn::newton_gru_fused``."""
     wx = wx.contiguous()
     a_z = a_z.contiguous()
     a_r = a_r.contiguous()

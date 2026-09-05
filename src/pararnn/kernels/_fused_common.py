@@ -201,7 +201,7 @@ def log_fused_iter(
     d_h: int,
     n_chunks: int,
 ) -> None:
-    if log.isEnabledFor(logging.DEBUG) and not torch.compiler.is_compiling():
+    if not torch.compiler.is_compiling() and log.isEnabledFor(logging.DEBUG):
         log.debug(
             event,
             extra={
@@ -225,6 +225,8 @@ def log_fused_done(
     n_chunks: int,
     **extra: object,
 ) -> None:
+    if torch.compiler.is_compiling():
+        return
     payload: dict[str, object] = {
         "seq_len": time,
         "batch": batch,

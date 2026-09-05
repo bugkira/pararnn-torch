@@ -73,7 +73,7 @@ def scan_block2(
     if backend not in ("eager", "triton"):
         raise ValueError(f"unknown scan backend {backend!r}")
     if backend == "triton":
-        from pararnn.kernels.scan_lstm_block import scan_block2_triton
+        from pararnn.kernels import scan_block2_triton
 
         return scan_block2_triton(_jac_drop_left(jac, cu_seqlens), residual)
     return _scan_acc(jac, residual, _compose_block2, _fill_ident_block2, cu_seqlens=cu_seqlens)
@@ -94,7 +94,7 @@ def scan_block4(
     if backend not in ("eager", "triton"):
         raise ValueError(f"unknown scan backend {backend!r}")
     if backend == "triton":
-        from pararnn.kernels.scan_slstm_block import scan_block4_triton
+        from pararnn.kernels import scan_block4_triton
 
         return scan_block4_triton(_jac_drop_left(jac, cu_seqlens), residual)
     return _scan_acc(jac, residual, _compose_block4, _fill_ident_block4, cu_seqlens=cu_seqlens)
@@ -221,15 +221,15 @@ def _scan_acc(
     *,
     cu_seqlens: Tensor | None = None,
 ) -> Tensor:
-    """Blelloch in fp32 when DRAM is fp16 (Newton accumulators)."""
+    """Blelloch in fp32 when DRAM is fp16/bf16 (Newton accumulators)."""
     flags = None
     if cu_seqlens is not None:
         flags = segment_start_flags(cu_seqlens, jac.shape[1], batch=jac.shape[0]).to(
             device=jac.device
         )
-    if jac.dtype == torch.float16:
+    if jac.dtype in (torch.float16, torch.bfloat16):
         out = _inclusive_scan(jac.float(), residual.float(), compose, fill_ident, flags=flags)
-        return out.to(dtype=torch.float16)
+        return out.to(dtype=jac.dtype)
     return _inclusive_scan(jac, residual, compose, fill_ident, flags=flags)
 
 
