@@ -54,9 +54,9 @@ RTX 2080 Ti). **bf16 fused** needs Ampere+ (CC ≥ 8.0). Elsewhere
 - **[2026-09]** Factorized Newton for Dreamer-style `ParaGRU(mix='head')`;
   matrix-state M²RNN with measured iteration growth.
 
-![ParaSLSTM fused Newton vs sequential](assets/slstm_fused_vs_sequential.png)
+![Newton iterations and wall time at T=131072](assets/k_star_wall_131k.png)
 
-Diag-sLSTM fused Newton vs sequential (lab, see [Benchmarks](#benchmarks)).
+Parallel vs sequential wall time at T=131072 (lab, see [Benchmarks](#benchmarks)).
 
 ## What you get
 

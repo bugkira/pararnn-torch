@@ -19,7 +19,7 @@ Public GitHub launch, ParaSLSTM Zenodo v2, inference contract, wheel smoke.
   `uv build` + twine + clean-venv smoke outside the repo.
 - [`assets/social-preview.png`](assets/social-preview.png) /
   [`.github/social-preview.png`](.github/social-preview.png) — 1280×640
-  speedup card for GitHub Social preview.
+  K*(T) bar card (`k_star_wall_131k.png`) for GitHub Social preview.
 
 ### Changed
 
