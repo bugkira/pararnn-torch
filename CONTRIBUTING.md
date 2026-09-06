@@ -2,6 +2,8 @@
 
 ## Setup
 
+See [`INSTALL.md`](INSTALL.md) for user vs contributor paths. Short form:
+
 ```bash
 git clone https://github.com/bugkira/pararnn-torch
 cd pararnn-torch

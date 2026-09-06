@@ -1,8 +1,7 @@
 # Adoption: drop-in recurrent trunk
 
 This page is the short path from install to a working stack. Low-level cell
-APIs live in the [README Cells section](../README.md#cells) and
-[`docs/xlstm.md`](xlstm.md).
+APIs live in [`docs/cells.md`](cells.md) and [`docs/xlstm.md`](xlstm.md).
 
 ## Replace an Attention block
 

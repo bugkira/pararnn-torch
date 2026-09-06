@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Install / hardware FAQ
+    url: https://github.com/bugkira/pararnn-torch/blob/main/FAQs.md
+    about: Older GPUs, Triton, K*(T), train vs eval
+  - name: Positioning audit (maintainers)
+    url: https://github.com/bugkira/pararnn-torch/blob/main/docs/sources/positioning/AUDIT.md
+    about: Peer comparison and launch backlog
