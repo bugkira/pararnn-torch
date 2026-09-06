@@ -4,6 +4,31 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-09-06
+
+``NewtonConfig(max_iters=None)`` fills Newton depth from a measured
+``K*(T)`` envelope. Triton launches pin the tensor's CUDA device.
+
+### Added
+
+- `NewtonConfig(max_iters=None)` resolves `K` via `auto_newton_iters`
+  (cell tables: CfC / Hopfield / Titans; RWKV-7 returns 0; M²RNN log-ramp).
+  Pin `max_iters=int` or pass `newton_iters_by_t={T: K, …}` (left-step).
+  Envelopes: CfC/Titans ceiling 3; Hopfield `{1: 2, 64: 3}`; τ≈1e-4 through
+  \(T=131072\).
+
+### Changed
+
+- README capability-first (News, Models, Install, Quickstart); `pyproject.toml`
+  description matches. Colab demo is a short API poke (no in-notebook train).
+- Hopfield / CfC / Titans recipes use `max_iters=None`. App. A GRU/LSTM keep
+  default `K=3`. Numerics pins for Hopfield drop from 6 to 3.
+
+### Fixed
+
+- Fused/Triton dtype gate calls `torch.cuda.set_device` so the launch matches
+  the tensors' card.
+
 ## [0.17.0] - 2026-09-06
 
 `ParaTitans`: shallow L=1 Titans-inspired neural memory (vector state;
@@ -50,6 +75,14 @@ and `scan_dense` (small \(d_h\)).
   `step_with_jacobian`; eager / Triton `scan_dense` (no fused cell+scan yet);
   Autograd eq. 2.6 VJP (`uses_packed_vjp` false). Docs/tests cap \(d_h\le 32\)
   (warn above). Adoption slot in [`docs/adoption.md`](docs/adoption.md).
+  Honest smoke (`scripts/bench_hopfield.py`, CUDA events min, \(B{=}8\),
+  \(T{=}2048\), \(d_h{=}16\)): measured \(K^*=2\) (~1e-7 vs sequential);
+  recipe `max_iters=3`. RTX 3060 Triton `scan_dense` ~12.5 ms vs sequential
+  ~504 ms (~40×) at \(K{=}3\); RTX 2080 Ti at \(K{=}6\) was ~16.1 ms vs ~525 ms
+  (~33×). Eager Newton loses to sequential at short \(T\) (`T≲64`); `auto`
+  picks Triton. Fused cell+scan / packed VJP parked. Peak mem at
+  \(d_h{=}32,T{=}2048\) ~617 MiB (dense \(J\)).
+- Lab: [`scripts/bench_hopfield.py`](scripts/bench_hopfield.py).
 
 ## [0.14.0] - 2026-09-06
 
@@ -63,8 +96,15 @@ and diagonal nonlinear mix (Newton Jacobian stays channelwise diagonal).
   clip on `u`. Eager Newton, fused Triton Alg. 1 (`pararnn::newton_cfc_fused`,
   3-wide `project_wx`), packed VJP (softplus·Δt chain; tile `tl.sum`, no
   atomics), compile-safe fullgraph path. `scan_backend='auto'` picks fused on
-  CUDA.
+  CUDA. Honest smoke (`scripts/bench_cfc.py`, CUDA events min, \(K{=}3\),
+  \(B{=}8\), \(T{=}2048\), \(d_h{=}256\)): RTX 3060 fused ~2.79 ms vs sequential
+  ~643 ms (~230×), max \|err\| ~2e-7; RTX 2080 Ti fused ~2.86 ms vs ~656 ms.
+  \(K{=}2\) already reaches ~1e-7 agreement; packed VJP ~8× vs eager formula on
+  3060. At short \(T\) (`T≤8`) fused still beats sequential; eager Newton loses
+  to sequential below ~\(T{=}32\).
 - Adoption: Liquid / irregular-Δt slot in [`docs/adoption.md`](docs/adoption.md).
+- Lab: [`scripts/bench_cfc.py`](scripts/bench_cfc.py) (seq / eager / triton /
+  fused + residual-vs-\(K\) + optional fwd+bwd / packed VJP).
 
 ## [0.13.0] - 2026-09-06
 
@@ -446,7 +486,10 @@ installable surface.
 - Generic-cell autograd path and sequential reference solver.
 - Numerics tests: parallel vs sequential agreement, layer forward/backward.
 
-[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/bugkira/pararnn-torch/compare/v0.17.0...v0.17.1
+[0.17.0]: https://github.com/bugkira/pararnn-torch/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/bugkira/pararnn-torch/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/bugkira/pararnn-torch/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/bugkira/pararnn-torch/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/bugkira/pararnn-torch/compare/v0.12.0...v0.13.0

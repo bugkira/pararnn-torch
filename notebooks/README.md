@@ -2,15 +2,16 @@
 
 ## ParaSLSTM demo
 
-[`paraslstm_demo.ipynb`](paraslstm_demo.ipynb) — Colab-ready Run All:
+[`paraslstm_demo.ipynb`](paraslstm_demo.ipynb) — short Colab Run All (API poke):
 
-1. Install / device check (`float32`, `scan_backend="auto"`)
-2. Drop-in `ParaRNN(ParaSLSTM)` train + eval
-3. Sequential ↔ Newton max-abs error table
-4. Latency vs \(T\) (same cell)
-5. \(\mathbb{Z}_2\) prefix tagging: ParaSLSTM Newton vs S4D-Real SSM
-6. T=1 `decode_step` agreement
-7. Citation
+1. Install / device
+2. `ParaRNN(ParaSLSTM)` train + eval
+3. Sequential ↔ Newton trust table
+4. Forward latency table
+5. T=1 `decode_step`
+6. Links to `examples/parity.py` / `scripts/` + citation
+
+Training curves and BabyLM runs live under `examples/` and `scripts/`.
 
 ### Local
 
@@ -22,7 +23,7 @@ uv run jupyter lab notebooks/paraslstm_demo.ipynb
 
 Skip the install cell; the editable `pararnn` package from `uv sync` is enough.
 
-To regenerate the `.ipynb` from the builder script:
+Regenerate the `.ipynb`:
 
 ```bash
 uv run python notebooks/_build_demo.py
@@ -36,6 +37,4 @@ uv run python notebooks/_build_demo.py
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bugkira/pararnn-torch/blob/main/notebooks/paraslstm_demo.ipynb)
 
-While the repository is private, Colab needs the token secret (or a manual upload of the notebook + `pip install` from a local wheel). After the repo is public or on PyPI, the install cell can drop the token.
-
-Expected wall clock: about 2–4 minutes on a T4 / 2080 Ti-class GPU (parity is 2×2000 AdamW steps).
+Expected wall clock: about 30–90 seconds on a T4 / 2080 Ti-class GPU (no in-notebook training loop).

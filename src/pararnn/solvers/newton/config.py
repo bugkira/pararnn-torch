@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 # App. A: K=3 reaches machine precision on these cells. Sequential agreement
 # tests use 1e-4. Stop a wasted extra iter below that and above fp32 noise.
 _DEFAULT_RESIDUAL_ATOL = 1e-5
 # Library contract: K=3 (App. A). sLSTM basin: raise picard_iters (para-slstm.md).
+# CfC / Hopfield / Titans / M²RNN: prefer max_iters=None → measured K*(T).
 LIBRARY_NEWTON_ITERS = 3  # default Newton K (Danieli et al. App. A)
 # After K steps, max|F| above this is divergence.
 # Sequential agreement is 1e-4…2e-3; diverged sLSTM is 1e2…1e14 (para-slstm.md).
@@ -59,12 +61,16 @@ class NewtonConfig:
     """Knobs for the parallel Newton+scan forward (Danieli et al. App. A).
 
     Default ``max_iters=3`` matches App. A for GRU/LSTM. ParaSLSTM usually
-    also needs ``picard_iters`` (``None`` = auto from ``T``).
+    also needs ``picard_iters`` (``None`` = auto from ``T``). For CfC /
+    Hopfield / Titans / M²RNN, ``max_iters=None`` selects a measured
+    ``K*(T)`` envelope (``auto_newton_iters``); pin an ``int`` to override.
 
     Attributes
     ----------
-    max_iters : int
-        Newton steps ``K`` (default ``LIBRARY_NEWTON_ITERS`` = 3).
+    max_iters : int or None
+        Newton steps ``K``. Default ``LIBRARY_NEWTON_ITERS`` (= 3, App. A).
+        ``None`` → cell ``K*(T)`` schedule (``newton_iters_by_t`` /
+        ``auto_newton_iters``). Explicit ``int`` is a manual pin.
     omega : float
         Step damping (``1.0`` = undamped; ``(0, 1)`` damps).
     scan_backend : str
@@ -91,6 +97,10 @@ class NewtonConfig:
         Auto-raise ``P`` on large residual when ``picard_iters`` was auto.
     picard_retry_atol : float or None
         Residual threshold for that retry (default ``1e-3``).
+    newton_iters_by_t : mapping or None
+        Manual ``K*(T)`` table when ``max_iters is None`` (left-step: largest
+        key ``<= T``). Overrides the cell default envelope.
+        Example: ``{64: 2, 1024: 3, 4096: 4}``.
     scan_tile : str
         Fused/Triton tile algebra: ``"assoc"`` (default) | ``"seq"`` | Thomas variants.
     fused_time_loop : bool
@@ -104,11 +114,11 @@ class NewtonConfig:
 
     See Also
     --------
-    newton_apply, NewtonStats, NewtonDivergenceError
+    newton_apply, NewtonStats, NewtonDivergenceError, auto_newton_iters
     """
 
-    # App. A: K=3. ParaSLSTM at long T uses Picard (picard_iters).
-    max_iters: int = LIBRARY_NEWTON_ITERS
+    # App. A: K=3. None → measured K*(T) envelope (CfC/Hopfield/Titans/M²RNN).
+    max_iters: int | None = LIBRARY_NEWTON_ITERS
     omega: float = 1.0  # 1 = vanilla Newton; <1 damps (Gonzalez et al. ELK)
     # auto: fused CUDA GRU/LSTM/sLSTM-diag; else Triton scan + step; else eager Blelloch.
     # context_parallel: diag scan shards T across the default process group (Newton
@@ -135,6 +145,8 @@ class NewtonConfig:
     # Retry next P if max|F| exceeds this (1e-3 = sequential-agreement band).
     # None: only residual_fail.
     picard_retry_atol: float | None = _RESIDUAL_WARN
+    # Manual K*(T) when max_iters is None (overrides cell envelope).
+    newton_iters_by_t: Mapping[int, int] | None = None
     # assoc: tl.associative_scan. seq: serial prefix in the tile (ablation).
     # thomas / thomas4: C=4 sequential compose then PCR. thomas2: C=2.
     # C is an ablation (this repo's bench_slstm_scan_opt.py on 3060 / 2080 Ti),
@@ -180,8 +192,8 @@ def _validate_config(config: NewtonConfig) -> None:
         raise ValueError(f"unknown newton coords {config.coords!r}")
     if config.chunk_len is not None and int(config.chunk_len) < 1:
         raise ValueError(f"chunk_len must be >= 1, got {config.chunk_len!r}")
-    if config.max_iters < 0:
-        raise ValueError(f"max_iters must be >= 0, got {config.max_iters!r}")
+    if config.max_iters is not None and int(config.max_iters) < 0:
+        raise ValueError(f"max_iters must be >= 0 or None, got {config.max_iters!r}")
     if config.picard_iters is not None and int(config.picard_iters) < 0:
         raise ValueError(f"picard_iters must be >= 0, got {config.picard_iters!r}")
     if config.picard_retry_atol is not None and float(config.picard_retry_atol) < 0:
@@ -190,6 +202,14 @@ def _validate_config(config: NewtonConfig) -> None:
         )
     if config.residual_fail is not None and float(config.residual_fail) < 0:
         raise ValueError(f"residual_fail must be >= 0 or None, got {config.residual_fail!r}")
+    if config.newton_iters_by_t is not None:
+        if config.max_iters is not None:
+            raise ValueError("newton_iters_by_t requires max_iters=None (auto K*(T))")
+        if not config.newton_iters_by_t:
+            raise ValueError("newton_iters_by_t must be a non-empty mapping")
+        for k, v in config.newton_iters_by_t.items():
+            if int(k) < 1 or int(v) < 0:
+                raise ValueError(f"newton_iters_by_t bad entry T={k!r} → K={v!r}")
     if config.scan_tile not in ("assoc", "seq", "thomas", "thomas2", "thomas4"):
         raise ValueError(f"unknown scan_tile {config.scan_tile!r}")
     if config.fused_time_loop and config.chunk_len is not None:

@@ -49,9 +49,13 @@ class ParaHopfield(nn.Module):
         Always ``'dense'``.
     beta : float
         Inverse temperature on ``K h``. Default ``1/sqrt(d_h)`` (attention
-        scale; Ramsauer et al. Modern Hopfield). If residual stays high after
-        ``K=6`` Newton iters, try ``β ∈ {0.5, 1, 2}/sqrt(d_h)`` on a fixed
-        batch before raising ``max_iters``.
+        scale; Ramsauer et al. Modern Hopfield). Newton depth is **not** a
+        fixed App. A constant: use ``NewtonConfig(max_iters=None)`` for the
+        measured ``K*(T)`` envelope (`hopfield_auto_newton_iters`), or pin
+        ``max_iters=int`` / ``newton_iters_by_t={…}``. Lab campaign
+        (τ=1e-4, T≤4096): H1-ish with short-T K*∈{1,2}. If residual stays
+        high after the schedule, try ``β ∈ {0.5, 1, 2}/sqrt(d_h)`` before
+        raising the pin.
     W_x : nn.Linear
         ``d_in → 2 d_h²`` packing flattened ``K`` and ``V``.
     """

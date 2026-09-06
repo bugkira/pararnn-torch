@@ -274,6 +274,11 @@ def newton_apply(
         return _newton_rwkv7(
             cell, x, config, h0=h0, stats=stats, cu_seqlens=cu_seqlens, block_table=block_table
         )
+    # max_iters=None → measured K*(T) envelope (or newton_iters_by_t pin table).
+    from pararnn.solvers.newton.k_star import resolve_max_iters
+
+    config = resolve_max_iters(cell, x, config)
+    assert config.max_iters is not None  # resolved: int pin or auto K*(T)
     config = _resolve_backend(cell, x, config, cu_seqlens=cu_seqlens)
     if block_table is not None:
         if config.chunk_len is not None:

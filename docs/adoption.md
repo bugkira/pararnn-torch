@@ -117,13 +117,15 @@ from pararnn import NewtonConfig, ParaHopfield, ParaRNN
 
 core = ParaRNN(
     ParaHopfield(d_model, 8),
-    config=NewtonConfig(max_iters=6, jac_structure="dense"),
+    config=NewtonConfig(max_iters=None, jac_structure="dense"),
 )
 y = core(x)  # (B, T, d_model) → (B, T, 8)
 ```
 
-Default \(\beta=1/\sqrt{d_h}\). Fused cell+scan and packed VJP are parked;
-eq. 2.6 uses Autograd on `step`.
+Default \(\beta=1/\sqrt{d_h}\). `max_iters=None` selects the measured
+`K*(T)` envelope (`hopfield_auto_newton_iters`); pin an `int` or pass
+`newton_iters_by_t={64: 2, 1024: 3, …}` to override. Fused cell+scan and
+packed VJP are parked; eq. 2.6 uses Autograd on `step`.
 
 ## RWKV-7 Goose / matrix-state delta slot
 

@@ -60,6 +60,8 @@ def validate_cuda_tensors(*tensors: Tensor, name: str) -> bool:
                 "Use float16 or float32; cell+scan algebra stays fp32."
             )
         raise TypeError(f"{name} supports float16/float32/bfloat16, got {dtype}")
+    # Triton launches on the *current* CUDA device; pin to the tensors' card.
+    torch.cuda.set_device(device)
     return dtype in _NARROW_DTYPES
 
 

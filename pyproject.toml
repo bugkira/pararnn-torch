@@ -1,7 +1,7 @@
 [project]
 name = "pararnn-torch"
-version = "0.17.0"
-description = "PyTorch sequence module for parallel RNN training (ParaRNN / Newton+scan)"
+version = "0.17.1"
+description = "Hardware-efficient parallel training and O(1) decode for nonlinear RNNs (Newton+scan)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [

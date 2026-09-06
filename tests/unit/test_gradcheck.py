@@ -95,9 +95,9 @@ def _gradcheck_config(cell: nn.Module) -> NewtonConfig:
         # a residual retry cannot change the guess.
         kwargs["picard_iters"] = 1
     if isinstance(cell, ParaHopfield):
-        # Dense Softmax couples channels; K=6 matches MixTanh / hopfield
-        # numerics tests. Fallback: raise to 8 on residual before loosening FD.
-        kwargs["max_iters"] = 6
+        # Dense Softmax; prefer max_iters=None in product code. Gradcheck pins
+        # K=3 (recipe ceiling on the lab K*(T) grid). Fallback: raise pin.
+        kwargs["max_iters"] = 3
         kwargs["jac_structure"] = "dense"
     return NewtonConfig(**kwargs)
 

@@ -12,10 +12,10 @@ from pararnn.solvers.vjp import uses_packed_vjp
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# d_h=8: dense recipe for v0.15 (cap 32). max_iters=6: MixTanh-class dense
-# Newton in test_generic; Hopfield softmax is the same dense-J band. Fallback:
-# measure residual vs K on a fixed batch; raise K before raising d_h.
-_NEWTON = NewtonConfig(max_iters=6, scan_backend="eager", jac_structure="dense")
+# d_h=8: dense recipe. Prefer max_iters=None (measured K*(T)); pin=3 is a
+# valid manual ceiling on the lab grid (τ=1e-4, T≤4096). Fallback: residual
+# vs K on a fixed batch; raise K / pin before raising d_h.
+_NEWTON = NewtonConfig(max_iters=3, scan_backend="eager", jac_structure="dense")
 
 
 @torch.no_grad()
@@ -71,7 +71,7 @@ def test_parahopfield_autograd_newton_matches_sequential() -> None:
         cell,
         x,
         NewtonConfig(
-            max_iters=6,
+            max_iters=3,
             scan_backend="eager",
             jacobian="autograd",
             jac_structure="dense",
@@ -123,6 +123,6 @@ def test_parahopfield_triton_scan_matches_sequential(cuda_device: torch.device) 
     par = newton_apply(
         cell,
         x,
-        NewtonConfig(max_iters=6, scan_backend="triton", jac_structure="dense"),
+        NewtonConfig(max_iters=3, scan_backend="triton", jac_structure="dense"),
     )
     assert (par - seq).abs().amax() < 2e-4
