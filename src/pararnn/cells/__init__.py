@@ -6,6 +6,7 @@ from pararnn.cells.para_m2rnn import ParaM2RNN
 from pararnn.cells.para_nlru import ParaNLRU
 from pararnn.cells.para_rwkv7 import ParaRWKV7
 from pararnn.cells.para_slstm import ParaSLSTM
+from pararnn.cells.para_titans import ParaTitans
 from pararnn.cells.protocol import RNNCell, check_cell
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "ParaNLRU",
     "ParaRWKV7",
     "ParaSLSTM",
+    "ParaTitans",
     "RNNCell",
     "check_cell",
 ]

@@ -255,6 +255,22 @@ y = cell.scan_apply(x)                      # (B, T, n_heads*d_head) readout
 Pitch: factorized matrix-state monoid (M²RNN class), Wind CUDA and
 wall-clock races with BlinkDL stay outside this package.
 
+### ParaTitans (shallow Titans neural memory)
+
+Vector memory with one surprise-GD step on an elementwise associative loss
+plus a small diagonal nonlinear polish (Behrouz et al. arXiv:2501.00663
+flavor; L=1 shallow slot):
+
+```python
+from pararnn import ParaTitans, ParaRNN
+
+titans = ParaRNN(ParaTitans(256, 256), device=device)
+y = titans(torch.randn(4, 128, 256, device=device))
+```
+
+Fused Alg. 1 on CUDA (`pararnn::newton_titans_fused`, `W_x` is 5-wide).
+Deep MLP memory \(M\) stays parked.
+
 ## Results
 
 Interactive API tour: [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb)
@@ -313,7 +329,7 @@ API notes stay in [`docs/distributed.md`](docs/distributed.md).
 
 ## API overview
 
-- **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM`, `ParaM2RNN`, `ParaNLRU`, `ParaCfC`, `ParaHopfield`, `ParaRWKV7` — recurrent maps \(f(h_{t-1}, x_t)\). M²RNN state is `(B, T, K, V)`. ParaNLRU is the nonlinear RG-LRU-style diag cell. ParaCfC is the Liquid irregular-Δt diag cell (`x[..., -1]` = Δt). ParaHopfield is the dense Modern-Hopfield slot (`d_h≤32`). ParaRWKV7 is the linear RWKV-7 Goose matrix-state monoid (`(B, T, H, D, D)`).
+- **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM`, `ParaM2RNN`, `ParaNLRU`, `ParaCfC`, `ParaHopfield`, `ParaRWKV7`, `ParaTitans` — recurrent maps \(f(h_{t-1}, x_t)\). M²RNN state is `(B, T, K, V)`. ParaNLRU is the nonlinear RG-LRU-style diag cell. ParaCfC is the Liquid irregular-Δt diag cell (`x[..., -1]` = Δt). ParaHopfield is the dense Modern-Hopfield slot (`d_h≤32`). ParaRWKV7 is the linear RWKV-7 Goose matrix-state monoid (`(B, T, H, D, D)`). ParaTitans is the shallow L=1 Titans-inspired diag memory slot.
 - **Sequence module:** `ParaRNN(cell, config=NewtonConfig(max_iters=3))` — stacks one or more cells (`ParaM2RNN` / `ParaRWKV7` also work through `newton_apply` / `sequential_apply` directly).
 - **Trunk block:** `ParaSLSTMBlock(d_model, mlp_ratio=4)` — RMSNorm + ParaSLSTM + SwiGLU residuals for LM stacks ([`docs/adoption.md`](docs/adoption.md), [`docs/xlstm.md`](docs/xlstm.md)).
 - **CausalLM / vLLM:** `ParaSLSTMForCausalLM` (`labels` CE, `generate`, `model.safetensors`) + `BlockStackPool` continuous batch +

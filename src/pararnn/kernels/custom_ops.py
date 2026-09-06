@@ -23,6 +23,7 @@ from pararnn.kernels.newton_gru_head import (
 from pararnn.kernels.newton_lstm import _newton_lstm_fused_impl
 from pararnn.kernels.newton_nlru import _newton_nlru_fused_impl
 from pararnn.kernels.newton_slstm import _newton_slstm_fused_impl
+from pararnn.kernels.newton_titans import _newton_titans_fused_impl
 from pararnn.kernels.newton_slstm_head import (
     _newton_slstm_head_fused_impl,
     _reverse_slstm_head_factor_impl,
@@ -261,6 +262,48 @@ def _(
     omega: float,
 ) -> Tensor:
     del h0, cu_seqlens, block_table, max_iters, omega
+    batch, time, _ = wx.shape
+    return wx.new_empty(batch, time, int(u.numel()))
+
+
+@torch.library.custom_op("pararnn::newton_titans_fused", mutates_args=())
+def newton_titans_fused(
+    wx: Tensor,
+    u: Tensor,
+    r: Tensor,
+    h0: Tensor | None = None,
+    cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
+    *,
+    max_iters: int,
+    omega: float,
+) -> Tensor:
+    """Fused Alg. 1 for ParaTitans. ``wx`` is ``W_x(x)`` ``(B, T, 5 d_h)``."""
+    return _newton_titans_fused_impl(
+        wx,
+        u,
+        r,
+        max_iters=max_iters,
+        omega=omega,
+        h0=h0,
+        cu_seqlens=cu_seqlens,
+        block_table=block_table,
+    )
+
+
+@newton_titans_fused.register_fake
+def _(
+    wx: Tensor,
+    u: Tensor,
+    r: Tensor,
+    h0: Tensor | None = None,
+    cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
+    *,
+    max_iters: int,
+    omega: float,
+) -> Tensor:
+    del r, h0, cu_seqlens, block_table, max_iters, omega
     batch, time, _ = wx.shape
     return wx.new_empty(batch, time, int(u.numel()))
 

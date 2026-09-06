@@ -15,6 +15,7 @@ from pararnn.cells import (
     ParaNLRU,
     ParaRWKV7,
     ParaSLSTM,
+    ParaTitans,
     RNNCell,
 )
 from pararnn.kernels import can_decode_step, decode_step, decode_wx
@@ -50,6 +51,7 @@ __all__ = [
     "ParaSLSTMBlock",
     "ParaSLSTMConfig",
     "ParaSLSTMForCausalLM",
+    "ParaTitans",
     "RNNCell",
     "SwiGLU",
     "can_decode_step",
@@ -64,4 +66,4 @@ __all__ = [
 try:
     __version__ = version("pararnn-torch")
 except PackageNotFoundError:
-    __version__ = "0.16.0"
+    __version__ = "0.17.0"

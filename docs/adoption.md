@@ -145,6 +145,20 @@ This is a factorized matrix-state delta brick (same class as the M²RNN
 linear warm-start). Full RWKV-7 token-mix / Wind CUDA stay outside the
 library.
 
+## Titans / shallow neural memory slot
+
+For a vector memory with one surprise-GD associative step plus a diagonal
+nonlinear polish (Behrouz et al. arXiv:2501.00663 flavor), use
+`ParaTitans`. Deep multi-layer MLP memory stays parked:
+
+```python
+from pararnn import ParaTitans, ParaRNN
+
+core = ParaRNN(ParaTitans(d_model, d_model))
+```
+
+The Newton Jacobian is channelwise diagonal (fused Alg. 1 on CUDA).
+
 ## Scope
 
 - Local `save_pretrained` / `from_pretrained` (`config.json` + `model.safetensors`).

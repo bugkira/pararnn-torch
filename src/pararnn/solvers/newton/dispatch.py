@@ -14,6 +14,7 @@ from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
 from pararnn.cells.para_nlru import ParaNLRU
 from pararnn.cells.para_slstm import ParaSLSTM
+from pararnn.cells.para_titans import ParaTitans
 from pararnn.kernels.precision import is_fused_dtype_supported
 from pararnn.layout import slstm_pack_heads, slstm_unpack_heads
 from pararnn.solvers.newton.config import NewtonConfig
@@ -47,7 +48,7 @@ def _can_fuse(cell: nn.Module, x: Tensor) -> bool:
         if getattr(cell, "W_x", None) is None:
             return False
         return cell.mix in ("diag", "head")
-    if isinstance(cell, (ParaNLRU, ParaCfC)):
+    if isinstance(cell, (ParaNLRU, ParaCfC, ParaTitans)):
         return getattr(cell, "W_x", None) is not None
     if not isinstance(cell, ParaLSTM):
         return False
@@ -234,7 +235,7 @@ def _fused_error(cell: nn.Module, x: Tensor) -> str:
     if isinstance(cell, ParaGRU) and cell.mix not in ("diag", "head"):
         return f"scan_backend='fused' is mix='diag'|'head' for ParaGRU; got mix={cell.mix!r}"
     return (
-        "scan_backend='fused' needs CUDA ParaGRU/ParaLSTM/ParaSLSTM/ParaNLRU/ParaCfC "
+        "scan_backend='fused' needs CUDA ParaGRU/ParaLSTM/ParaSLSTM/ParaNLRU/ParaCfC/ParaTitans "
         f"in float16/float32/bfloat16 (got {type(cell).__name__} {x.dtype} {x.device})"
     )
 

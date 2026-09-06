@@ -13,7 +13,7 @@ import torch
 from torch import Tensor, nn
 from torch.func import functional_call
 
-from pararnn.cells import ParaCfC, ParaGRU, ParaHopfield, ParaLSTM, ParaNLRU, ParaSLSTM
+from pararnn.cells import ParaCfC, ParaGRU, ParaHopfield, ParaLSTM, ParaNLRU, ParaSLSTM, ParaTitans
 from pararnn.solvers import NewtonConfig, newton_apply
 
 # Tiny shapes: gradcheck is O(n_inputs) forwards. B=2, T=3, d_in=2, d_h=3
@@ -37,7 +37,7 @@ _GRADCHECK_ATOL = 1e-5
 # do not loosen.
 _GRADCHECK_RTOL = 1e-4
 
-_KINDS = ("gru", "lstm", "slstm", "nlru", "cfc", "hopfield")
+_KINDS = ("gru", "lstm", "slstm", "nlru", "cfc", "hopfield", "titans")
 
 
 def _make_cell(kind: str) -> nn.Module:
@@ -61,6 +61,8 @@ def _make_cell(kind: str) -> nn.Module:
     if kind == "hopfield":
         # No App. C.1 clamp on this cell; dense Softmax map is C^∞.
         return ParaHopfield(input_size=_D_IN, hidden_size=_D_H, dtype=torch.float64)
+    if kind == "titans":
+        return ParaTitans(**kwargs)
     return ParaSLSTM(**kwargs, mix="diag")
 
 

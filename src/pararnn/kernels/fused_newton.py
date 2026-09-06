@@ -22,6 +22,7 @@ from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
 from pararnn.cells.para_nlru import ParaNLRU
 from pararnn.cells.para_slstm import ParaSLSTM
+from pararnn.cells.para_titans import ParaTitans
 
 
 def fused_newton(
@@ -81,7 +82,7 @@ def fused_newton(
         GRU with ``cu_seqlens`` or ``fused_early_exit``).
     """
     early = residual_fn is not None and early_exit_atol is not None
-    if isinstance(cell, (ParaNLRU, ParaCfC)):
+    if isinstance(cell, (ParaNLRU, ParaCfC, ParaTitans)):
         if log_coords:
             raise TypeError("fused log coords is ParaSLSTM only")
         if picard_iters:
@@ -91,6 +92,36 @@ def fused_newton(
         if fused_time_loop:
             raise TypeError("fused_time_loop is ParaSLSTM only")
         u = cell.clipped_u()
+        if isinstance(cell, ParaTitans):
+            r = cell.clipped_r()
+            if early:
+                from pararnn.kernels.newton_titans import _newton_titans_fused_impl
+
+                return _newton_titans_fused_impl(
+                    wx,
+                    u,
+                    r,
+                    max_iters=max_iters,
+                    omega=omega,
+                    h0=h0,
+                    cu_seqlens=cu_seqlens,
+                    block_table=block_table,
+                    early_exit_atol=early_exit_atol,
+                    residual_fn=residual_fn,
+                    iters_done_out=iters_done_out,
+                )
+            from pararnn.kernels.custom_ops import newton_titans_fused
+
+            return newton_titans_fused(
+                wx,
+                u,
+                r,
+                h0,
+                cu_seqlens,
+                block_table,
+                max_iters=max_iters,
+                omega=omega,
+            )
         if isinstance(cell, ParaCfC):
             if early:
                 from pararnn.kernels.newton_cfc import _newton_cfc_fused_impl
@@ -351,6 +382,6 @@ def fused_newton(
             window_len=0 if fused_window_len is None else int(fused_window_len),
         )
     raise TypeError(
-        f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM/ParaNLRU/ParaCfC only; "
+        f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM/ParaNLRU/ParaCfC/ParaTitans only; "
         f"got {type(cell).__name__}"
     )
