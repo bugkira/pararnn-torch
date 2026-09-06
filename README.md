@@ -327,7 +327,8 @@ More: [`scripts/README.md`](scripts/README.md). Distributed demos:
   `vllm.general_plugins` ([`docs/vllm.md`](docs/vllm.md)).
 - **Solver** — `NewtonConfig(scan_backend="auto", max_iters=None|int)`;
   `picard_iters` warms the first guess for sLSTM / M²RNN;
-  `verify_first_step=True` for a one-shot agreement smoke on `ParaRNN`.
+  `verify_first_step=True` for a one-shot agreement smoke on `ParaRNN`;
+  `compile_safe_config()` for `torch.compile(..., fullgraph=True)`.
 - **Numerics check** — `verify_agreement(module, x)` → `AgreementReport`;
   full contract: [`docs/numerics-contract.md`](docs/numerics-contract.md).
 - **Speculative** — `verify_linear_draft`.
@@ -344,18 +345,20 @@ h = sequential_apply(cell, x)
 **Docs:** adoption · cells · [`xlstm.md`](docs/xlstm.md) ·
 [`distributed.md`](docs/distributed.md) · [`vllm.md`](docs/vllm.md) ·
 [`numerics-contract.md`](docs/numerics-contract.md) ·
+[`oom-cookbook.md`](docs/oom-cookbook.md) ·
+[`compile-amp.md`](docs/compile-amp.md) ·
 [`structure.md`](docs/structure.md) · [`INSTALL.md`](INSTALL.md) ·
 [`FAQs.md`](FAQs.md).
 
 ## Compatibility
 
-- **`torch.compile`:** compile-safe preset (fixed Newton iters, no residual
-  host sync) → `fullgraph=True` on eager and fused
-  (`tests/numerics/test_compile.py`).
-- **AMP:** module/`x` dtype explicit; under outer autocast Newton opts out so
-  the backward stays one dtype (`tests/numerics/test_autocast.py`).
+- **`torch.compile` / AMP:** [`docs/compile-amp.md`](docs/compile-amp.md) —
+  `compile_safe_config()` for `fullgraph=True`; Newton opts out of outer
+  autocast (explicit `.to(dtype)` for half). Tests:
+  `tests/numerics/test_{compile,autocast}.py`.
 - **DDP / FSDP / checkpoint:** [`docs/distributed.md`](docs/distributed.md);
-  `NewtonConfig(recompute=True)` for ultra-long train T.
+  ultra-long train VRAM → `NewtonConfig(recompute=True)` and the
+  [OOM cookbook](docs/oom-cookbook.md) (Hopfield `d_h` cap, RWKV slim heads).
 - **Determinism:** packed VJP uses tile `tl.sum` then `.sum` (no `tl.atomic*`);
   set `CUBLAS_WORKSPACE_CONFIG=:4096:8` under
   `torch.use_deterministic_algorithms(True)`.
@@ -390,7 +393,7 @@ If you use this library, please cite the software and the ParaRNN framework.
   title        = {{pararnn-torch}: Hardware-efficient parallel training for nonlinear {RNNs}},
   year         = {2026},
   url          = {https://github.com/bugkira/pararnn-torch},
-  version      = {0.17.2}
+  version      = {0.17.3}
 }
 
 @misc{sereda2026paraslstm,

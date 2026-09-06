@@ -33,3 +33,5 @@ unchanged; extra Newton forward FLOPs) for diag and head GRU alike
 sequence-parallel remain complementary. Windowed fused sLSTM
 (``fused_time_loop``) keeps its own tile pad. Host-loop superchunks on the
 diagonal path are polish at T≫10⁶.
+
+User-facing long-T / OOM cheat sheet: [`oom-cookbook.md`](oom-cookbook.md).

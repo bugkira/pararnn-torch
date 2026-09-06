@@ -86,6 +86,7 @@ y = cfc(torch.cat((feat, dt), dim=-1))
 ## ParaHopfield
 
 Modern Hopfield; keep d_h ≤ 32 for the dense Jacobian path.
+VRAM / long-T: [`oom-cookbook.md`](oom-cookbook.md).
 
 ```python
 from pararnn import ParaHopfield
@@ -114,7 +115,8 @@ y = cell.scan_apply(x)          # (B, T, n_heads*d_head) readout
 ```
 
 On 12 GiB cards, wall-clock at T ≳ 64k prefers slim
-`n_heads=1, d_head=16` (state is `(B,T,H,D,D)`).
+`n_heads=1, d_head=16` (state is `(B,T,H,D,D)`). See
+[`oom-cookbook.md`](oom-cookbook.md).
 
 ## ParaTitans
 

@@ -102,6 +102,8 @@ BabyLM’s train script already logs `newton_residual` each step.
 
 ## Related
 
+- [`oom-cookbook.md`](oom-cookbook.md) — long-T VRAM: `recompute`, Hopfield
+  \(d_h\), RWKV slim heads (OOM is loud; this page is the silent-wrong shield)
 - [`FAQs.md`](../FAQs.md) — Turing / K* / `verify_agreement` paste
 - [`backward-scan-cap.md`](backward-scan-cap.md) — long-T scan limits
 - Observability rule: residual, wall time, device, dtype on solver boundaries

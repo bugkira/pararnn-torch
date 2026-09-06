@@ -1,6 +1,6 @@
 [project]
 name = "pararnn-torch"
-version = "0.17.2"
+version = "0.17.3"
 description = "Hardware-efficient parallel training and O(1) decode for nonlinear RNNs (Newton+scan)"
 readme = "README.md"
 license = { file = "LICENSE" }

@@ -13,7 +13,7 @@ import torch
 from torch import Tensor, nn
 
 from pararnn.cells import ParaCfC, ParaGRU, ParaLSTM, ParaM2RNN, ParaNLRU, ParaSLSTM
-from pararnn.solvers import NewtonConfig, newton_apply
+from pararnn.solvers import NewtonConfig, compile_safe_config, newton_apply
 
 # Dynamo eager: same semantics as inductor without a 10 s+ CPU compile
 # (measured). CUDA tests use the default inductor backend.
@@ -30,22 +30,7 @@ _COMPILE_RTOL = 1e-5
 _KINDS = ("gru", "lstm", "slstm", "m2rnn", "nlru", "cfc")
 
 
-def compile_safe_config(*, scan_backend: str = "eager") -> NewtonConfig:
-    """Preset that avoids data-dependent compile hazards.
-
-    ``residual_atol=None``: no ``float(residual.amax())`` in the Newton loop.
-    ``residual_fail=None``: no host sync in ``_fill_stats`` after K.
-    ``picard_adapt=False``: sLSTM residual retry is ``while True``.
-    max_iters=3 is App. A. Fixed-K pure loop + top-level Autograd.Function
-    + fused ``custom_op`` are ``fullgraph=True``-safe.
-    """
-    return NewtonConfig(
-        max_iters=3,
-        scan_backend=scan_backend,
-        residual_atol=None,
-        residual_fail=None,
-        picard_adapt=False,
-    )
+# compile_safe_config lives in pararnn.solvers (docs/compile-amp.md).
 
 
 def _make_cell(kind: str, device: torch.device | None = None) -> nn.Module:

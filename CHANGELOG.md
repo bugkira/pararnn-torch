@@ -4,6 +4,20 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-09-07
+
+Long-T / OOM cheat sheet and `torch.compile` / AMP wrapper docs.
+Public `compile_safe_config()` for `fullgraph=True`.
+
+### Added
+
+- [`docs/oom-cookbook.md`](docs/oom-cookbook.md) — long-T / OOM cheat sheet:
+  `recompute=True` for ~100k train, Hopfield `d_h≤32`, RWKV-7 slim heads;
+  three VRAM hungers + peak-mem smoke for bug reports.
+- [`docs/compile-amp.md`](docs/compile-amp.md) — `torch.compile` / autocast
+  contract; public `compile_safe_config()` (fixed `K`, no residual host sync)
+  for `fullgraph=True`. FAQ compile section restored.
+
 ## [0.17.2] - 2026-09-07
 
 Numerics contract against silent wrong answers: residual gate, measured
@@ -521,7 +535,8 @@ installable surface.
 - Generic-cell autograd path and sequential reference solver.
 - Numerics tests: parallel vs sequential agreement, layer forward/backward.
 
-[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.17.2...HEAD
+[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.17.3...HEAD
+[0.17.3]: https://github.com/bugkira/pararnn-torch/compare/v0.17.2...v0.17.3
 [0.17.2]: https://github.com/bugkira/pararnn-torch/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/bugkira/pararnn-torch/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/bugkira/pararnn-torch/compare/v0.16.0...v0.17.0

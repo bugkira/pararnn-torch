@@ -34,5 +34,6 @@ from pararnn import verify_agreement
 see `docs/numerics-contract.md`)
 
 **Logs**
-(`newton_residual` / `report.to_dict()` / traceback; optional:
+(`newton_residual` / `report.to_dict()` / peak MiB from
+`docs/oom-cookbook.md` smoke / traceback; optional:
 `uv run python scripts/gpu.py`)

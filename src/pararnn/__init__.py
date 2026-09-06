@@ -28,6 +28,7 @@ from pararnn.solvers import (
     NewtonConfig,
     NewtonDivergenceError,
     NewtonStats,
+    compile_safe_config,
     newton_apply,
     sequential_apply,
 )
@@ -64,6 +65,7 @@ __all__ = [
     "RNNCell",
     "SwiGLU",
     "can_decode_step",
+    "compile_safe_config",
     "decode_step",
     "decode_wx",
     "default_agreement_atol",
@@ -77,4 +79,4 @@ __all__ = [
 try:
     __version__ = version("pararnn-torch")
 except PackageNotFoundError:
-    __version__ = "0.17.2"
+    __version__ = "0.17.3"

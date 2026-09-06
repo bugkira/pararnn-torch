@@ -6,8 +6,10 @@ Triton ``@jit`` kernels stay module-level one-liners.
 | File | What |
 |---|---|
 | [`../INSTALL.md`](../INSTALL.md) | User / contributor install, hardware, Triton |
-| [`../FAQs.md`](../FAQs.md) | Turing vs Ampere bf16, K*, residual vs τ, `verify_agreement` |
-| [`numerics-contract.md`](numerics-contract.md) | Brand invariant: residual gate ≠ agreement τ; four echelons |
+| [`../FAQs.md`](../FAQs.md) | Turing vs Ampere bf16, K*, residual vs τ, OOM cheat sheet |
+| [`numerics-contract.md`](numerics-contract.md) | Brand invariant: residual gate and agreement τ; four echelons |
+| [`oom-cookbook.md`](oom-cookbook.md) | Long-T / OOM: recompute, Hopfield d_h, RWKV slim heads |
+| [`compile-amp.md`](compile-amp.md) | `torch.compile` fullgraph preset + autocast / AMP policy |
 | [`cells.md`](cells.md) | Cell zoo snippets (Models table links here) |
 | [`adoption.md`](adoption.md) | Attention / RSSM / Liquid swap paths |
 | [`xlstm.md`](xlstm.md) | `ParaSLSTM` cell, stacking, API notes |

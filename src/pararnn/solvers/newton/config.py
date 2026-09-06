@@ -190,6 +190,34 @@ FUSED_WINDOW_LENS = (32, 64, 128)
 FUSED_WINDOW_DEFAULT = 64
 
 
+def compile_safe_config(*, scan_backend: str = "eager") -> NewtonConfig:
+    """``NewtonConfig`` preset for ``torch.compile(..., fullgraph=True)``.
+
+    Disables residual host sync and sLSTM Picard residual retry so Dynamo
+    sees a fixed-``K`` pure loop. Fused backends stay Dynamo-opaque via
+    ``custom_op`` + ``register_fake``. See ``docs/compile-amp.md``.
+
+    Parameters
+    ----------
+    scan_backend : str, default='eager'
+        Passed through to ``NewtonConfig`` (``eager`` / ``triton`` / ``fused`` /
+        ``auto`` / ``context_parallel``).
+
+    Returns
+    -------
+    NewtonConfig
+        ``max_iters=3`` (App. A), ``residual_atol=None``, ``residual_fail=None``,
+        ``picard_adapt=False``.
+    """
+    return NewtonConfig(
+        max_iters=LIBRARY_NEWTON_ITERS,
+        scan_backend=scan_backend,
+        residual_atol=None,
+        residual_fail=None,
+        picard_adapt=False,
+    )
+
+
 def _validate_config(config: NewtonConfig) -> None:
     if config.scan_backend not in ("auto", "eager", "triton", "fused", "context_parallel"):
         raise ValueError(f"unknown scan backend {config.scan_backend!r}")

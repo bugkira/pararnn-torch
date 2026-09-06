@@ -40,6 +40,19 @@ A finite loss with no `DivergenceError` does **not** prove sequential match.
 A residual ≥ 1 means the solver left its basin — do not step the
 optimizer on that batch.
 
+## CUDA OOM / long T / which flag?
+
+Usually geometry (width / heads / stored H*). Cheat sheet:
+
+1. Train diag GRU/sLSTM toward ~100k tokens → `NewtonConfig(recompute=True)`.
+2. Hopfield → keep `d_h ≤ 32`.
+3. RWKV-7 on long text (12 GiB) → slim `n_heads=1`, `d_head=16`.
+
+Full decision tree + peak-mem smoke:
+[`docs/oom-cookbook.md`](docs/oom-cookbook.md).
+OOM is loud; silent wrong answers are the numerics contract
+([`docs/numerics-contract.md`](docs/numerics-contract.md)).
+
 ## What about Turing GPUs (e.g. RTX 2080 Ti)?
 
 They are first-class for **fp32 / fp16 fused** Newton — this lab’s benches
@@ -90,9 +103,25 @@ yourself before a long train if you want the same gate early. Fallback:
 `NewtonConfig(scan_backend="eager")`. Loads use `precision.load_acc` /
 `store_acc` (masked `tl.load`).
 
-Yes with the compile-safe preset (fixed K, no residual host sync) →
-`fullgraph=True` on eager and fused. See
-`tests/numerics/test_compile.py` and [README Compatibility](README.md#compatibility).
+## Does `torch.compile` / autocast work?
+
+Yes under the documented wrappers — see
+[`docs/compile-amp.md`](docs/compile-amp.md).
+
+- **`fullgraph=True`:** `compile_safe_config()` (fixed `K`, no residual host
+  sync). Fused ops are Dynamo-opaque (`custom_op` + `register_fake`).
+- **Autocast:** Newton opts out of outer autocast; half training uses
+  explicit `.to(dtype)` on module and `x`.
+- **Residual early-stop / Picard adapt:** eager path; under compile the
+  library keeps a fixed-`K` loop.
+
+```python
+from pararnn import compile_safe_config, newton_apply
+import torch
+
+cfg = compile_safe_config(scan_backend="auto")
+fn = torch.compile(lambda z: newton_apply(cell, z, cfg), fullgraph=True)
+```
 
 ## train() vs eval()?
 
