@@ -110,8 +110,8 @@ from pararnn import ParaRWKV7, newton_apply
 
 cell = ParaRWKV7(d_in=64, n_heads=4, d_head=16, device=device)
 x = torch.randn(4, 128, 64, device=device)
-s = newton_apply(cell, x)       # redirects to linear (G,U) scan
-y = cell.scan_apply(x)          # (B, T, n_heads*d_head) readout
+s = newton_apply(cell, x)  # redirects to linear (G,U) scan
+y = cell.scan_apply(x)  # (B, T, n_heads*d_head) readout
 ```
 
 On 12 GiB cards, wall-clock at T ≳ 64k prefers slim

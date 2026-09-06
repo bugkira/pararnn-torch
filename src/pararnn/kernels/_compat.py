@@ -142,9 +142,7 @@ def _run_preflight_smoke() -> None:
     torch.cuda.synchronize(device)
     expect = torch.cumsum(x, dim=0)
     if not torch.allclose(y, expect, atol=1e-5, rtol=0.0):
-        raise RuntimeError(
-            f"preflight scan mismatch: got {y.tolist()} expect {expect.tolist()}"
-        )
+        raise RuntimeError(f"preflight scan mismatch: got {y.tolist()} expect {expect.tolist()}")
 
 
 @lru_cache(maxsize=1)

@@ -62,9 +62,7 @@ class ParaCfC(nn.Module):
         dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
-        input_size, hidden_size = resolve_layer_sizes(
-            input_size, hidden_size, d_in=d_in, d_h=d_h
-        )
+        input_size, hidden_size = resolve_layer_sizes(input_size, hidden_size, d_in=d_in, d_h=d_h)
         if input_size < 2:
             raise ValueError(f"ParaCfC d_in must be >= 2, got {input_size}")
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -112,9 +110,7 @@ class ParaCfC(nn.Module):
         dt_b = dt.expand(*feat.shape[:-1], self.d_h)
         return torch.cat((fc, dt_b), dim=-1)
 
-    def step(
-        self, h_prev: Tensor, x: Tensor | None = None, *, wx: Tensor | None = None
-    ) -> Tensor:
+    def step(self, h_prev: Tensor, x: Tensor | None = None, *, wx: Tensor | None = None) -> Tensor:
         return self._recurrence(h_prev, x, wx=wx).h_new
 
     def step_with_jacobian(
@@ -124,9 +120,7 @@ class ParaCfC(nn.Module):
         jac = acts.a + (1.0 - acts.a) * _tanh_prime_from_act(acts.n) * acts.u
         return acts.h_new, jac
 
-    def _recurrence(
-        self, h_prev: Tensor, x: Tensor | None, *, wx: Tensor | None
-    ) -> _CfCActs:
+    def _recurrence(self, h_prev: Tensor, x: Tensor | None, *, wx: Tensor | None) -> _CfCActs:
         if x is None and wx is None:
             raise ValueError("ParaCfC.step needs x or wx")
         if wx is not None and wx.shape[-1] == 3 * self.d_h:

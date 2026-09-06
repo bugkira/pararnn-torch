@@ -100,7 +100,7 @@ from pararnn import ParaCfC, ParaRNN
 # d_in = feature_dim + 1
 core = ParaRNN(ParaCfC(d_model + 1, d_model))
 feat = ...  # (B, T, d_model)
-dt = ...    # (B, T, 1), positive
+dt = ...  # (B, T, 1), positive
 y = core(torch.cat((feat, dt), dim=-1))
 ```
 
@@ -138,8 +138,8 @@ gates are input-only, so the map is an affine monoid in $S$:
 from pararnn import ParaRWKV7, newton_apply, sequential_apply
 
 cell = ParaRWKV7(d_in=d_model, n_heads=4, d_head=16)
-s = sequential_apply(cell, x)   # (B, T, H, D, D)
-y = cell.scan_apply(x)          # (B, T, n_heads*d_head) = flatten(S @ r)
+s = sequential_apply(cell, x)  # (B, T, H, D, D)
+y = cell.scan_apply(x)  # (B, T, n_heads*d_head) = flatten(S @ r)
 # newton_apply runs the linear (G,U) scan (iters=0).
 s2 = newton_apply(cell, x)
 ```

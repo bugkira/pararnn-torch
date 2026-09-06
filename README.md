@@ -158,11 +158,11 @@ block = ParaSLSTMBlock(64, mlp_ratio=4.0, config=NewtonConfig(max_iters=3)).to(d
 x = torch.randn(2, 128, 64, device=device)
 
 block.train()
-y = block(x)          # Newton + scan inside the recurrent branch
+y = block(x)  # Newton + scan inside the recurrent branch
 y.sum().backward()
 
 block.eval()
-y_eval = block(x)     # sequential step (CUDA T=1: decode_step)
+y_eval = block(x)  # sequential step (CUDA T=1: decode_step)
 ```
 
 ### 2. CausalLM
@@ -177,7 +177,7 @@ ids = torch.randint(0, 256, (2, 32), device=device)
 logits, loss = model(ids, labels=ids)
 loss.backward()
 out = model.generate(ids[:1, :8], max_new_tokens=16)
-model.save_pretrained("./ckpt")   # config.json + model.safetensors
+model.save_pretrained("./ckpt")  # config.json + model.safetensors
 ```
 
 Smoke: [`examples/causal_lm_smoke.py`](examples/causal_lm_smoke.py) · continuous
