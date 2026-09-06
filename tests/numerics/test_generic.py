@@ -194,10 +194,13 @@ def test_paraslstm_diag_packed_vjp_matches_autograd_vjp():
         torch.testing.assert_close(a, b, atol=5e-5, rtol=5e-5)
 
 
-@pytest.mark.filterwarnings("ignore:mix='head' is an unfused ablation:UserWarning")
-def test_paraslstm_head_packed_vjp_falls_back_to_autograd():
+@pytest.mark.filterwarnings("ignore:mix='head' is Beck-style dense R:UserWarning")
+def test_paraslstm_head_uses_packed_vjp():
+    from pararnn.solvers.vjp import uses_packed_vjp
+
     torch.manual_seed(60)
     cell = ParaSLSTM(d_in=5, d_h=6, mix="head", n_heads=2).to(device)
+    assert uses_packed_vjp(cell) is True
     h = torch.randn(2, 5, 4, 6, device=device)
     x = torch.randn(2, 5, 5, device=device)
     mu = torch.randn(2, 5, 4, 6, device=device)

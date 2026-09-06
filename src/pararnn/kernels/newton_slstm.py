@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 
+import torch
 import triton
 import triton.language as tl
 from torch import Tensor
@@ -2648,20 +2649,21 @@ def _slstm_fused_windows(
         cap_suffix=(f" (T≤{window_len * _CHUNK_PAD}). Shrink CHUNK_D or raise CHUNK_PAD."),
     )
     thomas_c, seq = _parse_scan_tile(scan_tile)
-    log.debug(
-        "newton_slstm_fused_windows",
-        extra={
-            "seq_len": time,
-            "batch": batch,
-            "d_h": d_h,
-            "n_tiles": n_chunks,
-            "window_len": window_len,
-            "newton_iters": max_iters,
-            "scan_tile": scan_tile,
-            "device": str(wx.device),
-            "dtype": str(wx.dtype),
-        },
-    )
+    if not torch.compiler.is_compiling() and log.isEnabledFor(logging.DEBUG):
+        log.debug(
+            "newton_slstm_fused_windows",
+            extra={
+                "seq_len": time,
+                "batch": batch,
+                "d_h": d_h,
+                "n_tiles": n_chunks,
+                "window_len": window_len,
+                "newton_iters": max_iters,
+                "scan_tile": scan_tile,
+                "device": str(wx.device),
+                "dtype": str(wx.dtype),
+            },
+        )
     _slstm_window_walk_kernel[(batch, n_dtiles)](
         states,
         wx,

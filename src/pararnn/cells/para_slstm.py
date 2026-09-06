@@ -5,9 +5,9 @@ input/forget, normalizer ``n``, memory mixing ``R h``.
 
 ``mix='diag'`` is the fused path: channelwise ``R``, 4×4 Jacobian per
 feature, Triton Newton. ``mix='head'`` is Beck-style dense ``R`` inside a
-head (unfused ``scan_dense``), kept as an ablation. ``mix='dense'`` is a
-full-width ``R`` oracle for tests (``hidden_size`` capped at
-``DENSE_MAX_HIDDEN``).
+head with factorized CUDA Newton (no dense ``(4d)×(4d)``); ``scan_backend=
+'eager'`` keeps the dense-J oracle. ``mix='dense'`` is a full-width ``R``
+oracle for tests (``hidden_size`` capped at ``DENSE_MAX_HIDDEN``).
 
 Newton init is the ``R h = 0`` unroll (running ``m``/``n``). Recurrent mix
 is exactly one of ``R`` / ``R_dense`` / ``R_head``.
@@ -40,8 +40,9 @@ _JAC = {"diag": "block4", "dense": "dense", "head": "head"}
 # (autograd vs analytic), not a training width. Scan compose is O((4 d_h)³).
 DENSE_MAX_HIDDEN = 8
 _HEAD_ABLATION_WARN = (
-    "mix='head' is an unfused ablation (dense per-head R, scan_dense). "
-    "Fused training uses mix='diag'."
+    "mix='head' is Beck-style dense R inside each head. On CUDA, Newton uses "
+    "a factorized-J fused path; scan_backend='eager' keeps the dense-J oracle. "
+    "Default fused training still uses mix='diag' (4×4 SRAM)."
 )
 
 
@@ -49,8 +50,9 @@ class ParaSLSTM(nn.Module):
     """Four-slot sLSTM: state ``(..., 4, d_h)`` = ``(c, n, m, h)``.
 
     Beck et al. 2024 cell for Newton: exp gates, stabilizer ``m``, normalizer
-    ``n``, mix ``R h``. Default ``mix='diag'`` is the fused path; ``head`` /
-    ``dense`` are ablations (``dense`` capped at ``DENSE_MAX_HIDDEN``).
+    ``n``, mix ``R h``. Default ``mix='diag'`` is the fused 4×4 path;
+    ``mix='head'`` is Beck per-head dense ``R`` with factorized CUDA Newton;
+    ``dense`` is a test oracle (capped at ``DENSE_MAX_HIDDEN``).
 
     Attributes
     ----------

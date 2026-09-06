@@ -4,6 +4,36 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-06
+
+Beck-style `ParaSLSTM(mix='head')`: factorized CUDA Newton, reverse, and VJP.
+
+### Added
+
+- Factorized fused Newton for `ParaSLSTM(mix='head')`: `slstm_head_jvp` /
+  `slstm_head_jt_mvp`, `pararnn::newton_slstm_head_fused` /
+  `pararnn::reverse_slstm_head_factor` (no dense `(4d)×(4d)`). CUDA tiers:
+  `d_head ≤ 32` fused (all four `R_g` in SRAM), `32 < d_head ≤ 128`
+  streamed-`R`, larger / CPU factorized eager. Picard / zero-hidden warm
+  start unchanged. Recipe from measured snaps: `K=4`, `omega=1`.
+  `scan_backend='eager'` keeps the dense-J oracle. Rectangular batches;
+  `cu_seqlens` + explicit `fused` raises; `auto` remaps to `eager`.
+- Packed closed-form VJP for `ParaSLSTM(mix='head')`:
+  `slstm_head_recurrence_vjp` (SRAM Triton `d_head ≤ 32`, eager else) wired
+  through `uses_packed_vjp` / eq. 2.6 (`∇R_head` via outer `h⊗d_z`).
+- Bench [`scripts/bench_slstm_head.py`](scripts/bench_slstm_head.py)
+  (`--scan-backend compare|fused`, `--d-head-grid`). RTX 2080 Ti float32
+  medians — `B=4 K=4`: Newton `d_head=32` ~20 ms / seq ~880 ms at `T=1024`;
+  stream `d_head=64` ~31 ms; `96/128` ~174–180 ms. Reproduce:
+  `uv run python scripts/bench_slstm_head.py --device cuda`.
+
+### Changed
+
+- `ParaSLSTM(mix='head')` warning: factorized CUDA path (diag remains the
+  default 4×4 SRAM product cell).
+- Hot-path `log.debug` in Picard / fused sLSTM gated for `torch.compile`
+  (`fullgraph=True` head-sLSTM infer/train).
+
 ## [0.10.0] - 2026-09-06
 
 Dreamer-style `ParaGRU(mix='head')`: factorized CUDA Newton, reverse, and VJP.
@@ -301,7 +331,8 @@ installable surface.
 - Generic-cell autograd path and sequential reference solver.
 - Numerics tests: parallel vs sequential agreement, layer forward/backward.
 
-[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/bugkira/pararnn-torch/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bugkira/pararnn-torch/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/bugkira/pararnn-torch/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/bugkira/pararnn-torch/compare/v0.7.0...v0.8.0

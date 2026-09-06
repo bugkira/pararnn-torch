@@ -238,7 +238,7 @@ def test_decode_cuda_graph_wx_then_step(cuda_device: torch.device) -> None:
     torch.testing.assert_close(out_buf, ref, atol=_ATOL, rtol=_RTOL)
 
 
-@pytest.mark.filterwarnings("ignore:mix='head' is an unfused ablation:UserWarning")
+@pytest.mark.filterwarnings("ignore:mix='head' is Beck-style dense R:UserWarning")
 @torch.no_grad()
 def test_head_mix_stays_eager(cuda_device: torch.device) -> None:
     cell = ParaSLSTM(d_in=8, d_h=16, mix="head", n_heads=2, device=cuda_device)

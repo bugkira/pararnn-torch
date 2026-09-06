@@ -21,6 +21,10 @@ from pararnn.kernels.newton_gru_head import (
 )
 from pararnn.kernels.newton_lstm import _newton_lstm_fused_impl
 from pararnn.kernels.newton_slstm import _newton_slstm_fused_impl
+from pararnn.kernels.newton_slstm_head import (
+    _newton_slstm_head_fused_impl,
+    _reverse_slstm_head_factor_impl,
+)
 from pararnn.kernels.scan_dense import _reverse_dense_triton_impl, _scan_dense_triton_impl
 from pararnn.kernels.scan_diag import _scan_diag_triton_impl
 from pararnn.kernels.scan_lstm_block import _scan_block2_triton_impl
@@ -411,3 +415,102 @@ def _(
     batch, time, _ = wx.shape
     d_h = int(r.shape[-1])
     return wx.new_empty(batch, time, SLSTM_SLOTS, d_h)
+
+
+@torch.library.custom_op("pararnn::newton_slstm_head_fused", mutates_args=())
+def newton_slstm_head_fused(
+    wx: Tensor,
+    r_head: Tensor,
+    h0: Tensor | None = None,
+    states: Tensor | None = None,
+    *,
+    max_iters: int,
+    omega: float,
+    eps: float,
+) -> Tensor:
+    """Factorized Alg. 1 for ``ParaSLSTM(mix='head')``.
+
+    Parameters
+    ----------
+    wx : Tensor
+        ``W_x(x)`` of shape ``(B, T, 4 d_h)``.
+    r_head : Tensor
+        Clipped recurrent mix ``(4, n_heads, d_head, d_head)``.
+    h0 : Tensor or None
+        Optional initial state ``(B, 4, d_h)``.
+    states : Tensor or None
+        Optional Picard / zero-hidden guess ``(B, T, 4, d_h)``.
+    max_iters : int
+        Newton iterations (head recipe often ``K=4``).
+    omega : float
+        Damping (``1.0`` = vanilla Newton).
+    eps : float
+        Floor on the normalizer ``n`` in the readout.
+
+    Returns
+    -------
+    states : Tensor
+        Converged trajectory ``(B, T, 4, d_h)``.
+
+    Notes
+    -----
+    Rectangular batches only. ``cu_seqlens`` raises in the impl / dispatch.
+    """
+    return _newton_slstm_head_fused_impl(
+        wx,
+        r_head,
+        max_iters=max_iters,
+        omega=omega,
+        eps=eps,
+        h0=h0,
+        states=states,
+    )
+
+
+@newton_slstm_head_fused.register_fake
+def _(
+    wx: Tensor,
+    r_head: Tensor,
+    h0: Tensor | None = None,
+    states: Tensor | None = None,
+    *,
+    max_iters: int,
+    omega: float,
+    eps: float,
+) -> Tensor:
+    del h0, max_iters, omega, eps
+    if states is not None:
+        return torch.empty_like(states)
+    batch, time, _ = wx.shape
+    d_h = int(r_head.shape[1] * r_head.shape[-1])
+    return wx.new_empty(batch, time, SLSTM_SLOTS, d_h)
+
+
+@torch.library.custom_op("pararnn::reverse_slstm_head_factor", mutates_args=())
+def reverse_slstm_head_factor(
+    h_prev: Tensor,
+    wx: Tensor,
+    partial: Tensor,
+    r_head: Tensor,
+    *,
+    eps: float,
+) -> Tensor:
+    """Eq. 2.6 factorized reverse for head ParaSLSTM (opaque to Dynamo)."""
+    n_heads = int(r_head.shape[1])
+    d_head = int(r_head.shape[-1])
+    return _reverse_slstm_head_factor_impl(
+        h_prev, wx, partial, r_head, n_heads=n_heads, d_head=d_head, eps=eps
+    )
+
+
+@reverse_slstm_head_factor.register_fake
+def _(
+    h_prev: Tensor,
+    wx: Tensor,
+    partial: Tensor,
+    r_head: Tensor,
+    *,
+    eps: float,
+) -> Tensor:
+    del h_prev, wx, r_head, eps
+    return torch.empty_like(partial)

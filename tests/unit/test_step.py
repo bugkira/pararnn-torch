@@ -64,7 +64,7 @@ def test_slstm_step_matches_jacobian_state():
     torch.testing.assert_close(s_step, s_jac)
 
 
-@pytest.mark.filterwarnings("ignore:mix='head' is an unfused ablation:UserWarning")
+@pytest.mark.filterwarnings("ignore:mix='head' is Beck-style dense R:UserWarning")
 def test_slstm_precomputed_wx_matches():
     torch.manual_seed(22)
     cell = ParaSLSTM(d_in=5, d_h=4, mix="head", n_heads=2)

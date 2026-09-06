@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 
+import torch
 import triton
 import triton.language as tl
 from torch import Tensor
@@ -735,8 +736,9 @@ def frozen_gate_scan_triton(
         BLOCK_T=_BLOCK_T,
         BLOCK_D=_BLOCK_D,
     )
-    log.debug(
-        "frozen_gate_scan_triton",
-        extra={"seq_len": time, "batch": batch, "d_h": d_h, "n_chunks": n_chunks},
-    )
+    if not torch.compiler.is_compiling() and log.isEnabledFor(logging.DEBUG):
+        log.debug(
+            "frozen_gate_scan_triton",
+            extra={"seq_len": time, "batch": batch, "d_h": d_h, "n_chunks": n_chunks},
+        )
     return out

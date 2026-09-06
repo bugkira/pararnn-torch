@@ -38,7 +38,9 @@ def _can_fuse(cell: nn.Module, x: Tensor) -> bool:
     if not _can_triton_scan(x):
         return False
     if isinstance(cell, ParaSLSTM):
-        return cell.mix == "diag" and getattr(cell, "W_x", None) is not None
+        if getattr(cell, "W_x", None) is None:
+            return False
+        return cell.mix in ("diag", "head")
     if isinstance(cell, ParaGRU):
         if getattr(cell, "W_x", None) is None:
             return False
@@ -71,6 +73,48 @@ def _resolve_backend(
             picard_adapt=auto_p and isinstance(cell, ParaSLSTM),
         )
     requested = config.scan_backend
+    # ParaSLSTM head: auto/triton/fused → factorized fused path on CUDA;
+    # eager keeps the dense-J oracle. Packed cu_seqlens: no silent fused→eager.
+    if (
+        isinstance(cell, ParaSLSTM)
+        and cell.mix == "head"
+        and requested in ("auto", "triton", "fused")
+        and config.coords != "log"
+    ):
+        if cu_seqlens is not None:
+            if requested == "fused":
+                raise TypeError(
+                    "ParaSLSTM(mix='head') fused Newton does not support cu_seqlens yet; "
+                    "use scan_backend='eager' for ragged packs, or pad to a rectangular batch"
+                )
+            if requested == "auto":
+                if not torch.compiler.is_compiling():
+                    warnings.warn(
+                        "ParaSLSTM(mix='head') + cu_seqlens: scan_backend auto → eager "
+                        "(factorized fused kernels are rectangular-batch only)",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                return replace(config, scan_backend="eager")
+            return config
+        if _can_fuse(cell, x):
+            if not torch.compiler.is_compiling() and requested == "auto":
+                log.debug(
+                    "scan_backend_auto",
+                    extra={
+                        "chosen": "fused",
+                        "cell": "ParaSLSTM",
+                        "mix": "head",
+                        "device": str(x.device),
+                        "dtype": str(x.dtype),
+                    },
+                )
+            return replace(config, scan_backend="fused")
+        if requested == "fused":
+            raise TypeError(_fused_error(cell, x))
+        if requested == "auto":
+            return replace(config, scan_backend="eager")
+        return config
     # ParaGRU head: auto/triton/fused → factorized fused path on CUDA;
     # eager keeps the dense-J oracle. Packed cu_seqlens: no silent fused→eager.
     if (
@@ -153,8 +197,10 @@ def _fused_error(cell: nn.Module, x: Tensor) -> str:
             f"(Ampere+ tensor cores); got sm_{major}{minor} on {x.device}. "
             "Use float16; cell+scan algebra stays fp32."
         )
-    if isinstance(cell, ParaSLSTM) and cell.mix != "diag":
-        return f"scan_backend='fused' is mix='diag' only for ParaSLSTM; got mix={cell.mix!r}"
+    if isinstance(cell, ParaSLSTM) and cell.mix not in ("diag", "head"):
+        return (
+            f"scan_backend='fused' is mix='diag'|'head' for ParaSLSTM; got mix={cell.mix!r}"
+        )
     if isinstance(cell, ParaGRU) and cell.mix not in ("diag", "head"):
         return f"scan_backend='fused' is mix='diag'|'head' for ParaGRU; got mix={cell.mix!r}"
     return (

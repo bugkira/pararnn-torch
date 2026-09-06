@@ -52,6 +52,8 @@ def _cell_vjp_body(
         return _lstm_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaSLSTM) and cell.mix == "diag":
         return _slstm_vjp(cell, h_prev, x, mu)
+    if packed and isinstance(cell, ParaSLSTM) and cell.mix == "head":
+        return _slstm_head_vjp(cell, h_prev, x, mu)
     return _autograd_vjp(cell, h_prev, x, mu)
 
 
@@ -61,7 +63,7 @@ def uses_packed_vjp(cell: nn.Module) -> bool:
         return cell.mix in ("diag", "head")
     if isinstance(cell, ParaLSTM):
         return True
-    return isinstance(cell, ParaSLSTM) and cell.mix == "diag"
+    return isinstance(cell, ParaSLSTM) and cell.mix in ("diag", "head")
 
 
 def _autograd_vjp(
@@ -232,6 +234,37 @@ def _slstm_vjp(
         grad_x,
         {
             "R": g_r,
+            "W_x.weight": grad_w,
+            "W_x.bias": grad_b,
+        },
+    )
+
+
+def _slstm_head_vjp(
+    cell: ParaSLSTM, state_prev: Tensor, x: Tensor, mu: Tensor
+) -> tuple[Tensor, tuple[Tensor | None, ...]]:
+    """Eq. 2.6 cell VJP for ``ParaSLSTM(mix='head')`` (factorized ``∇R_head``)."""
+    from pararnn.kernels.vjp_slstm import slstm_head_recurrence_vjp
+
+    assert cell.n_heads is not None and cell.d_head is not None
+    r = cell.clipped_r_head()
+    wx = cell.W_x(x)
+    g_wx, g_r = slstm_head_recurrence_vjp(
+        state_prev,
+        wx,
+        r,
+        mu,
+        n_heads=cell.n_heads,
+        d_head=cell.d_head,
+        eps=cell.eps,
+    )
+    g_r = g_r * _clip_mask(cell.R_head, cell.max_recurrent_norm)
+    grad_x, grad_w, grad_b = _linear_vjp(cell.W_x, x, g_wx)
+    return _align_grads(
+        cell,
+        grad_x,
+        {
+            "R_head": g_r,
             "W_x.weight": grad_w,
             "W_x.bias": grad_b,
         },

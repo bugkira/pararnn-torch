@@ -756,7 +756,7 @@ def _eq26_vjp(
     is the h0 adjoint. Ragged: one adjoint per sequence start.
     """
     h_prev = _prepend(states, h0, cu_seqlens)
-    # Factorized reverse for ParaGRU head on CUDA (matches fused forward).
+    # Factorized reverse for ParaGRU / ParaSLSTM head on CUDA (matches fused forward).
     if (
         isinstance(cell, ParaGRU)
         and cell.mix == "head"
@@ -775,6 +775,29 @@ def _eq26_vjp(
         with torch.no_grad():
             mu = reverse_factor_scan_gru_head(cell, h_prev, partial, wx=wx)
             h0_vjp = gru_head_t0_vjp(cell, h_prev, mu, wx=wx)
+        packed = uses_packed_vjp(cell)
+        grad_x, param_grads = cell_vjp(cell, h_prev, x, mu, packed=packed)
+        grad_h0 = None if h0 is None else h0_vjp
+        return grad_x, param_grads, grad_h0
+
+    if (
+        isinstance(cell, ParaSLSTM)
+        and cell.mix == "head"
+        and backend in ("triton", "fused")
+        and cu_seqlens is None
+        and jacobian in ("auto", "analytic")
+    ):
+        wx = _input_affine(cell, x)
+        if wx is None:
+            raise TypeError("ParaSLSTM head factorized VJP needs cell.W_x")
+        from pararnn.kernels.newton_slstm_head import (
+            reverse_factor_scan_slstm_head,
+            slstm_head_t0_vjp,
+        )
+
+        with torch.no_grad():
+            mu = reverse_factor_scan_slstm_head(cell, h_prev, partial, wx=wx)
+            h0_vjp = slstm_head_t0_vjp(cell, h_prev, mu, wx=wx)
         packed = uses_packed_vjp(cell)
         grad_x, param_grads = cell_vjp(cell, h_prev, x, mu, packed=packed)
         grad_h0 = None if h0 is None else h0_vjp

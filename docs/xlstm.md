@@ -11,7 +11,7 @@ Three mix modes; they are not interchangeable for training:
 | `mix` | Role | Scan / kernel |
 |---|---|---|
 | `'diag'` (default) | Fused training cell. Channelwise `R` of shape `(4, d_h)`. Jacobian is 4×4 per feature. | Triton fused Newton + packed VJP (eq. 2.6). `O(d)` combine. |
-| `'head'` | Ablation vs Beck block-diagonal `R` `(4, n_heads, d_head, d_head)`. Emits a warning. `n_heads` must divide `d_h`. | Unfused `scan_dense` of a `(4 d_head)×(4 d_head)` Jacobian per head. No fused kernel. |
+| `'head'` | Beck block-diagonal `R` `(4, n_heads, d_head, d_head)`. Emits a warning. `n_heads` must divide `d_h`. Recipe often `K=4`. | Factorized CUDA Newton / reverse / packed VJP (no dense `(4d)²`): `d_head≤32` fused SRAM, `≤128` streamed-`R`, else eager factor. `eager` keeps the dense-J / `scan_dense` oracle. |
 | `'dense'` | Autograd oracle for tests. Full-width `R`. `hidden_size <= 8`. | Eager dense Jacobian. |
 
 ```python
@@ -24,7 +24,10 @@ model = ParaRNN(cell, config=NewtonConfig(max_iters=3), solver="auto")
 
 `ParaRNN` is the Newton/sequential wrapper for any cell (GRU, LSTM, sLSTM).
 
-`mix='head'` stays so a paper ablation can run Beck-style mixing through the same Newton loop (see `configs/train/dyck_vs_flashrnn_head.yaml`). Composing dense Jacobians in the scan is cubic in `4 d_head`; the fused path is diagonal for that reason.
+`mix='head'` runs Beck-style mixing through the same Newton loop (see
+`configs/train/dyck_vs_flashrnn_head.yaml`). Factorized matvecs avoid
+materializing `(4 d_head)²`; the dense-J oracle remains available via
+`scan_backend='eager'`. Default product training still uses `mix='diag'`.
 
 ## Stacking
 
@@ -91,10 +94,12 @@ the Triton scan path. Eager Hillis–Steele remains the CPU / fallback scan.
 
 `NewtonConfig(scan_backend="auto")` resolution:
 
-1. Fused Triton on CUDA for `ParaGRU`, `ParaLSTM`, and `ParaSLSTM` with `mix='diag'`.
+1. Fused Triton on CUDA for `ParaGRU`, `ParaLSTM`, and `ParaSLSTM`
+   (`mix='diag'` 4×4; `mix='head'` factorized).
 2. Triton associative scan + per-step `step` when fused kernels are unavailable.
 3. Eager Blelloch scan as the CPU / fallback path.
-4. Ragged `cu_seqlens`: fused ParaGRU in-kernel; otherwise Triton or eager segmented scan.
+4. Ragged `cu_seqlens`: fused diag ParaGRU in-kernel; head GRU/sLSTM remap
+   `auto`→`eager` (explicit `fused` raises); otherwise Triton or eager segmented scan.
 
 ### Data parallel
 

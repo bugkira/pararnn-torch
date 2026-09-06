@@ -248,3 +248,44 @@ def test_compile_safe_head_gru_fullgraph_training(cuda_device: torch.device) -> 
         assert p_e.grad is not None and p_c.grad is not None
         _assert_close(p_c.grad, p_e.grad)
 
+
+@pytest.mark.cuda
+@pytest.mark.filterwarnings("ignore:mix='head' is Beck-style dense R:UserWarning")
+@torch.no_grad()
+def test_compile_safe_head_slstm_fullgraph_inference(cuda_device: torch.device) -> None:
+    """Head sLSTM fused is ``pararnn::newton_slstm_head_fused``: fullgraph OK."""
+    torch.compiler.reset()
+    torch.manual_seed(10)
+    cell = ParaSLSTM(4, 4, mix="head", n_heads=2, device=cuda_device).eval()
+    x = 0.3 * torch.randn(2, 8, 4, device=cuda_device)
+    fn = _fwd(cell, compile_safe_config(scan_backend="fused"))
+    explanation = torch._dynamo.explain(fn)(x)
+    assert explanation.graph_break_count == 0, explanation.break_reasons
+    compiled = torch.compile(fn, fullgraph=True)
+    _assert_close(compiled(x), fn(x))
+
+
+@pytest.mark.cuda
+@pytest.mark.filterwarnings("ignore:mix='head' is Beck-style dense R:UserWarning")
+def test_compile_safe_head_slstm_fullgraph_training(cuda_device: torch.device) -> None:
+    torch.compiler.reset()
+    torch.manual_seed(11)
+    cell_e = ParaSLSTM(4, 4, mix="head", n_heads=2, device=cuda_device)
+    cell_c = ParaSLSTM(4, 4, mix="head", n_heads=2, device=cuda_device)
+    cell_c.load_state_dict(cell_e.state_dict())
+    cfg = compile_safe_config(scan_backend="fused")
+    x_e = (0.3 * torch.randn(2, 8, 4, device=cuda_device)).detach().requires_grad_(True)
+    x_c = x_e.detach().clone().requires_grad_(True)
+    y_e = newton_apply(cell_e, x_e, cfg)
+    w = torch.randn_like(y_e)
+    (y_e * w).sum().backward()
+    compiled = torch.compile(_fwd(cell_c, cfg), fullgraph=True)
+    y_c = compiled(x_c)
+    (y_c * w).sum().backward()
+    _assert_close(y_c, y_e.detach())
+    assert x_e.grad is not None and x_c.grad is not None
+    _assert_close(x_c.grad, x_e.grad)
+    for p_e, p_c in zip(cell_e.parameters(), cell_c.parameters(), strict=True):
+        assert p_e.grad is not None and p_c.grad is not None
+        _assert_close(p_c.grad, p_e.grad)
+

@@ -11,6 +11,7 @@ Configs live under [`configs/`](../configs/) (`train/`, `bench/`, `cells/`).
 |---|---|---|
 | [`slstm_vs_flashrnn.py`](slstm_vs_flashrnn.py) | [`configs/bench/newton_slstm_flashrnn.yaml`](../configs/bench/newton_slstm_flashrnn.yaml) | Diag-sLSTM Newton vs FlashRNN forward timing |
 | [`bench_gru_head.py`](bench_gru_head.py) | CLI flags | `ParaGRU(mix='head')` fused vs eager vs sequential; `--d-head-grid` |
+| [`bench_slstm_head.py`](bench_slstm_head.py) | CLI flags | `ParaSLSTM(mix='head')` fused/stream tiers vs seq; T asymptotics |
 | [`train_babylm.py`](train_babylm.py) | [`configs/train/babylm.yaml`](../configs/train/babylm.yaml) | BabyLM LM train with MLflow |
 | [`bench_time.py`](bench_time.py) | [`configs/bench/newton_fused.yaml`](../configs/bench/newton_fused.yaml) | Fused vs eager Newton wall time |
 | [`run_multiseed_benches.sh`](run_multiseed_benches.sh) | multiseed YAML under `configs/bench/` | Seed sweeps → `outputs/multiseed/` |

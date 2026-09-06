@@ -8,7 +8,7 @@ from pararnn.cells.para_slstm import DENSE_MAX_HIDDEN, ParaSLSTM
 
 
 def test_head_mix_warns_ablation():
-    with pytest.warns(UserWarning, match="unfused ablation"):
+    with pytest.warns(UserWarning, match="Beck-style dense R"):
         cell = ParaSLSTM(4, 4, mix="head", n_heads=2)
     assert cell.mix == "head"
     assert cell.n_heads == 2

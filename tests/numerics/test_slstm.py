@@ -1,8 +1,8 @@
 """Para-sLSTM: sequential unroll vs Newton + 4x4 (diag) / dense (mix) scan.
 
 K=3 / 1e-6 is the App. A ParaGRU/LSTM measurement; these tests record
-residual vs K. Fused Newton is mix='diag' only (Triton 4x4); head/dense stay
-eager/triton-scan.
+residual vs K. Fused Newton: mix='diag' (Triton 4x4) and mix='head'
+(factorized J); dense stays an eager oracle.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from pararnn.solvers.slstm_picard import (
 
 log = logging.getLogger(__name__)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-pytestmark = pytest.mark.filterwarnings("ignore:mix='head' is an unfused ablation:UserWarning")
+pytestmark = pytest.mark.filterwarnings("ignore:mix='head' is Beck-style dense R:UserWarning")
 
 
 def _residual_vs_k(
@@ -533,14 +533,73 @@ def test_slstm_diag_auto_picks_fused(cuda_device: torch.device) -> None:
 
 
 @pytest.mark.cuda
-def test_slstm_fused_rejects_head_and_dense(cuda_device: torch.device) -> None:
+def test_slstm_fused_rejects_dense_accepts_head(cuda_device: torch.device) -> None:
     x = 0.3 * torch.randn(2, 8, 4, device=cuda_device)
     head = ParaSLSTM(d_in=4, d_h=4, mix="head", n_heads=2).to(cuda_device)
     dense = ParaSLSTM(d_in=4, d_h=4, mix="dense").to(cuda_device)
-    with pytest.raises(TypeError, match="diag"):
-        newton_apply(head, x, NewtonConfig(max_iters=1, scan_backend="fused"))
-    with pytest.raises(TypeError, match="diag"):
+    cfg = NewtonConfig(max_iters=5, scan_backend="fused", residual_atol=None)
+    with torch.no_grad():
+        h = newton_apply(head, x, cfg)
+    assert h.shape == (2, 8, SLSTM_SLOTS, 4)
+    with pytest.raises(TypeError, match="diag|head"):
         newton_apply(dense, x, NewtonConfig(max_iters=1, scan_backend="fused"))
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_slstm_head_fused_matches_sequential(cuda_device: torch.device) -> None:
+    """Seed 105 / head snaps at K=4 (docs/internal/para-slstm.md)."""
+    torch.manual_seed(105)
+    cfg = NewtonConfig(max_iters=5, scan_backend="fused", residual_atol=None)
+    eager_cfg = NewtonConfig(max_iters=5, scan_backend="eager", residual_atol=None)
+    cell = ParaSLSTM(d_in=4, d_h=4, mix="head", n_heads=2).to(cuda_device)
+    x = 0.3 * torch.randn(2, 8, 4, device=cuda_device)
+    seq = sequential_apply(cell, x)
+    eager = newton_apply(cell, x, eager_cfg)
+    par = newton_apply(cell, x, cfg)
+    err_s = float((par - seq).abs().amax())
+    err_e = float((par - eager).abs().amax())
+    assert err_s < 5e-3, err_s
+    assert err_e < 2e-4, err_e
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_slstm_head_stream_matches_eager(cuda_device: torch.device) -> None:
+    """``d_head=48`` exercises streamed-``R`` Triton (``32 < d ≤ 128``)."""
+    torch.manual_seed(107)
+    cfg = NewtonConfig(max_iters=5, scan_backend="fused", residual_atol=None)
+    eager_cfg = NewtonConfig(max_iters=5, scan_backend="eager", residual_atol=None)
+    cell = ParaSLSTM(d_in=16, d_h=96, mix="head", n_heads=2).to(cuda_device)
+    x = 0.2 * torch.randn(2, 12, 16, device=cuda_device)
+    eager = newton_apply(cell, x, eager_cfg)
+    par = newton_apply(cell, x, cfg)
+    err = float((par - eager).abs().amax())
+    assert err < 2e-4, err
+
+
+@pytest.mark.cuda
+def test_slstm_head_fused_bwd_matches_sequential_bptt(cuda_device: torch.device) -> None:
+    torch.manual_seed(206)
+    d_in, d_h, t = 4, 4, 8
+    x = 0.3 * torch.randn(2, t, d_in, device=cuda_device)
+    w = torch.randn(2, t, SLSTM_SLOTS, d_h, device=cuda_device)
+    cell_s = ParaSLSTM(d_in, d_h, mix="head", n_heads=2).to(cuda_device)
+    cell_n = ParaSLSTM(d_in, d_h, mix="head", n_heads=2).to(cuda_device)
+    cell_n.load_state_dict(cell_s.state_dict())
+    x_s = x.clone().requires_grad_(True)
+    x_n = x.clone().requires_grad_(True)
+    cfg = NewtonConfig(max_iters=5, scan_backend="fused", residual_atol=None)
+    loss_s = (sequential_apply(cell_s, x_s) * w).sum()
+    loss_s.backward()
+    loss_n = (newton_apply(cell_n, x_n, cfg) * w).sum()
+    loss_n.backward()
+    for (n, p_a), (_, p_b) in zip(
+        cell_s.named_parameters(), cell_n.named_parameters(), strict=True
+    ):
+        assert p_a.grad is not None, n
+        torch.testing.assert_close(p_a.grad, p_b.grad, atol=5e-4, rtol=1e-4)
+    torch.testing.assert_close(x_s.grad, x_n.grad, atol=5e-4, rtol=1e-4)
 
 
 @pytest.mark.cuda
