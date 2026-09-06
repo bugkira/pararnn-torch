@@ -125,6 +125,26 @@ y = core(x)  # (B, T, d_model) → (B, T, 8)
 Default \(\beta=1/\sqrt{d_h}\). Fused cell+scan and packed VJP are parked;
 eq. 2.6 uses Autograd on `step`.
 
+## RWKV-7 Goose / matrix-state delta slot
+
+For the linear RWKV-7 Goose transition (Peng et al. arXiv:2503.14456), use
+`ParaRWKV7`. State is per-head \(S\in\mathbb{R}^{d_{\mathrm{head}}\times d_{\mathrm{head}}}\);
+gates are input-only, so the map is an affine monoid in \(S\):
+
+```python
+from pararnn import ParaRWKV7, newton_apply, sequential_apply
+
+cell = ParaRWKV7(d_in=d_model, n_heads=4, d_head=16)
+s = sequential_apply(cell, x)   # (B, T, H, D, D)
+y = cell.scan_apply(x)          # (B, T, n_heads*d_head) = flatten(S @ r)
+# newton_apply runs the linear (G,U) scan (iters=0).
+s2 = newton_apply(cell, x)
+```
+
+This is a factorized matrix-state delta brick (same class as the M²RNN
+linear warm-start). Full RWKV-7 token-mix / Wind CUDA stay outside the
+library.
+
 ## Scope
 
 - Local `save_pretrained` / `from_pretrained` (`config.json` + `model.safetensors`).

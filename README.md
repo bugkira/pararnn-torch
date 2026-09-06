@@ -26,6 +26,10 @@ Package **`pararnn-torch`**, import **`pararnn`**. **Alpha** — fused kernels a
 
 `ParaHopfield` is a recurrent Modern-Hopfield slot: \(h_t = V_t\,\mathrm{softmax}(\beta K_t h_{t-1})\) with \(K_t,V_t\in\mathbb{R}^{d_h\times d_h}\) from \(x_t\). Softmax couples channels, so Newton uses a dense Jacobian and `scan_dense` (recommend \(d_h\le 32\)).
 
+`ParaRWKV7` is the RWKV-7 Goose matrix-state delta monoid: \(S_t = S_{t-1}G_t + v_t^\top k_t\) with diagonal-plus-rank-1 \(G_t\) from input-only gates (Peng et al., arXiv:2503.14456). The recurrence is linear in \(S\); training uses a factorized step plus an associative \((G,U)\) scan (`newton_apply` redirects to that scan).
+
+`ParaTitans` is a shallow L=1 Titans-inspired neural memory slot: surprise GD on \(\ell=\tfrac12\|h\odot k-v\|^2\) plus a diagonal \(\tanh\) polish, so the Newton Jacobian stays channelwise diagonal (fused Alg. 1). Deep multi-layer MLP memory is parked.
+
 Implementation of the Newton+scan core follows [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450).
 
 ## Install
@@ -231,6 +235,26 @@ y = hop(torch.randn(4, 128, 64, device=device))
 `scan_backend="auto"` picks Triton `scan_dense` on CUDA; fused cell+scan is
 parked. Eq. 2.6 VJP uses Autograd on `step` (`uses_packed_vjp` is false).
 
+### ParaRWKV7 (RWKV-7 Goose / linear matrix state)
+
+Matrix-state delta monoid (Peng et al. arXiv:2503.14456). Gates
+\(w,a,\hat\kappa,v,k,r\) come from \(x\) only; \(S\) updates with a
+factorized diagonal-plus-rank-1 map. Parallel path is an associative scan
+of affine \((G,U)\) pairs:
+
+```python
+from pararnn import ParaRWKV7, newton_apply, sequential_apply
+
+cell = ParaRWKV7(d_in=64, n_heads=4, d_head=16, device=device)
+x = torch.randn(4, 128, 64, device=device)
+s_seq = sequential_apply(cell, x)           # (B, T, H, D, D)
+s_par = newton_apply(cell, x)               # same; redirects to linear scan
+y = cell.scan_apply(x)                      # (B, T, n_heads*d_head) readout
+```
+
+Pitch: factorized matrix-state monoid (M²RNN class), Wind CUDA and
+wall-clock races with BlinkDL stay outside this package.
+
 ## Results
 
 Interactive API tour: [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb)
@@ -289,8 +313,8 @@ API notes stay in [`docs/distributed.md`](docs/distributed.md).
 
 ## API overview
 
-- **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM`, `ParaM2RNN`, `ParaNLRU`, `ParaCfC`, `ParaHopfield` — recurrent maps \(f(h_{t-1}, x_t)\). M²RNN state is `(B, T, K, V)`. ParaNLRU is the nonlinear RG-LRU-style diag cell. ParaCfC is the Liquid irregular-Δt diag cell (`x[..., -1]` = Δt). ParaHopfield is the dense Modern-Hopfield slot (`d_h≤32`).
-- **Sequence module:** `ParaRNN(cell, config=NewtonConfig(max_iters=3))` — stacks one or more cells (`ParaM2RNN` also works through `newton_apply` / `sequential_apply` directly).
+- **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM`, `ParaM2RNN`, `ParaNLRU`, `ParaCfC`, `ParaHopfield`, `ParaRWKV7` — recurrent maps \(f(h_{t-1}, x_t)\). M²RNN state is `(B, T, K, V)`. ParaNLRU is the nonlinear RG-LRU-style diag cell. ParaCfC is the Liquid irregular-Δt diag cell (`x[..., -1]` = Δt). ParaHopfield is the dense Modern-Hopfield slot (`d_h≤32`). ParaRWKV7 is the linear RWKV-7 Goose matrix-state monoid (`(B, T, H, D, D)`).
+- **Sequence module:** `ParaRNN(cell, config=NewtonConfig(max_iters=3))` — stacks one or more cells (`ParaM2RNN` / `ParaRWKV7` also work through `newton_apply` / `sequential_apply` directly).
 - **Trunk block:** `ParaSLSTMBlock(d_model, mlp_ratio=4)` — RMSNorm + ParaSLSTM + SwiGLU residuals for LM stacks ([`docs/adoption.md`](docs/adoption.md), [`docs/xlstm.md`](docs/xlstm.md)).
 - **CausalLM / vLLM:** `ParaSLSTMForCausalLM` (`labels` CE, `generate`, `model.safetensors`) + `BlockStackPool` continuous batch +
   `vllm.general_plugins` registration ([`docs/adoption.md`](docs/adoption.md), [`docs/vllm.md`](docs/vllm.md), `examples/continuous_batch.py`).

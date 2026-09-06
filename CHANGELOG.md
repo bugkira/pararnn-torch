@@ -4,6 +4,39 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-06
+
+`ParaTitans`: shallow L=1 Titans-inspired neural memory (vector state;
+channelwise-diagonal Newton Jacobian). Deep multi-layer MLP memory is parked.
+
+### Added
+
+- `ParaTitans`: surprise GD on elementwise associative loss
+  \(\ell=\tfrac12\|h\odot k-v\|^2\) plus diagonal tanh polish
+  \(u\odot\tanh(W_n x+r\odot h)\); gates from `Linear(d_in → 5 d_h)`;
+  analytic diag `step_with_jacobian`; eager / Triton diag scan; fused Alg. 1
+  (`pararnn::newton_titans_fused`); Autograd eq. 2.6 VJP. Adoption slot in
+  [`docs/adoption.md`](docs/adoption.md).
+
+## [0.16.0] - 2026-09-06
+
+`ParaRWKV7`: RWKV-7 Goose matrix-state delta monoid (linear in \(S\);
+factorized apply + associative scan; Newton redirects).
+
+### Added
+
+- `ParaRWKV7`: per-head state \(S\in\mathbb{R}^{d_{\mathrm{head}}\times d_{\mathrm{head}}}\)
+  with Goose transition
+  \(S_t = S_{t-1}G_t + v_t^\top k_t\),
+  \(G_t=\mathrm{diag}(w_t)-\hat\kappa_t^\top(a_t\odot\hat\kappa_t)\)
+  (Peng et al., arXiv:2503.14456). Gates from `Linear(d_in → 6 n_heads d_head)`;
+  factorized `step` (no dense \(G\)); receptance readout
+  \(y=\mathrm{flatten}(S@r)\); Hillis–Steele associative scan of the
+  \((G,U)\) monoid (`scan_apply` / `newton_apply` default).
+  `newton_apply` redirects to the linear scan (or `sequential_apply` when
+  `scan_backend='eager'`). Adoption slot in
+  [`docs/adoption.md`](docs/adoption.md).
+
 ## [0.15.0] - 2026-09-06
 
 `ParaHopfield`: recurrent Modern-Hopfield slot

@@ -13,6 +13,7 @@ from pararnn.cells import (
     ParaLSTM,
     ParaM2RNN,
     ParaNLRU,
+    ParaRWKV7,
     ParaSLSTM,
     RNNCell,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "ParaM2RNN",
     "ParaNLRU",
     "ParaRNN",
+    "ParaRWKV7",
     "ParaSLSTM",
     "ParaSLSTMBlock",
     "ParaSLSTMConfig",
@@ -62,4 +64,4 @@ __all__ = [
 try:
     __version__ = version("pararnn-torch")
 except PackageNotFoundError:
-    __version__ = "0.15.0"
+    __version__ = "0.16.0"

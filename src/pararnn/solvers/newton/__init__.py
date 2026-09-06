@@ -8,6 +8,8 @@ ParaLSTM, and ParaSLSTM ``mix='diag'``, and factorized Newton for
 ``ParaGRU(mix='head')`` / ``ParaSLSTM(mix='head')``. ``'auto'`` picks fused
 on CUDA for those cells. ``ParaM2RNN`` uses a factorized Kronecker scan
 (``newton_m2rnn_factorized``) on every backend alias; no dense ``(KV)²``.
+``ParaRWKV7`` is linear in ``S``: ``newton_apply`` redirects to the
+associative ``(G,U)`` monoid scan (or sequential when ``scan_backend='eager'``).
 Packed ``cu_seqlens``: fused diag ParaGRU stays in-kernel; head ParaGRU
 raises on explicit ``fused`` and remaps ``auto`` → ``eager``; LSTM/sLSTM
 fused falls back to Triton scan with ``J=0`` at segment heads.
@@ -266,6 +268,12 @@ def newton_apply(
     """
     config = config or NewtonConfig()
     _validate_config(config)
+    # RWKV-7 Goose is linear in S: no nonlinear fixed point. Redirect before
+    # the IFT Autograd.Function so grads are ordinary BPTT through the scan.
+    if getattr(cell, "jac_structure", None) == "rwkv7":
+        return _newton_rwkv7(
+            cell, x, config, h0=h0, stats=stats, cu_seqlens=cu_seqlens, block_table=block_table
+        )
     config = _resolve_backend(cell, x, config, cu_seqlens=cu_seqlens)
     if block_table is not None:
         if config.chunk_len is not None:
@@ -1024,5 +1032,77 @@ def _newton_m2rnn(
             stats=stats,
             residual_history=history,
             known_residual=last,
+        )
+    return states
+
+
+def _newton_rwkv7(
+    cell: nn.Module,
+    x: Tensor,
+    config: NewtonConfig,
+    *,
+    h0: Tensor | None = None,
+    stats: NewtonStats | None = None,
+    cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
+) -> Tensor:
+    """Linear RWKV-7 monoid: associative scan (default) or sequential oracle.
+
+    The map is affine in ``S``. ``scan_backend='eager'`` uses
+    ``sequential_apply``; other aliases use ``rwkv7_associative_scan``.
+    """
+    from pararnn.cells.para_rwkv7 import ParaRWKV7
+    from pararnn.kernels.rwkv7_scan import (
+        rwkv7_associative_scan,
+        rwkv7_build_g,
+        rwkv7_outer_vk,
+    )
+    from pararnn.solvers.sequential import sequential_apply
+
+    if not isinstance(cell, ParaRWKV7):
+        raise TypeError(f"_newton_rwkv7 needs ParaRWKV7, got {type(cell).__name__}")
+    if cu_seqlens is not None or block_table is not None:
+        raise ValueError(
+            "ParaRWKV7 scan is rectangular-batch only (no cu_seqlens / block_table yet)"
+        )
+    if config.chunk_len is not None:
+        raise ValueError("ParaRWKV7 does not support chunk_len yet")
+    if config.coords == "log":
+        raise TypeError("NewtonConfig(coords='log') is ParaSLSTM only")
+
+    use_seq = config.scan_backend == "eager"
+    if use_seq:
+        states = sequential_apply(cell, x, h0)
+        backend_tag = "rwkv7_sequential"
+    else:
+        w, a, kappa, v, k, _r = cell.project(x)
+        g = rwkv7_build_g(w, a, kappa)
+        u = rwkv7_outer_vk(v, k)
+        states = rwkv7_associative_scan(g, u, s0=h0)
+        backend_tag = "rwkv7_scan"
+
+    if not torch.compiler.is_compiling():
+        if log.isEnabledFor(logging.INFO):
+            log.info(
+                "rwkv7_linear_redirect",
+                extra={
+                    "backend": backend_tag,
+                    "seq_len": int(x.shape[1]),
+                    "batch": int(x.shape[0]),
+                    "n_heads": cell.n_heads,
+                    "d_head": cell.d_head,
+                },
+            )
+        cfg = replace(config, scan_backend=backend_tag)
+        _fill_stats(
+            cell,
+            x,
+            states,
+            h0,
+            cfg,
+            iters=0,
+            stats=stats,
+            residual_history=[],
+            known_residual=0.0,
         )
     return states
