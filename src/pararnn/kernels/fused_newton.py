@@ -19,6 +19,7 @@ from torch import Tensor, nn
 
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
+from pararnn.cells.para_nlru import ParaNLRU
 from pararnn.cells.para_slstm import ParaSLSTM
 
 
@@ -79,6 +80,42 @@ def fused_newton(
         GRU with ``cu_seqlens`` or ``fused_early_exit``).
     """
     early = residual_fn is not None and early_exit_atol is not None
+    if isinstance(cell, ParaNLRU):
+        if log_coords:
+            raise TypeError("fused log coords is ParaSLSTM only")
+        if picard_iters:
+            raise TypeError("fused Picard is ParaSLSTM only")
+        if scan_tile != "assoc":
+            raise TypeError("fused scan_tile is ParaSLSTM only")
+        if fused_time_loop:
+            raise TypeError("fused_time_loop is ParaSLSTM only")
+        u = cell.clipped_u()
+        if early:
+            from pararnn.kernels.newton_nlru import _newton_nlru_fused_impl
+
+            return _newton_nlru_fused_impl(
+                wx,
+                u,
+                max_iters=max_iters,
+                omega=omega,
+                h0=h0,
+                cu_seqlens=cu_seqlens,
+                block_table=block_table,
+                early_exit_atol=early_exit_atol,
+                residual_fn=residual_fn,
+                iters_done_out=iters_done_out,
+            )
+        from pararnn.kernels.custom_ops import newton_nlru_fused
+
+        return newton_nlru_fused(
+            wx,
+            u,
+            h0,
+            cu_seqlens,
+            block_table,
+            max_iters=max_iters,
+            omega=omega,
+        )
     if isinstance(cell, ParaGRU):
         if cell.mix == "head":
             if log_coords:
@@ -285,4 +322,6 @@ def fused_newton(
             time_loop=fused_time_loop,
             window_len=0 if fused_window_len is None else int(fused_window_len),
         )
-    raise TypeError(f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM only; got {type(cell).__name__}")
+    raise TypeError(
+        f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM/ParaNLRU only; got {type(cell).__name__}"
+    )

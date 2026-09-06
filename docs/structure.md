@@ -17,7 +17,7 @@ ParaRNN/
 │   ├── backward-scan-cap.md
 │   └── sources/                # upstream PDF cache (gitignored *.pdf)
 ├── src/pararnn/
-│   ├── cells/                  # ParaGRU, ParaLSTM, ParaSLSTM, ParaM2RNN
+│   ├── cells/                  # ParaGRU, ParaLSTM, ParaSLSTM, ParaM2RNN, ParaNLRU
 │   ├── layers/                 # ParaRNN, ParaSLSTMBlock
 │   ├── models/                 # ParaSLSTMConfig + CausalLM
 │   ├── serve/                  # BlockStackPool continuous batch

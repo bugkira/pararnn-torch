@@ -18,15 +18,16 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from pararnn.cells import ParaGRU, ParaLSTM, ParaM2RNN, ParaSLSTM
+from pararnn.cells import ParaGRU, ParaLSTM, ParaM2RNN, ParaNLRU, ParaSLSTM
 from pararnn.determinism import reset_determinism_warnings
 from pararnn.kernels.vjp_gru import gru_recurrence_vjp, gru_recurrence_vjp_eager
 from pararnn.kernels.vjp_lstm import lstm_recurrence_vjp, lstm_recurrence_vjp_eager
+from pararnn.kernels.vjp_nlru import nlru_recurrence_vjp, nlru_recurrence_vjp_eager
 from pararnn.kernels.vjp_slstm import slstm_recurrence_vjp, slstm_recurrence_vjp_eager
 from pararnn.solvers import NewtonConfig, newton_apply
 from pararnn.solvers.vjp import cell_vjp
 
-_KINDS = ("gru", "lstm", "slstm", "m2rnn")
+_KINDS = ("gru", "lstm", "slstm", "m2rnn", "nlru")
 _DTYPES = (torch.float32, torch.float16)
 
 
@@ -38,6 +39,8 @@ def _make_cell(kind: str, device: torch.device, dtype: torch.dtype) -> nn.Module
         return ParaGRU(**kw)
     if kind == "lstm":
         return ParaLSTM(**kw)
+    if kind == "nlru":
+        return ParaNLRU(**kw)
     return ParaSLSTM(mix="diag", **kw)
 
 
@@ -47,7 +50,7 @@ def _inputs(kind: str, device: torch.device, dtype: torch.dtype) -> tuple[Tensor
     if kind == "m2rnn":
         h = torch.randn(batch, time, 4, 4, device=device, dtype=dtype)
         mu = torch.randn(batch, time, 4, 4, device=device, dtype=dtype)
-    elif kind == "gru":
+    elif kind in ("gru", "nlru"):
         h = torch.randn(batch, time, 32, device=device, dtype=dtype)
         mu = torch.randn(batch, time, 32, device=device, dtype=dtype)
     elif kind == "lstm":
@@ -97,7 +100,7 @@ def test_packed_vjp_param_grads_bitwise_stable(
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("kind", ["gru", "lstm", "slstm"])
+@pytest.mark.parametrize("kind", ["gru", "lstm", "slstm", "nlru"])
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_triton_vjp_matches_eager_formulas(
     kind: str, dtype: torch.dtype, cuda_device: torch.device
@@ -111,6 +114,11 @@ def test_triton_vjp_matches_eager_formulas(
         wx = cell.W_x(x)
         got = gru_recurrence_vjp(h, wx, a_z, a_r, a_n, mu)
         ref = gru_recurrence_vjp_eager(h, wx, a_z, a_r, a_n, mu)
+    elif kind == "nlru":
+        u = cell.clipped_u()
+        wx = cell.W_x(x)
+        got = nlru_recurrence_vjp(h, wx, u, mu)
+        ref = nlru_recurrence_vjp_eager(h, wx, u, mu)
     elif kind == "lstm":
         a_f, a_z, a_o, c_f, c_o = cell.clipped_recurrent()
         wx = cell.W_x(x)

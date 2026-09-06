@@ -74,6 +74,20 @@ rssm_h = ParaRNN(
 
 Smoke: [`examples/rssm_recurrent.py`](../examples/rssm_recurrent.py).
 
+## Griffin / RecurrentGemma recurrent slot
+
+For a nonlinear replacement of linear RG-LRU (input-only gate, diagonal mix,
+`tanh` inside the step), use `ParaNLRU`:
+
+```python
+from pararnn import ParaNLRU, ParaRNN
+
+core = ParaRNN(ParaNLRU(d_model, d_model))
+```
+
+This is the same diag-Jacobian class as fused ParaGRU; it is not a
+weight-compatible drop-in for Griffin's \(a^{c r_t}\) parameterization.
+
 ## Scope
 
 - Local `save_pretrained` / `from_pretrained` (`config.json` + `model.safetensors`).

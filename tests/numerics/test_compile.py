@@ -12,7 +12,7 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from pararnn.cells import ParaGRU, ParaLSTM, ParaM2RNN, ParaSLSTM
+from pararnn.cells import ParaGRU, ParaLSTM, ParaM2RNN, ParaNLRU, ParaSLSTM
 from pararnn.solvers import NewtonConfig, newton_apply
 
 # Dynamo eager: same semantics as inductor without a 10 s+ CPU compile
@@ -27,7 +27,7 @@ _CPU_BACKEND = "eager"
 _COMPILE_ATOL = 1e-5
 _COMPILE_RTOL = 1e-5
 
-_KINDS = ("gru", "lstm", "slstm", "m2rnn")
+_KINDS = ("gru", "lstm", "slstm", "m2rnn", "nlru")
 
 
 def compile_safe_config(*, scan_backend: str = "eager") -> NewtonConfig:
@@ -61,6 +61,8 @@ def _make_cell(kind: str, device: torch.device | None = None) -> nn.Module:
         return ParaGRU(**kwargs)
     if kind == "lstm":
         return ParaLSTM(**kwargs)
+    if kind == "nlru":
+        return ParaNLRU(**kwargs)
     return ParaSLSTM(**kwargs, mix="diag")
 
 

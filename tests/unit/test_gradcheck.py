@@ -13,7 +13,7 @@ import torch
 from torch import Tensor, nn
 from torch.func import functional_call
 
-from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
+from pararnn.cells import ParaGRU, ParaLSTM, ParaNLRU, ParaSLSTM
 from pararnn.solvers import NewtonConfig, newton_apply
 
 # Tiny shapes: gradcheck is O(n_inputs) forwards. B=2, T=3, d_in=2, d_h=3
@@ -36,7 +36,7 @@ _GRADCHECK_ATOL = 1e-5
 # do not loosen.
 _GRADCHECK_RTOL = 1e-4
 
-_KINDS = ("gru", "lstm", "slstm")
+_KINDS = ("gru", "lstm", "slstm", "nlru")
 
 
 def _make_cell(kind: str) -> nn.Module:
@@ -53,6 +53,8 @@ def _make_cell(kind: str) -> nn.Module:
         return ParaGRU(**kwargs)
     if kind == "lstm":
         return ParaLSTM(**kwargs)
+    if kind == "nlru":
+        return ParaNLRU(**kwargs)
     return ParaSLSTM(**kwargs, mix="diag")
 
 

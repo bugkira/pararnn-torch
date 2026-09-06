@@ -15,6 +15,7 @@ from torch import Tensor, nn
 
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
+from pararnn.cells.para_nlru import ParaNLRU
 from pararnn.cells.para_slstm import ParaSLSTM
 from pararnn.determinism import maybe_check_packed_vjp_once
 
@@ -44,6 +45,8 @@ def _cell_vjp_body(
         return _gru_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaGRU) and cell.mix == "head":
         return _gru_head_vjp(cell, h_prev, x, mu)
+    if packed and isinstance(cell, ParaNLRU):
+        return _nlru_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaLSTM):
         return _lstm_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaSLSTM) and cell.mix == "diag":
@@ -59,6 +62,8 @@ def uses_packed_vjp(cell: nn.Module) -> bool:
     """True when eq. 2.6 can skip Autograd on ``step``."""
     if isinstance(cell, ParaGRU):
         return cell.mix in ("diag", "head")
+    if isinstance(cell, ParaNLRU):
+        return True
     if isinstance(cell, ParaLSTM):
         return True
     if getattr(cell, "jac_structure", None) == "m2rnn":
@@ -139,6 +144,27 @@ def _gru_vjp(
             "a_z": g_az,
             "a_r": g_ar,
             "a_n": g_an,
+            "W_x.weight": grad_w,
+            "W_x.bias": grad_b,
+        },
+    )
+
+
+def _nlru_vjp(
+    cell: ParaNLRU, h_prev: Tensor, x: Tensor, mu: Tensor
+) -> tuple[Tensor, tuple[Tensor | None, ...]]:
+    from pararnn.kernels.vjp_nlru import nlru_recurrence_vjp
+
+    u = cell.clipped_u()
+    wx = cell.W_x(x)
+    g_wx, g_u = nlru_recurrence_vjp(h_prev, wx, u, mu)
+    g_u = g_u * _clip_mask(cell.u, cell.max_recurrent_norm)
+    grad_x, grad_w, grad_b = _linear_vjp(cell.W_x, x, g_wx)
+    return _align_grads(
+        cell,
+        grad_x,
+        {
+            "u": g_u,
             "W_x.weight": grad_w,
             "W_x.bias": grad_b,
         },

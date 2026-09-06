@@ -6,7 +6,7 @@ paged pool + decode, ``ParaSLSTMForCausalLM``, speculative verify.
 
 from importlib.metadata import PackageNotFoundError, version
 
-from pararnn.cells import ParaGRU, ParaLSTM, ParaM2RNN, ParaSLSTM, RNNCell
+from pararnn.cells import ParaGRU, ParaLSTM, ParaM2RNN, ParaNLRU, ParaSLSTM, RNNCell
 from pararnn.kernels import can_decode_step, decode_step, decode_wx
 from pararnn.layers import ParaRNN, ParaSLSTMBlock, SwiGLU
 from pararnn.models import ParaSLSTMConfig, ParaSLSTMForCausalLM
@@ -31,6 +31,7 @@ __all__ = [
     "ParaGRU",
     "ParaLSTM",
     "ParaM2RNN",
+    "ParaNLRU",
     "ParaRNN",
     "ParaSLSTM",
     "ParaSLSTMBlock",
@@ -50,4 +51,4 @@ __all__ = [
 try:
     __version__ = version("pararnn-torch")
 except PackageNotFoundError:
-    __version__ = "0.12.0"
+    __version__ = "0.13.0"

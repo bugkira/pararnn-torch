@@ -4,11 +4,21 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-06
+
+Product entry (block / CausalLM) plus `ParaNLRU`: a nonlinear RG-LRU-style
+diag cell for Griffin / RecurrentGemma slots.
+
 ### Added
 
+- `ParaNLRU`: nonlinear RG-LRU-style cell (input-only gate + diagonal `u` +
+  `tanh` in the step) with eager Newton, fused Triton Alg. 1
+  (`pararnn::newton_nlru_fused`), packed VJP (no atomics), compile-safe
+  fullgraph path. Smoke (RTX 3060, \(B{=}8\), \(T{=}2048\), \(d_h{=}256\),
+  \(K{=}3\)): fused ~2.7 ms vs sequential ~549 ms.
 - Product entry path: README Quickstart leads with `ParaSLSTMBlock` /
   `ParaSLSTMForCausalLM`; [`docs/adoption.md`](docs/adoption.md) covers
-  Attention swap, CausalLM, and the Dreamer RSSM recurrent slot.
+  Attention swap, CausalLM, Dreamer RSSM slot, and the Griffin / NLRU slot.
 - `ParaSLSTMForCausalLM.forward(..., labels=)` returns shifted CE loss;
   `save_pretrained` / `from_pretrained` write and prefer `model.safetensors`
   (dependency `safetensors`), with `pytorch_model.bin` fallback.
@@ -374,7 +384,9 @@ installable surface.
 - Generic-cell autograd path and sequential reference solver.
 - Numerics tests: parallel vs sequential agreement, layer forward/backward.
 
-[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/bugkira/pararnn-torch/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/bugkira/pararnn-torch/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/bugkira/pararnn-torch/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bugkira/pararnn-torch/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/bugkira/pararnn-torch/compare/v0.8.0...v0.9.0

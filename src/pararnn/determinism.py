@@ -1,6 +1,6 @@
 """Deterministic-algorithm checks for eq. 2.6 packed VJP.
 
-Packed ParaGRU / ParaLSTM / ParaSLSTM ``mix='diag'`` reduce with tile
+Packed ParaGRU / ParaLSTM / ParaSLSTM ``mix='diag'`` / ``ParaNLRU`` reduce with tile
 ``tl.sum`` then PyTorch ``.sum`` (no Triton atomics). When the host enables
 ``torch.use_deterministic_algorithms(True)``, the first packed ``cell_vjp``
 re-runs once and emits a **single** warning if parameter grads drift.
