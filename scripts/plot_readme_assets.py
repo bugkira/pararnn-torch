@@ -86,14 +86,14 @@ def plot_k_star_wall() -> Path:
     fig, ax = plt.subplots(figsize=(7.2, 4.2), dpi=160)
     xs = range(len(cells))
     w = 0.36
-    bars = ax.bar(
+    bars_f = ax.bar(
         [i - w / 2 for i in xs],
         fused_ms,
         width=w,
         color="#1f4e79",
         label="fused / scan",
     )
-    ax.bar(
+    bars_s = ax.bar(
         [i + w / 2 for i in xs],
         seq_ms,
         width=w,
@@ -108,15 +108,34 @@ def plot_k_star_wall() -> Path:
     ax.set_ylabel("Wall time at T=131072 (ms, log scale)")
     ax.set_title("Parallel train vs sequential loop at sequence length 131k")
     ax.legend(frameon=False)
-    for bar, val in zip(bars, fused_ms, strict=True):
+
+    def _fmt_ms(val: float) -> str:
+        if val >= 1000:
+            return f"{val / 1000:.0f} s"
+        return f"{val:g} ms"
+
+    for bar, val in zip(bars_f, fused_ms, strict=True):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             val * 1.15,
-            f"{val} ms",
+            _fmt_ms(val),
             ha="center",
             va="bottom",
             fontsize=8,
+            color="#1f4e79",
         )
+    for bar, val in zip(bars_s, seq_ms, strict=True):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            val * 1.15,
+            _fmt_ms(val),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="#8b4513",
+        )
+    # Headroom so sequential labels (log scale) stay inside the frame.
+    ax.set_ylim(top=max(seq_ms) * 3.5)
     fig.text(
         0.02,
         0.02,
