@@ -97,7 +97,7 @@ def test_packed_vjp_param_grads_bitwise_stable(
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("kind", ("gru", "lstm", "slstm"))
+@pytest.mark.parametrize("kind", ["gru", "lstm", "slstm"])
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_triton_vjp_matches_eager_formulas(
     kind: str, dtype: torch.dtype, cuda_device: torch.device
@@ -153,6 +153,7 @@ def test_newton_under_use_deterministic_algorithms(
     finally:
         torch.use_deterministic_algorithms(prev)
         reset_determinism_warnings()
+
 
 @pytest.mark.cuda
 @pytest.mark.filterwarnings("ignore:mix='head' is block-diagonal ParaGRU:UserWarning")
@@ -291,7 +292,9 @@ def test_cublas_workspace_warn_once(
         with caplog.at_level(logging.WARNING, logger="pararnn.determinism"):
             cell_vjp(cell, h, x, mu, packed=True)
             cell_vjp(cell, h, x, mu, packed=True)
-        msgs = [r.getMessage() for r in caplog.records if "CUBLAS_WORKSPACE_CONFIG" in r.getMessage()]
+        msgs = [
+            r.getMessage() for r in caplog.records if "CUBLAS_WORKSPACE_CONFIG" in r.getMessage()
+        ]
         assert len(msgs) == 1
     finally:
         torch.use_deterministic_algorithms(prev)

@@ -78,9 +78,7 @@ class ParaSLSTMForCausalLM(nn.Module):
         nn.init.normal_(self.embed.weight, mean=0.0, std=0.02)
         self._pool: BlockStackPool | None = None
 
-    def attach_pool(
-        self, capacity: int, *, host_capacity: int | None = None
-    ) -> BlockStackPool:
+    def attach_pool(self, capacity: int, *, host_capacity: int | None = None) -> BlockStackPool:
         """Create or replace the continuous-batch ``BlockStackPool``.
 
         Parameters
@@ -96,9 +94,7 @@ class ParaSLSTMForCausalLM(nn.Module):
         BlockStackPool
             The attached pool (also stored on ``self.pool``).
         """
-        self._pool = BlockStackPool(
-            list(self.blocks), capacity, host_capacity=host_capacity
-        )
+        self._pool = BlockStackPool(list(self.blocks), capacity, host_capacity=host_capacity)
         log.info(
             "attached BlockStackPool capacity=%s layers=%s device=%s",
             capacity,
@@ -237,9 +233,7 @@ class ParaSLSTMForCausalLM(nn.Module):
             return self._generate_paged(input_ids, max_new_tokens, temperature)
         return self._generate_carries(input_ids, max_new_tokens, temperature)
 
-    def _generate_paged(
-        self, input_ids: Tensor, max_new_tokens: int, temperature: float
-    ) -> Tensor:
+    def _generate_paged(self, input_ids: Tensor, max_new_tokens: int, temperature: float) -> Tensor:
         assert self._pool is not None
         pool = self._pool
         batch = int(input_ids.shape[0])
@@ -314,9 +308,7 @@ class ParaSLSTMForCausalLM(nn.Module):
         log.info("saved ParaSLSTMForCausalLM to %s", path)
 
     @classmethod
-    def from_pretrained(
-        cls, directory: str | Path, *, map_location=None
-    ) -> ParaSLSTMForCausalLM:
+    def from_pretrained(cls, directory: str | Path, *, map_location=None) -> ParaSLSTMForCausalLM:
         path = Path(directory)
         cfg = ParaSLSTMConfig.from_pretrained(path)
         model = cls(cfg)

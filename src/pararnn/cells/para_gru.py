@@ -92,7 +92,7 @@ class ParaGRU(nn.Module):
         d_h: int | None = None,
         mix: str = "diag",
         n_heads: int | None = None,
-        max_recurrent_norm: float | None | object = _DEFAULT_CAP,
+        max_recurrent_norm: float | object | None = _DEFAULT_CAP,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
@@ -307,7 +307,9 @@ class ParaGRU(nn.Module):
         """
         return self._recurrence(h_prev, x, wx=wx).h_new
 
-    def step_head(self, h: Tensor, wx_head: Tensor, a_z: Tensor, a_r: Tensor, a_n: Tensor) -> Tensor:
+    def step_head(
+        self, h: Tensor, wx_head: Tensor, a_z: Tensor, a_r: Tensor, a_n: Tensor
+    ) -> Tensor:
         """Advance one head with packed head-local tensors.
 
         Parameters
@@ -406,9 +408,7 @@ class ParaGRU(nn.Module):
         du_dh = torch.add(h.unsqueeze(-1) * dr_dh, r.unsqueeze(-1) * eye)
         dn_dh = torch.matmul(n_p.unsqueeze(-1) * a_n_t, du_dh)
         return (
-            (1.0 - z).unsqueeze(-1) * eye
-            + (n - h).unsqueeze(-1) * dz_dh
-            + z.unsqueeze(-1) * dn_dh
+            (1.0 - z).unsqueeze(-1) * eye + (n - h).unsqueeze(-1) * dz_dh + z.unsqueeze(-1) * dn_dh
         )
 
     def _head_mix(self, h_v: Tensor, a: Tensor) -> Tensor:

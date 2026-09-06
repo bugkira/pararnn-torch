@@ -79,9 +79,7 @@ def _k_star(
     while lo + 1 < hi:
         mid = (lo + hi) // 2
         with torch.no_grad():
-            err = float(
-                (newton_apply(cell, x, _cfg(mid, frozen_w=frozen_w)) - ref).abs().amax()
-            )
+            err = float((newton_apply(cell, x, _cfg(mid, frozen_w=frozen_w)) - ref).abs().amax())
         if err < tau:
             hi = mid
             best = mid
@@ -113,11 +111,11 @@ def _ols(x: list[float], y: list[float]) -> tuple[float, float, float]:
     mx = sum(x) / n
     my = sum(y) / n
     sxx = sum((xi - mx) ** 2 for xi in x)
-    sxy = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y))
+    sxy = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y, strict=False))
     b = sxy / sxx if sxx > 0 else 0.0
     a = my - b * mx
     ss_tot = sum((yi - my) ** 2 for yi in y)
-    ss_res = sum((yi - (a + b * xi)) ** 2 for xi, yi in zip(x, y))
+    ss_res = sum((yi - (a + b * xi)) ** 2 for xi, yi in zip(x, y, strict=False))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
     return a, b, r2
 
@@ -135,7 +133,7 @@ def _fit_report(rows: list[dict], *, label: str) -> None:
     log.info(
         "[%s] mean K*(T): %s",
         label,
-        " ".join(f"T={t}:{m:.2f}" for t, m in zip(ts, means)),
+        " ".join(f"T={t}:{m:.2f}" for t, m in zip(ts, means, strict=False)),
     )
 
     my = sum(means) / len(means)
@@ -297,24 +295,16 @@ def main() -> None:
             for t in ts:
                 torch.manual_seed(seed)
                 cell = (
-                    ParaM2RNN(d_in=args.d_in, k_dim=args.k_dim, v_dim=args.v_dim)
-                    .to(device)
-                    .eval()
+                    ParaM2RNN(d_in=args.d_in, k_dim=args.k_dim, v_dim=args.v_dim).to(device).eval()
                 )
-                x = (
-                    args.x_scale * torch.randn(args.batch, t, args.d_in, device=device)
-                ).detach()
+                x = (args.x_scale * torch.randn(args.batch, t, args.d_in, device=device)).detach()
                 for init in inits:
                     frozen = init == "frozen_w"
-                    kstar, err = _k_star(
-                        cell, x, tau=args.tau, k_max=args.k_max, frozen_w=frozen
-                    )
+                    kstar, err = _k_star(cell, x, tau=args.tau, k_max=args.k_max, frozen_w=frozen)
                     init_err = _init_err(cell, x, frozen_w=frozen)
                     ms_par = ms_seq = par_over = ""
                     if args.time and kstar is not None:
-                        ms_p, ms_s = _time_at_kstar(
-                            cell, x, kstar=kstar, frozen_w=frozen
-                        )
+                        ms_p, ms_s = _time_at_kstar(cell, x, kstar=kstar, frozen_w=frozen)
                         ms_par = f"{ms_p:.3f}"
                         ms_seq = f"{ms_s:.3f}"
                         par_over = f"{ms_p / ms_s:.3f}"
@@ -344,11 +334,7 @@ def main() -> None:
                         kstar if kstar is not None else f">{args.k_max}",
                         init_err,
                         censored,
-                        (
-                            f"  par={ms_par}ms seq={ms_seq}ms ({par_over}x)"
-                            if ms_par
-                            else ""
-                        ),
+                        (f"  par={ms_par}ms seq={ms_seq}ms ({par_over}x)" if ms_par else ""),
                     )
 
     for init, rows in rows_by_init.items():

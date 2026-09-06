@@ -67,10 +67,7 @@ def _dense_row_scan_kernel(
                     dprev = tl.zeros((BLOCK_D,), dtype=tl.float32)
                 else:
                     dprev = load_acc(
-                        out_ptr
-                        + pid * stride_ob
-                        + (t - 1) * stride_ot
-                        + j * stride_od,
+                        out_ptr + pid * stride_ob + (t - 1) * stride_ot + j * stride_od,
                         mask_j,
                         0.0,
                     )
@@ -125,10 +122,7 @@ def _dense_row_reverse_kernel(
                         0.0,
                     )
                     mu_next = load_acc(
-                        out_ptr
-                        + pid * stride_ob
-                        + (t + 1) * stride_ot
-                        + j * stride_od,
+                        out_ptr + pid * stride_ob + (t + 1) * stride_ot + j * stride_od,
                         mask_j,
                         0.0,
                     )
@@ -276,9 +270,7 @@ def _scan_dense_triton_impl(
     if cu_seqlens is not None:
         from pararnn.solvers.scan import _compose_dense, _fill_ident_dense, _scan_acc
 
-        return _scan_acc(
-            jac, residual, _compose_dense, _fill_ident_dense, cu_seqlens=cu_seqlens
-        )
+        return _scan_acc(jac, residual, _compose_dense, _fill_ident_dense, cu_seqlens=cu_seqlens)
     out = _scan_dense_row_triton(jac, residual)
     if log.isEnabledFor(logging.DEBUG):
         log.debug(

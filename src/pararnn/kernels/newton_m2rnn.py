@@ -20,7 +20,6 @@ from pararnn.kernels.m2rnn_factor import (
     m2rnn_frozen_w_scan,
     m2rnn_gates,
     m2rnn_jt_mvp,
-    m2rnn_jvp,
 )
 from pararnn.kernels.precision import is_fused_dtype_supported, load_acc, store_acc
 from pararnn.layout import prepend_state
@@ -892,9 +891,7 @@ def _factor_scan_m2_tiled_kernel(
                             0.0,
                         )
                         w_tile = load_acc(
-                            w_ptr
-                            + offs_p[:, None] * stride_w_r
-                            + offs_j[None, :] * stride_w_c,
+                            w_ptr + offs_p[:, None] * stride_w_r + offs_j[None, :] * stride_w_c,
                             mask_wp,
                             0.0,
                         )
@@ -979,4 +976,3 @@ def _factor_scan_tiled_triton(
         BLOCK_V=block,
     )
     return out
-

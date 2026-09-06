@@ -8,9 +8,7 @@ import torch
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
 from pararnn.solvers import NewtonConfig, newton_apply
 
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:mix='head' is block-diagonal ParaGRU:UserWarning"
-)
+pytestmark = pytest.mark.filterwarnings("ignore:mix='head' is block-diagonal ParaGRU:UserWarning")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _ATOL = 2e-4
@@ -19,13 +17,9 @@ _RTOL = 2e-4
 
 def _clone_cell(src: torch.nn.Module) -> torch.nn.Module:
     if isinstance(src, ParaSLSTM):
-        dst = ParaSLSTM(
-            d_in=src.d_in, d_h=src.d_h, mix=src.mix, n_heads=src.n_heads
-        ).to(device)
+        dst = ParaSLSTM(d_in=src.d_in, d_h=src.d_h, mix=src.mix, n_heads=src.n_heads).to(device)
     elif isinstance(src, ParaGRU) and src.mix == "head":
-        dst = ParaGRU(
-            d_in=src.d_in, d_h=src.d_h, mix="head", n_heads=src.n_heads
-        ).to(device)
+        dst = ParaGRU(d_in=src.d_in, d_h=src.d_h, mix="head", n_heads=src.n_heads).to(device)
     else:
         dst = type(src)(d_in=src.d_in, d_h=src.d_h).to(device)
     dst.load_state_dict(src.state_dict())

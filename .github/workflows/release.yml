@@ -60,6 +60,10 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
+    # Trusted Publishing must be registered on PyPI for
+    # bugkira/pararnn-torch + environment `pypi` + this workflow.
+    # Until then the step fails loudly but does not block the GitHub Release.
+    continue-on-error: true
     permissions:
       id-token: write
     steps:
@@ -72,15 +76,35 @@ jobs:
           name: dist
           path: dist/
       - name: Publish to PyPI
-        run: uv publish --trusted-publishing always
+        run: |
+          set +e
+          uv publish --trusted-publishing always
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::PyPI publish failed (trusted publishing not linked yet)."
+            echo "Register at https://pypi.org/manage/account/publishing/ :"
+            echo "  Owner: bugkira   Repo: pararnn-torch"
+            echo "  Workflow: release.yml   Environment: pypi"
+            echo "Then re-run this job or retag."
+          fi
+          exit "$status"
 
   github-release:
-    needs: publish
+    needs:
+      - build
+      - publish
+    # Create the GitHub Release even when PyPI OIDC is still unconfigured.
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
       - name: Extract changelog section
         id: changelog
         run: |
@@ -99,3 +123,5 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           body: ${{ steps.changelog.outputs.body }}
+          files: dist/*
+          fail_on_unmatched_files: false

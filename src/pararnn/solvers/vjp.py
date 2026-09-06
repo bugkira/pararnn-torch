@@ -28,9 +28,7 @@ def cell_vjp(
     packed: bool,
 ) -> tuple[Tensor | None, tuple[Tensor | None, ...]]:
     """``(∇_x L, per-parameter grads)`` aligned with ``cell.parameters()``."""
-    maybe_check_packed_vjp_once(
-        cell, h_prev, x, mu, packed=packed, vjp_fn=_cell_vjp_body
-    )
+    maybe_check_packed_vjp_once(cell, h_prev, x, mu, packed=packed, vjp_fn=_cell_vjp_body)
     return _cell_vjp_body(cell, h_prev, x, mu, packed=packed)
 
 
@@ -286,9 +284,7 @@ def _m2rnn_vjp(
     v = wx[..., k_dim : k_dim + v_dim]
     f_logit = wx[..., -1]
     f = torch.sigmoid(f_logit)
-    _g_h, g_k, g_v, g_f, g_w = m2rnn_recurrence_vjp(
-        h_prev.detach(), k, v, f, cell.W, mu
-    )
+    _g_h, g_k, g_v, g_f, g_w = m2rnn_recurrence_vjp(h_prev.detach(), k, v, f, cell.W, mu)
     del _g_h  # reverse scan already applied Jᵀ into μ; unused here
     # f = σ(logit) ⇒ g_logit = g_f * f * (1-f)
     g_logit = g_f * f * (1.0 - f)

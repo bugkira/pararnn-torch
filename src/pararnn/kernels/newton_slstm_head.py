@@ -187,9 +187,7 @@ def _reverse_slstm_head_factor_impl(
         return _reverse_stream_r_triton(
             h_prev, wx, partial, r_head, n_heads=n_heads, d_head=d_head, eps=eps
         )
-    _, acts = slstm_head_gates(
-        h_prev, wx, r_head, n_heads=n_heads, d_head=d_head, eps=eps
-    )
+    _, acts = slstm_head_gates(h_prev, wx, r_head, n_heads=n_heads, d_head=d_head, eps=eps)
     return _factor_reverse(acts, partial, r_head, n_heads=n_heads, d_head=d_head)
 
 
@@ -204,9 +202,7 @@ def slstm_head_t0_vjp(
     r = cell.clipped_r_head()
     assert cell.n_heads is not None and cell.d_head is not None
     n_heads, d_head = cell.n_heads, cell.d_head
-    _, acts = slstm_head_gates(
-        h_prev, wx, r, n_heads=n_heads, d_head=d_head, eps=cell.eps
-    )
+    _, acts = slstm_head_gates(h_prev, wx, r, n_heads=n_heads, d_head=d_head, eps=cell.eps)
     acts0 = {k: v[:, 0] for k, v in acts.items()}
     mu0 = slstm_pack_heads(mu[:, 0], n_heads, d_head)
     g = slstm_head_jt_mvp(acts0, r, mu0)
@@ -230,14 +226,10 @@ def _newton_factor_eager(
     if states is None:
         zeros = wx.new_zeros(batch, time, SLSTM_SLOTS, d_h)
         h_prev0 = prepend_state(zeros, h0)
-        states, _ = slstm_head_gates(
-            h_prev0, wx, r_head, n_heads=n_heads, d_head=d_head, eps=eps
-        )
+        states, _ = slstm_head_gates(h_prev0, wx, r_head, n_heads=n_heads, d_head=d_head, eps=eps)
     for _ in range(max_iters):
         h_prev = prepend_state(states, h0)
-        pred, acts = slstm_head_gates(
-            h_prev, wx, r_head, n_heads=n_heads, d_head=d_head, eps=eps
-        )
+        pred, acts = slstm_head_gates(h_prev, wx, r_head, n_heads=n_heads, d_head=d_head, eps=eps)
         residual = pred - states
         delta = _factor_scan(acts, residual, r_head, n_heads=n_heads, d_head=d_head)
         states = states + omega * delta
@@ -337,11 +329,7 @@ def _load_wx_gate(wx_ptr, b, t, gate, d_h, head_off, offs, mask, wb, wt, wd):
 @triton.jit
 def _load_r_gate(r_ptr, gate, head, offs, mask_ij, rg, rh, rin, rout):
     return load_acc(
-        r_ptr
-        + gate * rg
-        + head * rh
-        + offs[:, None] * rin
-        + offs[None, :] * rout,
+        r_ptr + gate * rg + head * rh + offs[:, None] * rin + offs[None, :] * rout,
         mask_ij,
         0.0,
     )
@@ -477,9 +465,7 @@ def _slstm_jvp_stream(
 
 
 @triton.jit
-def _slstm_jt(
-    c, n, i_t, f, z, o, denom, alpha, c_new, ri, rf, rz, ro, mc, mn, mm, mh
-):
+def _slstm_jt(c, n, i_t, f, z, o, denom, alpha, c_new, ri, rf, rz, ro, mc, mn, mm, mh):
     """Factorized ``J^T @ μ``."""
     beta = 1.0 - alpha
     inv = o / denom
@@ -505,12 +491,7 @@ def _slstm_jt(
     adj_dzi = adj_dzi + beta * adj_dm
     adj_dzz = (1.0 - z * z) * adj_dz
     adj_dzo = o * (1.0 - o) * w_do
-    g_h = (
-        _mix_t(adj_dzi, ri)
-        + _mix_t(adj_dzf, rf)
-        + _mix_t(adj_dzz, rz)
-        + _mix_t(adj_dzo, ro)
-    )
+    g_h = _mix_t(adj_dzi, ri) + _mix_t(adj_dzf, rf) + _mix_t(adj_dzz, rz) + _mix_t(adj_dzo, ro)
     return g_c, g_n, g_m, g_h
 
 
@@ -590,10 +571,18 @@ def _newton_slstm_head_fused_kernel(
     mask_ij = mask[:, None] & mask[None, :]
     head_off = head * d
 
-    ri = _load_r_gate(r_ptr, 0, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out)
-    rf = _load_r_gate(r_ptr, 1, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out)
-    rz = _load_r_gate(r_ptr, 2, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out)
-    ro = _load_r_gate(r_ptr, 3, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out)
+    ri = _load_r_gate(
+        r_ptr, 0, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out
+    )
+    rf = _load_r_gate(
+        r_ptr, 1, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out
+    )
+    rz = _load_r_gate(
+        r_ptr, 2, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out
+    )
+    ro = _load_r_gate(
+        r_ptr, 3, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out
+    )
 
     c0 = tl.zeros((BLOCK_D,), dtype=tl.float32)
     n0 = tl.zeros((BLOCK_D,), dtype=tl.float32)
@@ -624,10 +613,18 @@ def _newton_slstm_head_fused_kernel(
     # App. A guess only when no Picard / zero-hidden warm start was supplied.
     if do_init != 0:
         for t in range(0, time):
-            wxi = _load_wx_gate(wx_ptr, b, t, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxf = _load_wx_gate(wx_ptr, b, t, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxz = _load_wx_gate(wx_ptr, b, t, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxo = _load_wx_gate(wx_ptr, b, t, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
+            wxi = _load_wx_gate(
+                wx_ptr, b, t, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxf = _load_wx_gate(
+                wx_ptr, b, t, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxz = _load_wx_gate(
+                wx_ptr, b, t, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxo = _load_wx_gate(
+                wx_ptr, b, t, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
             c_p = tl.where(t == 0, c0, tl.zeros((BLOCK_D,), dtype=tl.float32))
             n_p = tl.where(t == 0, n0, tl.zeros((BLOCK_D,), dtype=tl.float32))
             m_p = tl.where(t == 0, m0, tl.zeros((BLOCK_D,), dtype=tl.float32))
@@ -635,10 +632,62 @@ def _newton_slstm_head_fused_kernel(
             c_n, n_n, m_n, h_n, _, _, _, _, _, _, _, _, _, _, _ = _slstm_gates(
                 c_p, n_p, m_p, h_p, wxi, wxf, wxz, wxo, ri, rf, rz, ro, eps
             )
-            _store_slot(s_ptr, c_n, b, t, SLOT_C, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, n_n, b, t, SLOT_N, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, m_n, b, t, SLOT_M, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, h_n, b, t, SLOT_H, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
+            _store_slot(
+                s_ptr,
+                c_n,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                n_n,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                m_n,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                h_n,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
 
     for _it in range(0, max_iters):
         dc = tl.zeros((BLOCK_D,), dtype=tl.float32)
@@ -646,22 +695,126 @@ def _newton_slstm_head_fused_kernel(
         dm = tl.zeros((BLOCK_D,), dtype=tl.float32)
         dh = tl.zeros((BLOCK_D,), dtype=tl.float32)
         for t in range(0, time):
-            wxi = _load_wx_gate(wx_ptr, b, t, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxf = _load_wx_gate(wx_ptr, b, t, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxz = _load_wx_gate(wx_ptr, b, t, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxo = _load_wx_gate(wx_ptr, b, t, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            c_nm1 = _load_slot(s_ptr, b, t - 1, SLOT_C, head_off, offs, mask & (t > 0), stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            n_nm1 = _load_slot(s_ptr, b, t - 1, SLOT_N, head_off, offs, mask & (t > 0), stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            m_nm1 = _load_slot(s_ptr, b, t - 1, SLOT_M, head_off, offs, mask & (t > 0), stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            h_nm1 = _load_slot(s_ptr, b, t - 1, SLOT_H, head_off, offs, mask & (t > 0), stride_s_b, stride_s_t, stride_s_s, stride_s_d)
+            wxi = _load_wx_gate(
+                wx_ptr, b, t, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxf = _load_wx_gate(
+                wx_ptr, b, t, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxz = _load_wx_gate(
+                wx_ptr, b, t, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxo = _load_wx_gate(
+                wx_ptr, b, t, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            c_nm1 = _load_slot(
+                s_ptr,
+                b,
+                t - 1,
+                SLOT_C,
+                head_off,
+                offs,
+                mask & (t > 0),
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            n_nm1 = _load_slot(
+                s_ptr,
+                b,
+                t - 1,
+                SLOT_N,
+                head_off,
+                offs,
+                mask & (t > 0),
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            m_nm1 = _load_slot(
+                s_ptr,
+                b,
+                t - 1,
+                SLOT_M,
+                head_off,
+                offs,
+                mask & (t > 0),
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            h_nm1 = _load_slot(
+                s_ptr,
+                b,
+                t - 1,
+                SLOT_H,
+                head_off,
+                offs,
+                mask & (t > 0),
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
             c_p = tl.where(t == 0, c0, c_nm1)
             n_p = tl.where(t == 0, n0, n_nm1)
             m_p = tl.where(t == 0, m0, m_nm1)
             h_p = tl.where(t == 0, h0v, h_nm1)
-            c_g = _load_slot(s_ptr, b, t, SLOT_C, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            n_g = _load_slot(s_ptr, b, t, SLOT_N, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            m_g = _load_slot(s_ptr, b, t, SLOT_M, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            h_g = _load_slot(s_ptr, b, t, SLOT_H, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
+            c_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            n_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            m_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            h_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
             (
                 c_pred,
                 n_pred,
@@ -690,23 +843,223 @@ def _newton_slstm_head_fused_kernel(
             dn = dn + rn
             dm = dm + rm
             dh = dh + rh
-            _store_slot(d_ptr, dc, b, t, SLOT_C, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            _store_slot(d_ptr, dn, b, t, SLOT_N, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            _store_slot(d_ptr, dm, b, t, SLOT_M, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            _store_slot(d_ptr, dh, b, t, SLOT_H, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
+            _store_slot(
+                d_ptr,
+                dc,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            _store_slot(
+                d_ptr,
+                dn,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            _store_slot(
+                d_ptr,
+                dm,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            _store_slot(
+                d_ptr,
+                dh,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
         for t in range(0, time):
-            c_g = _load_slot(s_ptr, b, t, SLOT_C, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            n_g = _load_slot(s_ptr, b, t, SLOT_N, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            m_g = _load_slot(s_ptr, b, t, SLOT_M, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            h_g = _load_slot(s_ptr, b, t, SLOT_H, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            dc = _load_slot(d_ptr, b, t, SLOT_C, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            dn = _load_slot(d_ptr, b, t, SLOT_N, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            dm = _load_slot(d_ptr, b, t, SLOT_M, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            dh = _load_slot(d_ptr, b, t, SLOT_H, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            _store_slot(s_ptr, c_g + omega * dc, b, t, SLOT_C, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, n_g + omega * dn, b, t, SLOT_N, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, m_g + omega * dm, b, t, SLOT_M, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, h_g + omega * dh, b, t, SLOT_H, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
+            c_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            n_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            m_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            h_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            dc = _load_slot(
+                d_ptr,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            dn = _load_slot(
+                d_ptr,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            dm = _load_slot(
+                d_ptr,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            dh = _load_slot(
+                d_ptr,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            _store_slot(
+                s_ptr,
+                c_g + omega * dc,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                n_g + omega * dn,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                m_g + omega * dm,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                h_g + omega * dh,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
 
 
 @triton.jit
@@ -782,10 +1135,18 @@ def _newton_slstm_head_stream_kernel(
 
     if do_init != 0:
         for t in range(0, time):
-            wxi = _load_wx_gate(wx_ptr, b, t, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxf = _load_wx_gate(wx_ptr, b, t, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxz = _load_wx_gate(wx_ptr, b, t, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxo = _load_wx_gate(wx_ptr, b, t, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
+            wxi = _load_wx_gate(
+                wx_ptr, b, t, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxf = _load_wx_gate(
+                wx_ptr, b, t, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxz = _load_wx_gate(
+                wx_ptr, b, t, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxo = _load_wx_gate(
+                wx_ptr, b, t, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
             c_p = tl.where(t == 0, c0, tl.zeros((BLOCK_D,), dtype=tl.float32))
             n_p = tl.where(t == 0, n0, tl.zeros((BLOCK_D,), dtype=tl.float32))
             m_p = tl.where(t == 0, m0, tl.zeros((BLOCK_D,), dtype=tl.float32))
@@ -809,10 +1170,62 @@ def _newton_slstm_head_stream_kernel(
                 stride_r_out,
                 eps,
             )
-            _store_slot(s_ptr, c_n, b, t, SLOT_C, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, n_n, b, t, SLOT_N, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, m_n, b, t, SLOT_M, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, h_n, b, t, SLOT_H, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
+            _store_slot(
+                s_ptr,
+                c_n,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                n_n,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                m_n,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                h_n,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
 
     for _it in range(0, max_iters):
         dc = tl.zeros((BLOCK_D,), dtype=tl.float32)
@@ -820,22 +1233,126 @@ def _newton_slstm_head_stream_kernel(
         dm = tl.zeros((BLOCK_D,), dtype=tl.float32)
         dh = tl.zeros((BLOCK_D,), dtype=tl.float32)
         for t in range(0, time):
-            wxi = _load_wx_gate(wx_ptr, b, t, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxf = _load_wx_gate(wx_ptr, b, t, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxz = _load_wx_gate(wx_ptr, b, t, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxo = _load_wx_gate(wx_ptr, b, t, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            c_nm1 = _load_slot(s_ptr, b, t - 1, SLOT_C, head_off, offs, mask & (t > 0), stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            n_nm1 = _load_slot(s_ptr, b, t - 1, SLOT_N, head_off, offs, mask & (t > 0), stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            m_nm1 = _load_slot(s_ptr, b, t - 1, SLOT_M, head_off, offs, mask & (t > 0), stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            h_nm1 = _load_slot(s_ptr, b, t - 1, SLOT_H, head_off, offs, mask & (t > 0), stride_s_b, stride_s_t, stride_s_s, stride_s_d)
+            wxi = _load_wx_gate(
+                wx_ptr, b, t, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxf = _load_wx_gate(
+                wx_ptr, b, t, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxz = _load_wx_gate(
+                wx_ptr, b, t, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxo = _load_wx_gate(
+                wx_ptr, b, t, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            c_nm1 = _load_slot(
+                s_ptr,
+                b,
+                t - 1,
+                SLOT_C,
+                head_off,
+                offs,
+                mask & (t > 0),
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            n_nm1 = _load_slot(
+                s_ptr,
+                b,
+                t - 1,
+                SLOT_N,
+                head_off,
+                offs,
+                mask & (t > 0),
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            m_nm1 = _load_slot(
+                s_ptr,
+                b,
+                t - 1,
+                SLOT_M,
+                head_off,
+                offs,
+                mask & (t > 0),
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            h_nm1 = _load_slot(
+                s_ptr,
+                b,
+                t - 1,
+                SLOT_H,
+                head_off,
+                offs,
+                mask & (t > 0),
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
             c_p = tl.where(t == 0, c0, c_nm1)
             n_p = tl.where(t == 0, n0, n_nm1)
             m_p = tl.where(t == 0, m0, m_nm1)
             h_p = tl.where(t == 0, h0v, h_nm1)
-            c_g = _load_slot(s_ptr, b, t, SLOT_C, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            n_g = _load_slot(s_ptr, b, t, SLOT_N, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            m_g = _load_slot(s_ptr, b, t, SLOT_M, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            h_g = _load_slot(s_ptr, b, t, SLOT_H, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
+            c_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            n_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            m_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            h_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
             (
                 c_pred,
                 n_pred,
@@ -902,23 +1419,223 @@ def _newton_slstm_head_stream_kernel(
             dn = dn + rn
             dm = dm + rm
             dh = dh + rh
-            _store_slot(d_ptr, dc, b, t, SLOT_C, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            _store_slot(d_ptr, dn, b, t, SLOT_N, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            _store_slot(d_ptr, dm, b, t, SLOT_M, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            _store_slot(d_ptr, dh, b, t, SLOT_H, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
+            _store_slot(
+                d_ptr,
+                dc,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            _store_slot(
+                d_ptr,
+                dn,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            _store_slot(
+                d_ptr,
+                dm,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            _store_slot(
+                d_ptr,
+                dh,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
         for t in range(0, time):
-            c_g = _load_slot(s_ptr, b, t, SLOT_C, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            n_g = _load_slot(s_ptr, b, t, SLOT_N, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            m_g = _load_slot(s_ptr, b, t, SLOT_M, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            h_g = _load_slot(s_ptr, b, t, SLOT_H, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            dc = _load_slot(d_ptr, b, t, SLOT_C, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            dn = _load_slot(d_ptr, b, t, SLOT_N, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            dm = _load_slot(d_ptr, b, t, SLOT_M, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            dh = _load_slot(d_ptr, b, t, SLOT_H, head_off, offs, mask, stride_d_b, stride_d_t, stride_d_s, stride_d_d)
-            _store_slot(s_ptr, c_g + omega * dc, b, t, SLOT_C, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, n_g + omega * dn, b, t, SLOT_N, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, m_g + omega * dm, b, t, SLOT_M, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
-            _store_slot(s_ptr, h_g + omega * dh, b, t, SLOT_H, head_off, offs, mask, stride_s_b, stride_s_t, stride_s_s, stride_s_d)
+            c_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            n_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            m_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            h_g = _load_slot(
+                s_ptr,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            dc = _load_slot(
+                d_ptr,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            dn = _load_slot(
+                d_ptr,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            dm = _load_slot(
+                d_ptr,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            dh = _load_slot(
+                d_ptr,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_d_b,
+                stride_d_t,
+                stride_d_s,
+                stride_d_d,
+            )
+            _store_slot(
+                s_ptr,
+                c_g + omega * dc,
+                b,
+                t,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                n_g + omega * dn,
+                b,
+                t,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                m_g + omega * dm,
+                b,
+                t,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
+            _store_slot(
+                s_ptr,
+                h_g + omega * dh,
+                b,
+                t,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_s_b,
+                stride_s_t,
+                stride_s_s,
+                stride_s_d,
+            )
 
 
 @triton.jit
@@ -963,10 +1680,18 @@ def _reverse_slstm_head_fused_kernel(
     mask_ij = mask[:, None] & mask[None, :]
     head_off = head * d
 
-    ri = _load_r_gate(r_ptr, 0, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out)
-    rf = _load_r_gate(r_ptr, 1, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out)
-    rz = _load_r_gate(r_ptr, 2, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out)
-    ro = _load_r_gate(r_ptr, 3, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out)
+    ri = _load_r_gate(
+        r_ptr, 0, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out
+    )
+    rf = _load_r_gate(
+        r_ptr, 1, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out
+    )
+    rz = _load_r_gate(
+        r_ptr, 2, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out
+    )
+    ro = _load_r_gate(
+        r_ptr, 3, head, offs, mask_ij, stride_r_g, stride_r_h, stride_r_in, stride_r_out
+    )
 
     mc = tl.zeros((BLOCK_D,), dtype=tl.float32)
     mn = tl.zeros((BLOCK_D,), dtype=tl.float32)
@@ -976,14 +1701,70 @@ def _reverse_slstm_head_fused_kernel(
     for t in range(time - 1, -1, -1):
         if t + 1 < time:
             tp1 = t + 1
-            wxi = _load_wx_gate(wx_ptr, b, tp1, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxf = _load_wx_gate(wx_ptr, b, tp1, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxz = _load_wx_gate(wx_ptr, b, tp1, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxo = _load_wx_gate(wx_ptr, b, tp1, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            c_p = _load_slot(hp_ptr, b, tp1, SLOT_C, head_off, offs, mask, stride_hp_b, stride_hp_t, stride_hp_s, stride_hp_d)
-            n_p = _load_slot(hp_ptr, b, tp1, SLOT_N, head_off, offs, mask, stride_hp_b, stride_hp_t, stride_hp_s, stride_hp_d)
-            m_p = _load_slot(hp_ptr, b, tp1, SLOT_M, head_off, offs, mask, stride_hp_b, stride_hp_t, stride_hp_s, stride_hp_d)
-            h_p = _load_slot(hp_ptr, b, tp1, SLOT_H, head_off, offs, mask, stride_hp_b, stride_hp_t, stride_hp_s, stride_hp_d)
+            wxi = _load_wx_gate(
+                wx_ptr, b, tp1, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxf = _load_wx_gate(
+                wx_ptr, b, tp1, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxz = _load_wx_gate(
+                wx_ptr, b, tp1, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxo = _load_wx_gate(
+                wx_ptr, b, tp1, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            c_p = _load_slot(
+                hp_ptr,
+                b,
+                tp1,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_hp_b,
+                stride_hp_t,
+                stride_hp_s,
+                stride_hp_d,
+            )
+            n_p = _load_slot(
+                hp_ptr,
+                b,
+                tp1,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_hp_b,
+                stride_hp_t,
+                stride_hp_s,
+                stride_hp_d,
+            )
+            m_p = _load_slot(
+                hp_ptr,
+                b,
+                tp1,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_hp_b,
+                stride_hp_t,
+                stride_hp_s,
+                stride_hp_d,
+            )
+            h_p = _load_slot(
+                hp_ptr,
+                b,
+                tp1,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_hp_b,
+                stride_hp_t,
+                stride_hp_s,
+                stride_hp_d,
+            )
             (
                 _cp,
                 _np,
@@ -1004,18 +1785,118 @@ def _reverse_slstm_head_fused_kernel(
             mc, mn, mm, mh = _slstm_jt(
                 c_act, n_act, i_t, f_t, z, o, denom, alpha, c_new, ri, rf, rz, ro, mc, mn, mm, mh
             )
-        pc = _load_slot(part_ptr, b, t, SLOT_C, head_off, offs, mask, stride_p_b, stride_p_t, stride_p_s, stride_p_d)
-        pn = _load_slot(part_ptr, b, t, SLOT_N, head_off, offs, mask, stride_p_b, stride_p_t, stride_p_s, stride_p_d)
-        pm = _load_slot(part_ptr, b, t, SLOT_M, head_off, offs, mask, stride_p_b, stride_p_t, stride_p_s, stride_p_d)
-        ph = _load_slot(part_ptr, b, t, SLOT_H, head_off, offs, mask, stride_p_b, stride_p_t, stride_p_s, stride_p_d)
+        pc = _load_slot(
+            part_ptr,
+            b,
+            t,
+            SLOT_C,
+            head_off,
+            offs,
+            mask,
+            stride_p_b,
+            stride_p_t,
+            stride_p_s,
+            stride_p_d,
+        )
+        pn = _load_slot(
+            part_ptr,
+            b,
+            t,
+            SLOT_N,
+            head_off,
+            offs,
+            mask,
+            stride_p_b,
+            stride_p_t,
+            stride_p_s,
+            stride_p_d,
+        )
+        pm = _load_slot(
+            part_ptr,
+            b,
+            t,
+            SLOT_M,
+            head_off,
+            offs,
+            mask,
+            stride_p_b,
+            stride_p_t,
+            stride_p_s,
+            stride_p_d,
+        )
+        ph = _load_slot(
+            part_ptr,
+            b,
+            t,
+            SLOT_H,
+            head_off,
+            offs,
+            mask,
+            stride_p_b,
+            stride_p_t,
+            stride_p_s,
+            stride_p_d,
+        )
         mc = mc + pc
         mn = mn + pn
         mm = mm + pm
         mh = mh + ph
-        _store_slot(out_ptr, mc, b, t, SLOT_C, head_off, offs, mask, stride_o_b, stride_o_t, stride_o_s, stride_o_d)
-        _store_slot(out_ptr, mn, b, t, SLOT_N, head_off, offs, mask, stride_o_b, stride_o_t, stride_o_s, stride_o_d)
-        _store_slot(out_ptr, mm, b, t, SLOT_M, head_off, offs, mask, stride_o_b, stride_o_t, stride_o_s, stride_o_d)
-        _store_slot(out_ptr, mh, b, t, SLOT_H, head_off, offs, mask, stride_o_b, stride_o_t, stride_o_s, stride_o_d)
+        _store_slot(
+            out_ptr,
+            mc,
+            b,
+            t,
+            SLOT_C,
+            head_off,
+            offs,
+            mask,
+            stride_o_b,
+            stride_o_t,
+            stride_o_s,
+            stride_o_d,
+        )
+        _store_slot(
+            out_ptr,
+            mn,
+            b,
+            t,
+            SLOT_N,
+            head_off,
+            offs,
+            mask,
+            stride_o_b,
+            stride_o_t,
+            stride_o_s,
+            stride_o_d,
+        )
+        _store_slot(
+            out_ptr,
+            mm,
+            b,
+            t,
+            SLOT_M,
+            head_off,
+            offs,
+            mask,
+            stride_o_b,
+            stride_o_t,
+            stride_o_s,
+            stride_o_d,
+        )
+        _store_slot(
+            out_ptr,
+            mh,
+            b,
+            t,
+            SLOT_H,
+            head_off,
+            offs,
+            mask,
+            stride_o_b,
+            stride_o_t,
+            stride_o_s,
+            stride_o_d,
+        )
 
 
 @triton.jit
@@ -1068,14 +1949,70 @@ def _reverse_slstm_head_stream_kernel(
     for t in range(time - 1, -1, -1):
         if t + 1 < time:
             tp1 = t + 1
-            wxi = _load_wx_gate(wx_ptr, b, tp1, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxf = _load_wx_gate(wx_ptr, b, tp1, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxz = _load_wx_gate(wx_ptr, b, tp1, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            wxo = _load_wx_gate(wx_ptr, b, tp1, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d)
-            c_p = _load_slot(hp_ptr, b, tp1, SLOT_C, head_off, offs, mask, stride_hp_b, stride_hp_t, stride_hp_s, stride_hp_d)
-            n_p = _load_slot(hp_ptr, b, tp1, SLOT_N, head_off, offs, mask, stride_hp_b, stride_hp_t, stride_hp_s, stride_hp_d)
-            m_p = _load_slot(hp_ptr, b, tp1, SLOT_M, head_off, offs, mask, stride_hp_b, stride_hp_t, stride_hp_s, stride_hp_d)
-            h_p = _load_slot(hp_ptr, b, tp1, SLOT_H, head_off, offs, mask, stride_hp_b, stride_hp_t, stride_hp_s, stride_hp_d)
+            wxi = _load_wx_gate(
+                wx_ptr, b, tp1, 0, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxf = _load_wx_gate(
+                wx_ptr, b, tp1, 1, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxz = _load_wx_gate(
+                wx_ptr, b, tp1, 2, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            wxo = _load_wx_gate(
+                wx_ptr, b, tp1, 3, d_h, head_off, offs, mask, stride_wx_b, stride_wx_t, stride_wx_d
+            )
+            c_p = _load_slot(
+                hp_ptr,
+                b,
+                tp1,
+                SLOT_C,
+                head_off,
+                offs,
+                mask,
+                stride_hp_b,
+                stride_hp_t,
+                stride_hp_s,
+                stride_hp_d,
+            )
+            n_p = _load_slot(
+                hp_ptr,
+                b,
+                tp1,
+                SLOT_N,
+                head_off,
+                offs,
+                mask,
+                stride_hp_b,
+                stride_hp_t,
+                stride_hp_s,
+                stride_hp_d,
+            )
+            m_p = _load_slot(
+                hp_ptr,
+                b,
+                tp1,
+                SLOT_M,
+                head_off,
+                offs,
+                mask,
+                stride_hp_b,
+                stride_hp_t,
+                stride_hp_s,
+                stride_hp_d,
+            )
+            h_p = _load_slot(
+                hp_ptr,
+                b,
+                tp1,
+                SLOT_H,
+                head_off,
+                offs,
+                mask,
+                stride_hp_b,
+                stride_hp_t,
+                stride_hp_s,
+                stride_hp_d,
+            )
             (
                 _cp,
                 _np,
@@ -1134,18 +2071,118 @@ def _reverse_slstm_head_stream_kernel(
                 mm,
                 mh,
             )
-        pc = _load_slot(part_ptr, b, t, SLOT_C, head_off, offs, mask, stride_p_b, stride_p_t, stride_p_s, stride_p_d)
-        pn = _load_slot(part_ptr, b, t, SLOT_N, head_off, offs, mask, stride_p_b, stride_p_t, stride_p_s, stride_p_d)
-        pm = _load_slot(part_ptr, b, t, SLOT_M, head_off, offs, mask, stride_p_b, stride_p_t, stride_p_s, stride_p_d)
-        ph = _load_slot(part_ptr, b, t, SLOT_H, head_off, offs, mask, stride_p_b, stride_p_t, stride_p_s, stride_p_d)
+        pc = _load_slot(
+            part_ptr,
+            b,
+            t,
+            SLOT_C,
+            head_off,
+            offs,
+            mask,
+            stride_p_b,
+            stride_p_t,
+            stride_p_s,
+            stride_p_d,
+        )
+        pn = _load_slot(
+            part_ptr,
+            b,
+            t,
+            SLOT_N,
+            head_off,
+            offs,
+            mask,
+            stride_p_b,
+            stride_p_t,
+            stride_p_s,
+            stride_p_d,
+        )
+        pm = _load_slot(
+            part_ptr,
+            b,
+            t,
+            SLOT_M,
+            head_off,
+            offs,
+            mask,
+            stride_p_b,
+            stride_p_t,
+            stride_p_s,
+            stride_p_d,
+        )
+        ph = _load_slot(
+            part_ptr,
+            b,
+            t,
+            SLOT_H,
+            head_off,
+            offs,
+            mask,
+            stride_p_b,
+            stride_p_t,
+            stride_p_s,
+            stride_p_d,
+        )
         mc = mc + pc
         mn = mn + pn
         mm = mm + pm
         mh = mh + ph
-        _store_slot(out_ptr, mc, b, t, SLOT_C, head_off, offs, mask, stride_o_b, stride_o_t, stride_o_s, stride_o_d)
-        _store_slot(out_ptr, mn, b, t, SLOT_N, head_off, offs, mask, stride_o_b, stride_o_t, stride_o_s, stride_o_d)
-        _store_slot(out_ptr, mm, b, t, SLOT_M, head_off, offs, mask, stride_o_b, stride_o_t, stride_o_s, stride_o_d)
-        _store_slot(out_ptr, mh, b, t, SLOT_H, head_off, offs, mask, stride_o_b, stride_o_t, stride_o_s, stride_o_d)
+        _store_slot(
+            out_ptr,
+            mc,
+            b,
+            t,
+            SLOT_C,
+            head_off,
+            offs,
+            mask,
+            stride_o_b,
+            stride_o_t,
+            stride_o_s,
+            stride_o_d,
+        )
+        _store_slot(
+            out_ptr,
+            mn,
+            b,
+            t,
+            SLOT_N,
+            head_off,
+            offs,
+            mask,
+            stride_o_b,
+            stride_o_t,
+            stride_o_s,
+            stride_o_d,
+        )
+        _store_slot(
+            out_ptr,
+            mm,
+            b,
+            t,
+            SLOT_M,
+            head_off,
+            offs,
+            mask,
+            stride_o_b,
+            stride_o_t,
+            stride_o_s,
+            stride_o_d,
+        )
+        _store_slot(
+            out_ptr,
+            mh,
+            b,
+            t,
+            SLOT_H,
+            head_off,
+            offs,
+            mask,
+            stride_o_b,
+            stride_o_t,
+            stride_o_s,
+            stride_o_d,
+        )
 
 
 def _newton_fused_triton(

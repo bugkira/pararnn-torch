@@ -17,7 +17,7 @@ pytestmark = pytest.mark.filterwarnings(
 )
 
 
-@pytest.mark.parametrize("d_h,n_heads", [(4, 2), (8, 4)])
+@pytest.mark.parametrize(("d_h", "n_heads"), [(4, 2), (8, 4)])
 def test_slstm_head_jvp_matches_dense(d_h: int, n_heads: int) -> None:
     torch.manual_seed(11)
     cell = ParaSLSTM(d_in=d_h, d_h=d_h, mix="head", n_heads=n_heads)
@@ -28,15 +28,9 @@ def test_slstm_head_jvp_matches_dense(d_h: int, n_heads: int) -> None:
     r = cell.clipped_r_head()
     assert cell.d_head is not None
     d_head = cell.d_head
-    state_new, acts = slstm_head_gates(
-        state, wx, r, n_heads=n_heads, d_head=d_head, eps=cell.eps
-    )
-    ref_new = cell.step(
-        state.reshape(b * t, 4, d_h), None, wx=wx.reshape(b * t, 4 * d_h)
-    )
-    torch.testing.assert_close(
-        state_new.reshape(b * t, 4, d_h), ref_new, atol=1e-5, rtol=1e-5
-    )
+    state_new, acts = slstm_head_gates(state, wx, r, n_heads=n_heads, d_head=d_head, eps=cell.eps)
+    ref_new = cell.step(state.reshape(b * t, 4, d_h), None, wx=wx.reshape(b * t, 4 * d_h))
+    torch.testing.assert_close(state_new.reshape(b * t, 4, d_h), ref_new, atol=1e-5, rtol=1e-5)
     v = torch.randn(b, t, n_heads, 4 * d_head)
     jvp = slstm_head_jvp(acts, r, v)
     for bi in range(b):
@@ -49,7 +43,7 @@ def test_slstm_head_jvp_matches_dense(d_h: int, n_heads: int) -> None:
             torch.testing.assert_close(jvp[bi, ti], dense, atol=1e-4, rtol=1e-4)
 
 
-@pytest.mark.parametrize("d_h,n_heads", [(4, 2), (8, 4)])
+@pytest.mark.parametrize(("d_h", "n_heads"), [(4, 2), (8, 4)])
 def test_slstm_head_jt_mvp_matches_dense(d_h: int, n_heads: int) -> None:
     torch.manual_seed(12)
     cell = ParaSLSTM(d_in=d_h, d_h=d_h, mix="head", n_heads=n_heads)

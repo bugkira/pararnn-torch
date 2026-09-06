@@ -121,9 +121,7 @@ class ParaSLSTMRecurrentLayer(MambaBase):
     def forward(self, hidden_states: Tensor) -> Tensor:
         """``hidden_states`` is ``(num_tokens, d)`` from the v1 worker."""
         if hidden_states.dim() != 2 or hidden_states.shape[-1] != self.hidden_size:
-            raise ValueError(
-                f"expected (N, {self.hidden_size}), got {tuple(hidden_states.shape)}"
-            )
+            raise ValueError(f"expected (N, {self.hidden_size}), got {tuple(hidden_states.shape)}")
         meta = self._attn_metadata()
         if meta is None or not self._cache_ready():
             return self._profile_forward(hidden_states)
@@ -185,7 +183,7 @@ class ParaSLSTMRecurrentLayer(MambaBase):
             pieces.append(self._decode_tokens(h_d, pool, idx_d))
 
         if num_prefill > 0:
-            h_p = h[num_decode:num_decode + num_prefill]
+            h_p = h[num_decode : num_decode + num_prefill]
             idx_p = getattr(meta, "state_indices_tensor_p", None)
             qsl = getattr(meta, "query_start_loc_p", None)
             if qsl is None:

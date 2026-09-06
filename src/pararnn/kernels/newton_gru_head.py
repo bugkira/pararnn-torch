@@ -19,7 +19,7 @@ from torch import Tensor
 
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.kernels._fused_common import _tanh
-from pararnn.kernels.gru_head_factor import gru_head_jvp, gru_head_jt_mvp
+from pararnn.kernels.gru_head_factor import gru_head_jt_mvp, gru_head_jvp
 from pararnn.kernels.precision import load_acc, store_acc
 from pararnn.layout import prepend_state, prepend_state_ragged
 
@@ -119,9 +119,7 @@ def _newton_gru_head_fused_impl(
     # Rectangular CUDA paths only. Packed packs stay on factorized eager;
     # fused_newton raises before the custom op when cu_seqlens is set.
     fused = wx.is_cuda and d_head <= _BLOCK_D and cu_seqlens is None
-    stream = (
-        wx.is_cuda and _BLOCK_D < d_head <= _NEWTON_SRAM_D and cu_seqlens is None
-    )
+    stream = wx.is_cuda and _BLOCK_D < d_head <= _NEWTON_SRAM_D and cu_seqlens is None
     hybrid = wx.is_cuda and d_head > _NEWTON_SRAM_D and cu_seqlens is None
 
     if fused:
@@ -182,11 +180,7 @@ def _newton_gru_head_fused_impl(
         )
 
     if log.isEnabledFor(logging.DEBUG):
-        path = (
-            "fused"
-            if fused
-            else ("stream" if stream else ("hybrid" if hybrid else "eager"))
-        )
+        path = "fused" if fused else ("stream" if stream else ("hybrid" if hybrid else "eager"))
         log.debug(
             "newton_gru_head_fused",
             extra={
@@ -261,9 +255,7 @@ def _reverse_gru_head_factor_impl(
         return _factor_reverse_tiled_triton(
             gates, partial, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head
         )
-    return _factor_reverse_eager(
-        gates, partial, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head
-    )
+    return _factor_reverse_eager(gates, partial, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head)
 
 
 def gru_head_t0_vjp(
@@ -320,29 +312,21 @@ def _newton_factor_eager(
     d_h: int,
 ) -> Tensor:
     h_prev0 = _init_prev(wx, h0, d_h=d_h, cu_seqlens=cu_seqlens)
-    states, _ = _gates(
-        h_prev0, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h
-    )
+    states, _ = _gates(h_prev0, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h)
     for _ in range(max_iters):
         h_prev = (
             prepend_state_ragged(states, h0, cu_seqlens)
             if cu_seqlens is not None
             else prepend_state(states, h0)
         )
-        pred, gates = _gates(
-            h_prev, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h
-        )
+        pred, gates = _gates(h_prev, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h)
         residual = pred - states
-        delta = _factor_scan_eager(
-            gates, residual, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head
-        )
+        delta = _factor_scan_eager(gates, residual, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head)
         states = states + omega * delta
     return states
 
 
-def _init_prev(
-    wx: Tensor, h0: Tensor | None, *, d_h: int, cu_seqlens: Tensor | None
-) -> Tensor:
+def _init_prev(wx: Tensor, h0: Tensor | None, *, d_h: int, cu_seqlens: Tensor | None) -> Tensor:
     zeros = wx.new_zeros(wx.shape[0], wx.shape[1], d_h)
     if cu_seqlens is not None:
         return prepend_state_ragged(zeros, h0, cu_seqlens)
@@ -533,9 +517,7 @@ def _newton_head_all_kernel(
 
     h0_v = tl.zeros((BLOCK_D,), dtype=tl.float32)
     if has_h0 != 0:
-        h0_v = load_acc(
-            h0_ptr + b * stride_h0_b + (head_off + offs) * stride_h0_d, mask, 0.0
-        )
+        h0_v = load_acc(h0_ptr + b * stride_h0_b + (head_off + offs) * stride_h0_d, mask, 0.0)
 
     # App. A parallel guess: only t=0 sees h0; other steps see 0.
     for t in range(0, time):
@@ -556,17 +538,10 @@ def _newton_head_all_kernel(
         for t in range(0, time):
             base_wx = b * stride_wx_b + t * stride_wx_t
             zx = load_acc(wx_ptr + base_wx + (head_off + offs) * stride_wx_d, mask, 0.0)
-            rx = load_acc(
-                wx_ptr + base_wx + (d_h + head_off + offs) * stride_wx_d, mask, 0.0
-            )
-            nx = load_acc(
-                wx_ptr + base_wx + (2 * d_h + head_off + offs) * stride_wx_d, mask, 0.0
-            )
+            rx = load_acc(wx_ptr + base_wx + (d_h + head_off + offs) * stride_wx_d, mask, 0.0)
+            nx = load_acc(wx_ptr + base_wx + (2 * d_h + head_off + offs) * stride_wx_d, mask, 0.0)
             h_prev_nm1 = load_acc(
-                h_ptr
-                + b * stride_h_b
-                + (t - 1) * stride_h_t
-                + (head_off + offs) * stride_h_d,
+                h_ptr + b * stride_h_b + (t - 1) * stride_h_t + (head_off + offs) * stride_h_d,
                 mask & (t > 0),
                 0.0,
             )
@@ -580,10 +555,7 @@ def _newton_head_all_kernel(
             res = pred - h_guess
             delta = _head_jvp(h_g, z, r, n, az, ar, an, delta) + res
             store_acc(
-                delta_ptr
-                + b * stride_d_b
-                + t * stride_d_t
-                + (head_off + offs) * stride_d_d,
+                delta_ptr + b * stride_d_b + t * stride_d_t + (head_off + offs) * stride_d_d,
                 delta,
                 mask,
             )
@@ -663,17 +635,10 @@ def _reverse_head_native_kernel(
             tp = t + 1
             base_wx = b * stride_wx_b + tp * stride_wx_t
             zx = load_acc(wx_ptr + base_wx + (head_off + offs) * stride_wx_d, mask, 0.0)
-            rx = load_acc(
-                wx_ptr + base_wx + (d_h + head_off + offs) * stride_wx_d, mask, 0.0
-            )
-            nx = load_acc(
-                wx_ptr + base_wx + (2 * d_h + head_off + offs) * stride_wx_d, mask, 0.0
-            )
+            rx = load_acc(wx_ptr + base_wx + (d_h + head_off + offs) * stride_wx_d, mask, 0.0)
+            nx = load_acc(wx_ptr + base_wx + (2 * d_h + head_off + offs) * stride_wx_d, mask, 0.0)
             hp = load_acc(
-                h_prev_ptr
-                + b * stride_hp_b
-                + tp * stride_hp_t
-                + (head_off + offs) * stride_hp_d,
+                h_prev_ptr + b * stride_hp_b + tp * stride_hp_t + (head_off + offs) * stride_hp_d,
                 mask,
                 0.0,
             )
@@ -763,7 +728,9 @@ def _load_a_square(a_ptr, a_base, offs, mask_ij, stride_a_in, stride_a_out):
 
 
 @triton.jit
-def _stream_gates(h_prev, zx, rx, nx, az_ptr, ar_ptr, an_ptr, a_base, offs, mask_ij, stride_a_in, stride_a_out):
+def _stream_gates(
+    h_prev, zx, rx, nx, az_ptr, ar_ptr, an_ptr, a_base, offs, mask_ij, stride_a_in, stride_a_out
+):
     """Cho gates; peak one ``A`` in SRAM. Returns ``(h_new, h_prev, z, r, n, an)``."""
     az = _load_a_square(az_ptr, a_base, offs, mask_ij, stride_a_in, stride_a_out)
     hz = tl.sum(az * h_prev[:, None], axis=0)
@@ -778,7 +745,9 @@ def _stream_gates(h_prev, zx, rx, nx, az_ptr, ar_ptr, an_ptr, a_base, offs, mask
 
 
 @triton.jit
-def _stream_jvp(h, z, r, n, an, delta, az_ptr, ar_ptr, a_base, offs, mask_ij, stride_a_in, stride_a_out):
+def _stream_jvp(
+    h, z, r, n, an, delta, az_ptr, ar_ptr, a_base, offs, mask_ij, stride_a_in, stride_a_out
+):
     """Factorized ``J @ delta``; ``an`` still live from gates; reload ``az``/``ar``."""
     z_p = z * (1.0 - z)
     r_p = r * (1.0 - r)
@@ -836,17 +805,13 @@ def _newton_head_stream_a_kernel(
 
     h0_v = tl.zeros((BLOCK_D,), dtype=tl.float32)
     if has_h0 != 0:
-        h0_v = load_acc(
-            h0_ptr + b * stride_h0_b + (head_off + offs) * stride_h0_d, mask, 0.0
-        )
+        h0_v = load_acc(h0_ptr + b * stride_h0_b + (head_off + offs) * stride_h0_d, mask, 0.0)
 
     for t in range(0, time):
         base_wx = b * stride_wx_b + t * stride_wx_t
         zx = load_acc(wx_ptr + base_wx + (head_off + offs) * stride_wx_d, mask, 0.0)
         rx = load_acc(wx_ptr + base_wx + (d_h + head_off + offs) * stride_wx_d, mask, 0.0)
-        nx = load_acc(
-            wx_ptr + base_wx + (2 * d_h + head_off + offs) * stride_wx_d, mask, 0.0
-        )
+        nx = load_acc(wx_ptr + base_wx + (2 * d_h + head_off + offs) * stride_wx_d, mask, 0.0)
         h_prev = tl.where(t == 0, h0_v, tl.zeros((BLOCK_D,), dtype=tl.float32))
         h_new, _, _, _, _, _ = _stream_gates(
             h_prev,
@@ -873,17 +838,10 @@ def _newton_head_stream_a_kernel(
         for t in range(0, time):
             base_wx = b * stride_wx_b + t * stride_wx_t
             zx = load_acc(wx_ptr + base_wx + (head_off + offs) * stride_wx_d, mask, 0.0)
-            rx = load_acc(
-                wx_ptr + base_wx + (d_h + head_off + offs) * stride_wx_d, mask, 0.0
-            )
-            nx = load_acc(
-                wx_ptr + base_wx + (2 * d_h + head_off + offs) * stride_wx_d, mask, 0.0
-            )
+            rx = load_acc(wx_ptr + base_wx + (d_h + head_off + offs) * stride_wx_d, mask, 0.0)
+            nx = load_acc(wx_ptr + base_wx + (2 * d_h + head_off + offs) * stride_wx_d, mask, 0.0)
             h_prev_nm1 = load_acc(
-                h_ptr
-                + b * stride_h_b
-                + (t - 1) * stride_h_t
-                + (head_off + offs) * stride_h_d,
+                h_ptr + b * stride_h_b + (t - 1) * stride_h_t + (head_off + offs) * stride_h_d,
                 mask & (t > 0),
                 0.0,
             )
@@ -927,10 +885,7 @@ def _newton_head_stream_a_kernel(
                 + res
             )
             store_acc(
-                delta_ptr
-                + b * stride_d_b
-                + t * stride_d_t
-                + (head_off + offs) * stride_d_d,
+                delta_ptr + b * stride_d_b + t * stride_d_t + (head_off + offs) * stride_d_d,
                 delta,
                 mask,
             )
@@ -1115,35 +1070,22 @@ def _reverse_head_stream_a_kernel(
             tp = t + 1
             base_wx = b * stride_wx_b + tp * stride_wx_t
             zx = load_acc(wx_ptr + base_wx + (head_off + offs) * stride_wx_d, mask, 0.0)
-            rx = load_acc(
-                wx_ptr + base_wx + (d_h + head_off + offs) * stride_wx_d, mask, 0.0
-            )
-            nx = load_acc(
-                wx_ptr + base_wx + (2 * d_h + head_off + offs) * stride_wx_d, mask, 0.0
-            )
+            rx = load_acc(wx_ptr + base_wx + (d_h + head_off + offs) * stride_wx_d, mask, 0.0)
+            nx = load_acc(wx_ptr + base_wx + (2 * d_h + head_off + offs) * stride_wx_d, mask, 0.0)
             hp = load_acc(
-                h_prev_ptr
-                + b * stride_hp_b
-                + tp * stride_hp_t
-                + (head_off + offs) * stride_hp_d,
+                h_prev_ptr + b * stride_hp_b + tp * stride_hp_t + (head_off + offs) * stride_hp_d,
                 mask,
                 0.0,
             )
             # Gates: stream A_* so peak SRAM is one (BLOCK_D, BLOCK_D).
             az = load_acc(
-                az_ptr
-                + a_base
-                + offs[:, None] * stride_a_in
-                + offs[None, :] * stride_a_out,
+                az_ptr + a_base + offs[:, None] * stride_a_in + offs[None, :] * stride_a_out,
                 mask_ij,
                 0.0,
             )
             hz = tl.sum(az * hp[:, None], axis=0)
             ar = load_acc(
-                ar_ptr
-                + a_base
-                + offs[:, None] * stride_a_in
-                + offs[None, :] * stride_a_out,
+                ar_ptr + a_base + offs[:, None] * stride_a_in + offs[None, :] * stride_a_out,
                 mask_ij,
                 0.0,
             )
@@ -1151,10 +1093,7 @@ def _reverse_head_stream_a_kernel(
             z = tl.sigmoid(hz + zx)
             r = tl.sigmoid(hr + rx)
             an = load_acc(
-                an_ptr
-                + a_base
-                + offs[:, None] * stride_a_in
-                + offs[None, :] * stride_a_out,
+                an_ptr + a_base + offs[:, None] * stride_a_in + offs[None, :] * stride_a_out,
                 mask_ij,
                 0.0,
             )
@@ -1165,10 +1104,7 @@ def _reverse_head_stream_a_kernel(
             n_p = 1.0 - n * n
             w_z = z_p * ((n - hp) * mu)
             az = load_acc(
-                az_ptr
-                + a_base
-                + offs[:, None] * stride_a_in
-                + offs[None, :] * stride_a_out,
+                az_ptr + a_base + offs[:, None] * stride_a_in + offs[None, :] * stride_a_out,
                 mask_ij,
                 0.0,
             )
@@ -1177,10 +1113,7 @@ def _reverse_head_stream_a_kernel(
             g_du = tl.sum(an * w_n[None, :], axis=1)
             w_r = r_p * (hp * g_du)
             ar = load_acc(
-                ar_ptr
-                + a_base
-                + offs[:, None] * stride_a_in
-                + offs[None, :] * stride_a_out,
+                ar_ptr + a_base + offs[:, None] * stride_a_in + offs[None, :] * stride_a_out,
                 mask_ij,
                 0.0,
             )
@@ -1268,14 +1201,10 @@ def _newton_hybrid_tiled(
     the scan stays in Triton.
     """
     h_prev0 = _init_prev(wx, h0, d_h=d_h, cu_seqlens=None)
-    states, _ = _gates(
-        h_prev0, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h
-    )
+    states, _ = _gates(h_prev0, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h)
     for _ in range(max_iters):
         h_prev = prepend_state(states, h0)
-        pred, gates = _gates(
-            h_prev, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h
-        )
+        pred, gates = _gates(h_prev, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h)
         residual = pred - states
         delta = _factor_scan_tiled_triton(
             gates, residual, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head
@@ -1285,7 +1214,9 @@ def _newton_hybrid_tiled(
 
 
 @triton.jit
-def _mix_col_tile(a_ptr, v_ptr, i, j_offs, d, stride_a_in, stride_a_out, stride_v, BLOCK: tl.constexpr):
+def _mix_col_tile(
+    a_ptr, v_ptr, i, j_offs, d, stride_a_in, stride_a_out, stride_v, BLOCK: tl.constexpr
+):
     """``sum_j A[j, i] * v[j]`` over one ``j`` tile."""
     j = j_offs + tl.arange(0, BLOCK)
     mask_j = j < d
@@ -1547,18 +1478,12 @@ def _factor_reverse_tiled_kernel(
                     mask_j = j < d
                     mask_ij = mask_i[:, None] & mask_j[None, :]
                     az = load_acc(
-                        az_ptr
-                        + a_base
-                        + i[:, None] * stride_a_in
-                        + j[None, :] * stride_a_out,
+                        az_ptr + a_base + i[:, None] * stride_a_in + j[None, :] * stride_a_out,
                         mask_ij,
                         0.0,
                     )
                     an = load_acc(
-                        an_ptr
-                        + a_base
-                        + i[:, None] * stride_a_in
-                        + j[None, :] * stride_a_out,
+                        an_ptr + a_base + i[:, None] * stride_a_in + j[None, :] * stride_a_out,
                         mask_ij,
                         0.0,
                     )
@@ -1586,10 +1511,7 @@ def _factor_reverse_tiled_kernel(
                     j = j0 + offs
                     mask_j = j < d
                     ar = load_acc(
-                        ar_ptr
-                        + a_base
-                        + i[:, None] * stride_a_in
-                        + j[None, :] * stride_a_out,
+                        ar_ptr + a_base + i[:, None] * stride_a_in + j[None, :] * stride_a_out,
                         mask_i[:, None] & mask_j[None, :],
                         0.0,
                     )

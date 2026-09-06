@@ -41,9 +41,7 @@ def test_causal_lm_forward_and_save(tmp_path: Path) -> None:
     model = ParaSLSTMForCausalLM(cfg)
     # Force eager Newton in blocks (already via config).
     for block in model.blocks:
-        block.rnn.config = NewtonConfig(
-            max_iters=2, scan_backend="eager", residual_fail=None
-        )
+        block.rnn.config = NewtonConfig(max_iters=2, scan_backend="eager", residual_fail=None)
     ids = torch.randint(0, 64, (2, 8))
     model.train()
     logits = model(ids)
@@ -72,9 +70,7 @@ def test_causal_lm_generate_grows() -> None:
     )
     model = ParaSLSTMForCausalLM(cfg).eval()
     for block in model.blocks:
-        block.rnn.config = NewtonConfig(
-            max_iters=1, scan_backend="eager", residual_fail=None
-        )
+        block.rnn.config = NewtonConfig(max_iters=1, scan_backend="eager", residual_fail=None)
     prompt = torch.randint(0, 48, (1, 4))
     out = model.generate(prompt, max_new_tokens=3, temperature=0.0)
     assert out.shape == (1, 7)

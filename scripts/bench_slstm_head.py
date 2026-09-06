@@ -12,6 +12,7 @@ factorized eager. Head recipe often ``K=4`` (measured snaps).
 from __future__ import annotations
 
 import argparse
+import itertools
 import logging
 import statistics
 import time
@@ -116,7 +117,7 @@ def _log_t_scaling(rows: list[tuple[int, float]], label: str) -> None:
     if len(rows) < 2:
         return
     parts = []
-    for (t0, m0), (t1, m1) in zip(rows, rows[1:]):
+    for (t0, m0), (t1, m1) in itertools.pairwise(rows):
         if m0 <= 0:
             continue
         parts.append(f"T{t0}->{t1}: ×{m1 / m0:.2f} (T×{t1 / t0:.1f})")
@@ -214,8 +215,7 @@ def main() -> None:
                     "device": str(device),
                     "gpu": torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
                     "T": args.T,
-                    "d_head_grid": args.d_head_grid
-                    or f"{args.d_h // args.n_heads}",
+                    "d_head_grid": args.d_head_grid or f"{args.d_h // args.n_heads}",
                 }
             )
 

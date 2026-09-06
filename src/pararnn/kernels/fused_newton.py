@@ -285,6 +285,4 @@ def fused_newton(
             time_loop=fused_time_loop,
             window_len=0 if fused_window_len is None else int(fused_window_len),
         )
-    raise TypeError(
-        f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM only; got {type(cell).__name__}"
-    )
+    raise TypeError(f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM only; got {type(cell).__name__}")

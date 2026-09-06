@@ -102,9 +102,7 @@ def test_vllm_model_engine_bind_and_decode() -> None:
     )
     model = VLLMParaSLSTMForCausalLM(vllm_config=vllm_config)
     for layer in model.layers:
-        layer.mixer.newton = NewtonConfig(
-            max_iters=1, scan_backend="eager", residual_fail=None
-        )
+        layer.mixer.newton = NewtonConfig(max_iters=1, scan_backend="eager", residual_fail=None)
     c = 4
     states = [torch.zeros(c, SLSTM_SLOTS, 12) for _ in model.layers]
     model.bind_kv_caches(states, mark_used=[0, 1])
@@ -122,9 +120,7 @@ def test_vllm_model_engine_bind_and_decode() -> None:
 
 def test_get_mamba_helpers() -> None:
     cfg = ParaSLSTMConfig(hidden_size=16, vocab_size=10, num_hidden_layers=1)
-    vllm_config = SimpleNamespace(
-        model_config=SimpleNamespace(hf_config=cfg, dtype=torch.float32)
-    )
+    vllm_config = SimpleNamespace(model_config=SimpleNamespace(hf_config=cfg, dtype=torch.float32))
     shapes = VLLMParaSLSTMForCausalLM.get_mamba_state_shape_from_config(vllm_config)
     assert shapes == ((1,), (SLSTM_SLOTS, 16))
     dtypes = VLLMParaSLSTMForCausalLM.get_mamba_state_dtype_from_config(vllm_config)

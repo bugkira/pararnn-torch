@@ -177,8 +177,6 @@ class ParaSLSTMBlock(nn.Module):
             ``d_model``.
         """
         if x.dim() != 3 or x.shape[-1] != self.d_model:
-            raise ValueError(
-                f"expected x (B, T, {self.d_model}), got {tuple(x.shape)}"
-            )
+            raise ValueError(f"expected x (B, T, {self.d_model}), got {tuple(x.shape)}")
         x = x + self.drop(self.rnn(self.norm_rnn(x)))
         return x + self.drop(self.mlp(self.norm_mlp(x)))

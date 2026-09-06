@@ -486,7 +486,7 @@ def test_paralstm_newton_fused_matches_sequential(cuda_device: torch.device) -> 
 @pytest.mark.cuda
 @torch.no_grad()
 @pytest.mark.parametrize(
-    "cell_ctor,d_in,d_h,t",
+    ("cell_ctor", "d_in", "d_h", "t"),
     [
         (ParaGRU, 8, 7, 127),
         (ParaLSTM, 8, 7, 127),

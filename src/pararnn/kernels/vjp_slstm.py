@@ -359,10 +359,7 @@ def slstm_head_recurrence_vjp_eager(
     # ∇R_g[h,i,o] = Σ_{b,t} h[i] * d_zg[o]
     if h_prev.dim() == 4:
         g_r = torch.stack(
-            [
-                torch.einsum("bthi,btho->hio", h_prev, d)
-                for d in (d_zi, d_zf, d_zz, d_zo)
-            ],
+            [torch.einsum("bthi,btho->hio", h_prev, d) for d in (d_zi, d_zf, d_zz, d_zo)],
             dim=0,
         )
     else:
@@ -408,9 +405,7 @@ def _slstm_head_vjp_triton(
     eps: float,
 ) -> tuple[Tensor, Tensor]:
     """One ``(B, head)`` program; accumulate ``∇R`` in SRAM (``d_head ≤ 32``)."""
-    validate_cuda_tensors(
-        state_prev, wx, r_head, mu, name="slstm_head_recurrence_vjp"
-    )
+    validate_cuda_tensors(state_prev, wx, r_head, mu, name="slstm_head_recurrence_vjp")
     batch, time, _, d_h = state_prev.shape
     if d_h != n_heads * d_head:
         raise ValueError(f"d_h={d_h} != n_heads*d_head={n_heads * d_head}")
@@ -495,22 +490,38 @@ def _slstm_head_vjp_sram_kernel(
     head_off = head * d
 
     ri = load_acc(
-        r_ptr + 0 * stride_r_g + head * stride_r_h + offs[:, None] * stride_r_in + offs[None, :] * stride_r_out,
+        r_ptr
+        + 0 * stride_r_g
+        + head * stride_r_h
+        + offs[:, None] * stride_r_in
+        + offs[None, :] * stride_r_out,
         mask_ij,
         0.0,
     )
     rf = load_acc(
-        r_ptr + 1 * stride_r_g + head * stride_r_h + offs[:, None] * stride_r_in + offs[None, :] * stride_r_out,
+        r_ptr
+        + 1 * stride_r_g
+        + head * stride_r_h
+        + offs[:, None] * stride_r_in
+        + offs[None, :] * stride_r_out,
         mask_ij,
         0.0,
     )
     rz = load_acc(
-        r_ptr + 2 * stride_r_g + head * stride_r_h + offs[:, None] * stride_r_in + offs[None, :] * stride_r_out,
+        r_ptr
+        + 2 * stride_r_g
+        + head * stride_r_h
+        + offs[:, None] * stride_r_in
+        + offs[None, :] * stride_r_out,
         mask_ij,
         0.0,
     )
     ro = load_acc(
-        r_ptr + 3 * stride_r_g + head * stride_r_h + offs[:, None] * stride_r_in + offs[None, :] * stride_r_out,
+        r_ptr
+        + 3 * stride_r_g
+        + head * stride_r_h
+        + offs[:, None] * stride_r_in
+        + offs[None, :] * stride_r_out,
         mask_ij,
         0.0,
     )
@@ -521,42 +532,74 @@ def _slstm_head_vjp_sram_kernel(
 
     for t in range(0, time):
         c = load_acc(
-            s_ptr + b * stride_s_b + t * stride_s_t + SLOT_C * stride_s_s + (head_off + offs) * stride_s_d,
+            s_ptr
+            + b * stride_s_b
+            + t * stride_s_t
+            + SLOT_C * stride_s_s
+            + (head_off + offs) * stride_s_d,
             mask,
             0.0,
         )
         n = load_acc(
-            s_ptr + b * stride_s_b + t * stride_s_t + SLOT_N * stride_s_s + (head_off + offs) * stride_s_d,
+            s_ptr
+            + b * stride_s_b
+            + t * stride_s_t
+            + SLOT_N * stride_s_s
+            + (head_off + offs) * stride_s_d,
             mask,
             0.0,
         )
         m = load_acc(
-            s_ptr + b * stride_s_b + t * stride_s_t + SLOT_M * stride_s_s + (head_off + offs) * stride_s_d,
+            s_ptr
+            + b * stride_s_b
+            + t * stride_s_t
+            + SLOT_M * stride_s_s
+            + (head_off + offs) * stride_s_d,
             mask,
             0.0,
         )
         h = load_acc(
-            s_ptr + b * stride_s_b + t * stride_s_t + SLOT_H * stride_s_s + (head_off + offs) * stride_s_d,
+            s_ptr
+            + b * stride_s_b
+            + t * stride_s_t
+            + SLOT_H * stride_s_s
+            + (head_off + offs) * stride_s_d,
             mask,
             0.0,
         )
         mu_c = load_acc(
-            mu_ptr + b * stride_mu_b + t * stride_mu_t + SLOT_C * stride_mu_s + (head_off + offs) * stride_mu_d,
+            mu_ptr
+            + b * stride_mu_b
+            + t * stride_mu_t
+            + SLOT_C * stride_mu_s
+            + (head_off + offs) * stride_mu_d,
             mask,
             0.0,
         )
         mu_n = load_acc(
-            mu_ptr + b * stride_mu_b + t * stride_mu_t + SLOT_N * stride_mu_s + (head_off + offs) * stride_mu_d,
+            mu_ptr
+            + b * stride_mu_b
+            + t * stride_mu_t
+            + SLOT_N * stride_mu_s
+            + (head_off + offs) * stride_mu_d,
             mask,
             0.0,
         )
         mu_m = load_acc(
-            mu_ptr + b * stride_mu_b + t * stride_mu_t + SLOT_M * stride_mu_s + (head_off + offs) * stride_mu_d,
+            mu_ptr
+            + b * stride_mu_b
+            + t * stride_mu_t
+            + SLOT_M * stride_mu_s
+            + (head_off + offs) * stride_mu_d,
             mask,
             0.0,
         )
         mu_h = load_acc(
-            mu_ptr + b * stride_mu_b + t * stride_mu_t + SLOT_H * stride_mu_s + (head_off + offs) * stride_mu_d,
+            mu_ptr
+            + b * stride_mu_b
+            + t * stride_mu_t
+            + SLOT_H * stride_mu_s
+            + (head_off + offs) * stride_mu_d,
             mask,
             0.0,
         )
@@ -608,22 +651,34 @@ def _slstm_head_vjp_sram_kernel(
         d_zi = d_i * i_t + d_mnew * (1.0 - alpha)
         d_zf = d_f * f_t + d_mnew * alpha
         store_acc(
-            gwx_ptr + b * stride_gwx_b + t * stride_gwx_t + (0 * d_h + head_off + offs) * stride_gwx_d,
+            gwx_ptr
+            + b * stride_gwx_b
+            + t * stride_gwx_t
+            + (0 * d_h + head_off + offs) * stride_gwx_d,
             d_zi,
             mask,
         )
         store_acc(
-            gwx_ptr + b * stride_gwx_b + t * stride_gwx_t + (1 * d_h + head_off + offs) * stride_gwx_d,
+            gwx_ptr
+            + b * stride_gwx_b
+            + t * stride_gwx_t
+            + (1 * d_h + head_off + offs) * stride_gwx_d,
             d_zf,
             mask,
         )
         store_acc(
-            gwx_ptr + b * stride_gwx_b + t * stride_gwx_t + (2 * d_h + head_off + offs) * stride_gwx_d,
+            gwx_ptr
+            + b * stride_gwx_b
+            + t * stride_gwx_t
+            + (2 * d_h + head_off + offs) * stride_gwx_d,
             d_zz,
             mask,
         )
         store_acc(
-            gwx_ptr + b * stride_gwx_b + t * stride_gwx_t + (3 * d_h + head_off + offs) * stride_gwx_d,
+            gwx_ptr
+            + b * stride_gwx_b
+            + t * stride_gwx_t
+            + (3 * d_h + head_off + offs) * stride_gwx_d,
             d_zo,
             mask,
         )
@@ -633,22 +688,42 @@ def _slstm_head_vjp_sram_kernel(
         gro += tl.cast(h[:, None] * d_zo[None, :], tl.float32)
 
     store_acc(
-        gr_ptr + b * stride_gr_b + 0 * stride_gr_g + head * stride_gr_h + offs[:, None] * stride_gr_in + offs[None, :] * stride_gr_out,
+        gr_ptr
+        + b * stride_gr_b
+        + 0 * stride_gr_g
+        + head * stride_gr_h
+        + offs[:, None] * stride_gr_in
+        + offs[None, :] * stride_gr_out,
         gri,
         mask_ij,
     )
     store_acc(
-        gr_ptr + b * stride_gr_b + 1 * stride_gr_g + head * stride_gr_h + offs[:, None] * stride_gr_in + offs[None, :] * stride_gr_out,
+        gr_ptr
+        + b * stride_gr_b
+        + 1 * stride_gr_g
+        + head * stride_gr_h
+        + offs[:, None] * stride_gr_in
+        + offs[None, :] * stride_gr_out,
         grf,
         mask_ij,
     )
     store_acc(
-        gr_ptr + b * stride_gr_b + 2 * stride_gr_g + head * stride_gr_h + offs[:, None] * stride_gr_in + offs[None, :] * stride_gr_out,
+        gr_ptr
+        + b * stride_gr_b
+        + 2 * stride_gr_g
+        + head * stride_gr_h
+        + offs[:, None] * stride_gr_in
+        + offs[None, :] * stride_gr_out,
         grz,
         mask_ij,
     )
     store_acc(
-        gr_ptr + b * stride_gr_b + 3 * stride_gr_g + head * stride_gr_h + offs[:, None] * stride_gr_in + offs[None, :] * stride_gr_out,
+        gr_ptr
+        + b * stride_gr_b
+        + 3 * stride_gr_g
+        + head * stride_gr_h
+        + offs[:, None] * stride_gr_in
+        + offs[None, :] * stride_gr_out,
         gro,
         mask_ij,
     )

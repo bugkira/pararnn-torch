@@ -228,8 +228,7 @@ class BlockStackPool:
                 )
             if buf.shape[1] != SLSTM_SLOTS:
                 raise ValueError(
-                    f"layer {i}: expected SLSTM_SLOTS={SLSTM_SLOTS} on dim 1, "
-                    f"got {buf.shape[1]}"
+                    f"layer {i}: expected SLSTM_SLOTS={SLSTM_SLOTS} on dim 1, got {buf.shape[1]}"
                 )
             pool.buffers[0] = buf
         if mark_used is not None:

@@ -35,9 +35,7 @@ def main() -> None:
     )
     model = ParaSLSTMForCausalLM(cfg).eval()
     for block in model.blocks:
-        block.rnn.config = NewtonConfig(
-            max_iters=2, scan_backend="eager", residual_fail=None
-        )
+        block.rnn.config = NewtonConfig(max_iters=2, scan_backend="eager", residual_fail=None)
     pool = model.attach_pool(CAPACITY)
     ids = pool.allocate(2)
 

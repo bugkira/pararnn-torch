@@ -116,6 +116,7 @@ class SlotAllocator:
             self._free.remove(ii)
             self._used.add(ii)
 
+
 class PagedStatePool:
     """One GPU state buffer per ``ParaRNN`` layer; shared slot ids.
 
@@ -159,9 +160,7 @@ class PagedStatePool:
         # Shared allocators: one slot id across a stack of ``ParaRNN`` pools
         # (``BlockStackPool`` / continuous-batch CausalLM).
         if allocator is not None and allocator.capacity != capacity:
-            raise ValueError(
-                f"allocator.capacity={allocator.capacity} != capacity={capacity}"
-            )
+            raise ValueError(f"allocator.capacity={allocator.capacity} != capacity={capacity}")
         self.allocator = allocator if allocator is not None else SlotAllocator(capacity)
         n_host = capacity if host_capacity is None else host_capacity
         if host_allocator is not None and host_allocator.capacity != n_host:

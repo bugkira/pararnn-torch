@@ -541,7 +541,7 @@ def test_slstm_fused_rejects_dense_accepts_head(cuda_device: torch.device) -> No
     with torch.no_grad():
         h = newton_apply(head, x, cfg)
     assert h.shape == (2, 8, SLSTM_SLOTS, 4)
-    with pytest.raises(TypeError, match="diag|head"):
+    with pytest.raises(TypeError, match=r"diag|head"):
         newton_apply(dense, x, NewtonConfig(max_iters=1, scan_backend="fused"))
 
 
@@ -1077,7 +1077,7 @@ def test_slstm_scan_seq_fused_matches_assoc(cuda_device: torch.device) -> None:
 @pytest.mark.cuda
 @torch.no_grad()
 @pytest.mark.parametrize(
-    "d_h,t",
+    ("d_h", "t"),
     [(7, 127), (80, 127), (5, 63)],
     ids=["dh7_T127", "dh80_T127", "dh5_T63"],
 )

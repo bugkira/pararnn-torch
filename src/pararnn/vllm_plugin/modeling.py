@@ -76,9 +76,7 @@ class VLLMParaSLSTMForCausalLM(nn.Module, *_AF_BASES):
         hf = getattr(vllm_config, "model_config", None)
         hf_config = getattr(hf, "hf_config", None) if hf is not None else None
         if hf_config is None:
-            raise TypeError(
-                "VLLMParaSLSTMForCausalLM requires vllm_config.model_config.hf_config"
-            )
+            raise TypeError("VLLMParaSLSTMForCausalLM requires vllm_config.model_config.hf_config")
         self.vllm_config = vllm_config
         self.config = _config_from_hf(hf_config)
         model_config = getattr(vllm_config, "model_config", None)
@@ -157,9 +155,7 @@ class VLLMParaSLSTMForCausalLM(nn.Module, *_AF_BASES):
             log.debug("library weight sync skipped: %s", exc)
 
     @classmethod
-    def get_mamba_state_dtype_from_config(
-        cls, vllm_config: Any
-    ) -> tuple[torch.dtype, torch.dtype]:
+    def get_mamba_state_dtype_from_config(cls, vllm_config: Any) -> tuple[torch.dtype, torch.dtype]:
         model_cfg = getattr(vllm_config, "model_config", None)
         dtype = getattr(model_cfg, "dtype", torch.float32) if model_cfg else torch.float32
         if isinstance(dtype, str):
@@ -267,9 +263,7 @@ class VLLMParaSLSTMForCausalLM(nn.Module, *_AF_BASES):
     ) -> None:
         """Test helper: set temporal ``kv_cache`` on each mixer."""
         if len(layer_states) != len(self.layers):
-            raise ValueError(
-                f"expected {len(self.layers)} states, got {len(layer_states)}"
-            )
+            raise ValueError(f"expected {len(self.layers)} states, got {len(layer_states)}")
         for layer, st in zip(self.layers, layer_states, strict=True):
             conv = torch.zeros(st.shape[0], 1, device=st.device, dtype=st.dtype)
             layer.mixer.kv_cache = (conv, st)

@@ -8,12 +8,10 @@ import torch
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.kernels.gru_head_factor import gru_head_jt_mvp, gru_head_jvp
 
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:mix='head' is block-diagonal ParaGRU:UserWarning"
-)
+pytestmark = pytest.mark.filterwarnings("ignore:mix='head' is block-diagonal ParaGRU:UserWarning")
 
 
-@pytest.mark.parametrize("d_h,n_heads", [(8, 4), (64, 8), (32, 2)])
+@pytest.mark.parametrize(("d_h", "n_heads"), [(8, 4), (64, 8), (32, 2)])
 @torch.no_grad()
 def test_gru_head_jvp_matches_dense(d_h: int, n_heads: int):
     torch.manual_seed(1)
@@ -31,7 +29,7 @@ def test_gru_head_jvp_matches_dense(d_h: int, n_heads: int):
     torch.testing.assert_close(fact, dense, atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.parametrize("d_h,n_heads", [(8, 4), (64, 8)])
+@pytest.mark.parametrize(("d_h", "n_heads"), [(8, 4), (64, 8)])
 @torch.no_grad()
 def test_gru_head_jt_mvp_matches_dense(d_h: int, n_heads: int):
     torch.manual_seed(2)

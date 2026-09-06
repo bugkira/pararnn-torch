@@ -9,9 +9,7 @@ from pararnn import NewtonConfig, ParaGRU, newton_apply, sequential_apply
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:mix='head' is block-diagonal ParaGRU:UserWarning"
-)
+pytestmark = pytest.mark.filterwarnings("ignore:mix='head' is block-diagonal ParaGRU:UserWarning")
 
 
 def _residual_vs_k(cell: ParaGRU, x: torch.Tensor, ks: tuple[int, ...] = (1, 2, 3, 4, 5)):
@@ -149,7 +147,7 @@ def test_paragru_head_fused_vs_eager():
 
 @pytest.mark.cuda
 @torch.no_grad()
-@pytest.mark.parametrize("d_head,n_heads", [(64, 8), (96, 2), (128, 2)])
+@pytest.mark.parametrize(("d_head", "n_heads"), [(64, 8), (96, 2), (128, 2)])
 def test_paragru_head_long_t_fused_smoke(d_head: int, n_heads: int):
     """No T-cap on head fused path: T=4096 stays finite and self-consistent."""
     torch.manual_seed(430 + d_head)
@@ -173,9 +171,7 @@ def test_paragru_head_long_t_fused_smoke(d_head: int, n_heads: int):
     a_z, a_r, a_n = cell.clipped_a_head()
     part = 0.1 * torch.randn_like(h1)
     _, gates = _gates(h_prev, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h)
-    eager = _factor_reverse_eager(
-        gates, part, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head
-    )
+    eager = _factor_reverse_eager(gates, part, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head)
     tri = _reverse_gru_head_factor_impl(h_prev, wx, part, a_z, a_r, a_n)
     torch.testing.assert_close(eager, tri, atol=2e-4, rtol=1e-4)
 
@@ -195,6 +191,7 @@ def test_paragru_head_factorized_d_head_grid():
         ref = sequential_apply(cell, x)
         err = float((h - ref).abs().amax())
         assert err < 5e-3, (d_head, err)
+
 
 def test_paragru_diag_still_default():
     cell = ParaGRU(4, 8)
@@ -220,9 +217,7 @@ def test_paragru_head_scale_newton_vs_sequential():
     cell = ParaGRU(d_in=32, d_h=64, mix="head", n_heads=8).to(device)
     x = 0.2 * torch.randn(2, 64, 32, device=device)
     ref = sequential_apply(cell, x)
-    h = newton_apply(
-        cell, x, NewtonConfig(max_iters=5, scan_backend="eager", residual_atol=None)
-    )
+    h = newton_apply(cell, x, NewtonConfig(max_iters=5, scan_backend="eager", residual_atol=None))
     err = float((h - ref).abs().amax())
     assert err < 5e-3, err
 
@@ -287,7 +282,7 @@ def test_paragru_head_reverse_scan_dense_triton_matches_eager():
 
 @pytest.mark.cuda
 @torch.no_grad()
-@pytest.mark.parametrize("d_head,n_heads", [(16, 4), (96, 2)])
+@pytest.mark.parametrize(("d_head", "n_heads"), [(16, 4), (96, 2)])
 @pytest.mark.parametrize("time", [32, 256, 512])
 def test_paragru_head_vjp_triton_matches_eager(d_head: int, n_heads: int, time: int):
     from pararnn.kernels.vjp_gru import (
@@ -303,12 +298,8 @@ def test_paragru_head_vjp_triton_matches_eager(d_head: int, n_heads: int, time: 
     a_r = torch.randn(n_heads, d_head, d_head, device="cuda") * 0.05
     a_n = torch.randn(n_heads, d_head, d_head, device="cuda") * 0.05
     mu = torch.randn(b, t, d_h, device="cuda")
-    e = gru_head_recurrence_vjp_eager(
-        h_prev, wx, a_z, a_r, a_n, mu, n_heads=n_heads, d_head=d_head
-    )
-    k = gru_head_recurrence_vjp(
-        h_prev, wx, a_z, a_r, a_n, mu, n_heads=n_heads, d_head=d_head
-    )
+    e = gru_head_recurrence_vjp_eager(h_prev, wx, a_z, a_r, a_n, mu, n_heads=n_heads, d_head=d_head)
+    k = gru_head_recurrence_vjp(h_prev, wx, a_z, a_r, a_n, mu, n_heads=n_heads, d_head=d_head)
     for a, b_ in zip(e, k, strict=True):
         torch.testing.assert_close(a, b_, atol=2e-4, rtol=1e-4)
 
@@ -332,12 +323,8 @@ def test_paragru_head_reverse_tiled_matches_eager():
     a_r = torch.randn(n_heads, d_head, d_head, device="cuda") * 0.04
     a_n = torch.randn(n_heads, d_head, d_head, device="cuda") * 0.04
     partial = torch.randn(b, t, d_h, device="cuda")
-    _, gates = _gates(
-        h_prev, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h
-    )
-    eager = _factor_reverse_eager(
-        gates, partial, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head
-    )
+    _, gates = _gates(h_prev, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h)
+    eager = _factor_reverse_eager(gates, partial, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head)
     tri = _factor_reverse_tiled_triton(
         gates, partial, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head
     )
@@ -346,7 +333,7 @@ def test_paragru_head_reverse_tiled_matches_eager():
 
 @pytest.mark.cuda
 @torch.no_grad()
-@pytest.mark.parametrize("d_head,n_heads", [(96, 2), (128, 2)])
+@pytest.mark.parametrize(("d_head", "n_heads"), [(96, 2), (128, 2)])
 def test_paragru_head_reverse_stream_a_matches_eager(d_head: int, n_heads: int):
     from pararnn.kernels.newton_gru_head import (
         _factor_reverse_eager,
@@ -363,12 +350,8 @@ def test_paragru_head_reverse_stream_a_matches_eager(d_head: int, n_heads: int):
     a_r = torch.randn(n_heads, d_head, d_head, device="cuda") * 0.04
     a_n = torch.randn(n_heads, d_head, d_head, device="cuda") * 0.04
     partial = torch.randn(b, t, d_h, device="cuda")
-    _, gates = _gates(
-        h_prev, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h
-    )
-    eager = _factor_reverse_eager(
-        gates, partial, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head
-    )
+    _, gates = _gates(h_prev, wx, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head, d_h=d_h)
+    eager = _factor_reverse_eager(gates, partial, a_z, a_r, a_n, n_heads=n_heads, d_head=d_head)
     tri = _reverse_gru_head_factor_impl(h_prev, wx, partial, a_z, a_r, a_n)
     torch.testing.assert_close(eager, tri, atol=2e-4, rtol=1e-4)
 
@@ -418,9 +401,7 @@ def test_paragru_head_newton_triton_vs_sequential():
     cell = ParaGRU(d_in=16, d_h=64, mix="head", n_heads=8, device="cuda")
     x = 0.2 * torch.randn(2, 32, 16, device="cuda")
     ref = sequential_apply(cell, x)
-    h = newton_apply(
-        cell, x, NewtonConfig(max_iters=4, scan_backend="triton", residual_atol=None)
-    )
+    h = newton_apply(cell, x, NewtonConfig(max_iters=4, scan_backend="triton", residual_atol=None))
     err = float((h - ref).abs().amax())
     assert err < 5e-3, err
 
@@ -449,8 +430,6 @@ def test_paragru_head_bf16_smoke():
     cell = ParaGRU(d_in=16, d_h=32, mix="head", n_heads=4, device="cuda", dtype=torch.bfloat16)
     x = 0.2 * torch.randn(2, 24, 16, device="cuda", dtype=torch.bfloat16)
     ref = sequential_apply(cell, x)
-    h = newton_apply(
-        cell, x, NewtonConfig(max_iters=4, scan_backend="triton", residual_atol=None)
-    )
+    h = newton_apply(cell, x, NewtonConfig(max_iters=4, scan_backend="triton", residual_atol=None))
     err = float((h.float() - ref.float()).abs().amax())
     assert err < 5e-2, err

@@ -87,8 +87,7 @@ def _resolve_picard(cell: nn.Module, x: Tensor, config: NewtonConfig) -> NewtonC
             # values are treated the same (single warm-start).
             return config
         raise TypeError(
-            f"NewtonConfig(picard_iters=) is ParaSLSTM / ParaM2RNN only "
-            f"(got {type(cell).__name__})"
+            f"NewtonConfig(picard_iters=) is ParaSLSTM / ParaM2RNN only (got {type(cell).__name__})"
         )
     return config
 

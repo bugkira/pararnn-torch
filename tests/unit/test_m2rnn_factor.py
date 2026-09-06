@@ -32,16 +32,14 @@ def test_m2rnn_jvp_matches_jacrev():
     # Per-batch jacrev
     jacs = []
     for b in range(2):
-        j = jacrev(lambda hh: f_one(hh, k[b], v[b], f[b]))(h[b])
+        kk, vv, ff, hh = k[b], v[b], f[b], h[b]
+        j = jacrev(lambda h1, kk=kk, vv=vv, ff=ff: f_one(h1, kk, vv, ff))(hh)
         # j: (K,V,K,V) → apply to delta
         jacs.append(j)
     delta = torch.randn_like(h)
     jvp = m2rnn_jvp(acts, delta)
     dense = torch.stack(
-        [
-            torch.einsum("abcd,cd->ab", jacs[b], delta[b])
-            for b in range(2)
-        ],
+        [torch.einsum("abcd,cd->ab", jacs[b], delta[b]) for b in range(2)],
         dim=0,
     )
     torch.testing.assert_close(jvp, dense, atol=1e-5, rtol=1e-5)
@@ -66,7 +64,8 @@ def test_m2rnn_jt_matches_jacrev():
     jt = m2rnn_jt_mvp(acts, mu)
     dense = []
     for b in range(2):
-        j = jacrev(lambda hh: f_one(hh, k[b], v[b], f[b]))(h[b])
+        kk, vv, ff, hh = k[b], v[b], f[b], h[b]
+        j = jacrev(lambda h1, kk=kk, vv=vv, ff=ff: f_one(h1, kk, vv, ff))(hh)
         # J^T: (K,V,K,V) with out,in → einsum mu_ab J_ab,cd -> cd
         dense.append(torch.einsum("ab,abcd->cd", mu[b], j))
     torch.testing.assert_close(jt, torch.stack(dense), atol=1e-5, rtol=1e-5)
@@ -237,12 +236,12 @@ def test_m2rnn_fused_frozen_w_matches_eager():
     device = torch.device("cuda")
     cell = ParaM2RNN(d_in=8, k_dim=8, v_dim=8).to(device).eval()
     x = (0.15 * torch.randn(2, 32, 8, device=device)).detach()
-    cfg_kw = dict(
-        max_iters=5,
-        picard_iters=1,
-        residual_atol=None,
-        residual_fail=None,
-    )
+    cfg_kw = {
+        "max_iters": 5,
+        "picard_iters": 1,
+        "residual_atol": None,
+        "residual_fail": None,
+    }
     fused = newton_apply(cell, x, NewtonConfig(scan_backend="fused", **cfg_kw))
     eager = newton_apply(cell, x, NewtonConfig(scan_backend="eager", **cfg_kw))
     seq = sequential_apply(cell, x)

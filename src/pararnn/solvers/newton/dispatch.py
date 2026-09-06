@@ -226,9 +226,7 @@ def _fused_error(cell: nn.Module, x: Tensor) -> str:
             "Use float16; cell+scan algebra stays fp32."
         )
     if isinstance(cell, ParaSLSTM) and cell.mix not in ("diag", "head"):
-        return (
-            f"scan_backend='fused' is mix='diag'|'head' for ParaSLSTM; got mix={cell.mix!r}"
-        )
+        return f"scan_backend='fused' is mix='diag'|'head' for ParaSLSTM; got mix={cell.mix!r}"
     if isinstance(cell, ParaGRU) and cell.mix not in ("diag", "head"):
         return f"scan_backend='fused' is mix='diag'|'head' for ParaGRU; got mix={cell.mix!r}"
     return (

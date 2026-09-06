@@ -224,10 +224,5 @@ def slstm_head_jt_mvp(
     adj_dzz = (1.0 - z.square()) * adj_dz
     adj_dzo = o * (1.0 - o) * w_do
 
-    g_h = (
-        _mix_t(adj_dzi, r_i)
-        + _mix_t(adj_dzf, r_f)
-        + _mix_t(adj_dzz, r_z)
-        + _mix_t(adj_dzo, r_o)
-    )
+    g_h = _mix_t(adj_dzi, r_i) + _mix_t(adj_dzf, r_f) + _mix_t(adj_dzz, r_z) + _mix_t(adj_dzo, r_o)
     return torch.stack((g_c, g_n, g_m, g_h), dim=-2).reshape(*mu.shape[:-1], 4 * d)

@@ -1,0 +1,52 @@
+name: gpu
+
+# Optional lab CUDA. Does not gate the `ci` badge. Offline self-hosted runners
+# only affect this workflow.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gpu:
+    # Lab box only. Fork PRs must not run here (untrusted code on the GPUs,
+    # and forks have no [self-hosted, cuda] runner).
+    if: github.repository == 'bugkira/pararnn-torch' && github.event.pull_request.head.repo.fork != true
+    name: gpu (${{ matrix.label }})
+    runs-on: [self-hosted, cuda]
+    # Bound queue+run so a dead runner cannot park the workflow indefinitely.
+    timeout-minutes: 45
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: ampere-rtx3060-cc86
+            cuda_visible_devices: "0"
+          - label: turing-rtx2080ti-cc75
+            cuda_visible_devices: "1"
+    env:
+      # nvidia-smi is PCI bus order; CUDA defaults to FASTEST_FIRST and swaps
+      # these two cards. PCI_BUS_ID makes index 0 the 3060 and index 1 the 2080 Ti.
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      CUDA_VISIBLE_DEVICES: ${{ matrix.cuda_visible_devices }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - name: Sync, identify GPU, and test
+        run: |
+          uv sync --group dev
+          uv run python scripts/gpu.py
+          uv run pytest -q

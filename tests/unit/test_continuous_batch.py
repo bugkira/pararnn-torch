@@ -12,9 +12,7 @@ from pararnn.serve import BlockStackPool, state_shapes_for_vllm
 
 def _blocks(n: int, d: int) -> list[ParaSLSTMBlock]:
     cfg = NewtonConfig(max_iters=2, scan_backend="eager", residual_fail=None)
-    return [
-        ParaSLSTMBlock(d, mlp_ratio=2.0, config=cfg, solver="sequential") for _ in range(n)
-    ]
+    return [ParaSLSTMBlock(d, mlp_ratio=2.0, config=cfg, solver="sequential") for _ in range(n)]
 
 
 def test_block_stack_prefill_decode_matches_dense() -> None:
@@ -71,9 +69,7 @@ def test_causal_lm_forward_continuous() -> None:
     )
     model = ParaSLSTMForCausalLM(cfg).eval()
     for block in model.blocks:
-        block.rnn.config = NewtonConfig(
-            max_iters=1, scan_backend="eager", residual_fail=None
-        )
+        block.rnn.config = NewtonConfig(max_iters=1, scan_backend="eager", residual_fail=None)
     pool = model.attach_pool(4)
     ids = pool.allocate(2)
     prompt = torch.randint(0, 32, (2, 4))
@@ -99,9 +95,7 @@ def test_causal_lm_generate_uses_pool() -> None:
     )
     model = ParaSLSTMForCausalLM(cfg).eval()
     for block in model.blocks:
-        block.rnn.config = NewtonConfig(
-            max_iters=1, scan_backend="eager", residual_fail=None
-        )
+        block.rnn.config = NewtonConfig(max_iters=1, scan_backend="eager", residual_fail=None)
     model.attach_pool(2)
     out = model.generate(torch.randint(0, 24, (1, 3)), max_new_tokens=2)
     assert out.shape == (1, 5)
@@ -140,9 +134,7 @@ def test_vllm_model_continuous_kwargs() -> None:
     )
     wrapper = VLLMParaSLSTMForCausalLM(vllm_config=vllm_config)
     for block in wrapper.library.blocks:
-        block.rnn.config = NewtonConfig(
-            max_iters=1, scan_backend="eager", residual_fail=None
-        )
+        block.rnn.config = NewtonConfig(max_iters=1, scan_backend="eager", residual_fail=None)
     wrapper.library.eval()
     assert wrapper.library.pool is not None
     ids = wrapper.library.pool.allocate(2)

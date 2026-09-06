@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Changed
+
+- CI: merge gate is lint + CPU tests only; self-hosted CUDA moved to
+  `gpu.yml` (offline lab runners no longer leave the `ci` badge queued/red).
+  Release: GitHub Release always publishes on tag; PyPI Trusted Publishing is
+  best-effort until the PyPI publisher is linked.
+
 ## [0.12.0] - 2026-09-06
 
 Research cell `ParaM2RNN`: factorized parallel Newton for matrix-state

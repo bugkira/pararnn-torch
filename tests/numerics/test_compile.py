@@ -339,4 +339,3 @@ def test_compile_safe_m2rnn_fullgraph_training(cuda_device: torch.device) -> Non
     for p_e, p_c in zip(cell_e.parameters(), cell_c.parameters(), strict=True):
         assert p_e.grad is not None and p_c.grad is not None
         _assert_close(p_c.grad, p_e.grad)
-

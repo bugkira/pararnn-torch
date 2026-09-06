@@ -99,14 +99,20 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "C4", "PT"]
-# Docs and comments use Cyrillic and typographic/math symbols (en-dashes, ×, ⊙) on purpose.
-ignore = ["RUF001", "RUF002", "RUF003"]
+# Docs/comments: Cyrillic + typographic/math (RUF001–003).
+# E501: formatter owns wrapping; kernels keep long GEMM/scan lines.
+ignore = ["RUF001", "RUF002", "RUF003", "E501"]
 
 [tool.ruff.lint.per-file-ignores]
 # Examples/scripts insert repo root on sys.path before importing pararnn.
 # scripts/gpu.py must set CUDA_DEVICE_ORDER before `import torch`.
 "examples/**" = ["E402"]
-"scripts/**" = ["E402"]
+"scripts/**" = ["E402", "B023"]
+# Composite torch asserts (`x is not None and finite`) are intentional.
+"tests/**" = ["PT018"]
+"src/pararnn/cells/**" = ["PT018"]
+"src/pararnn/kernels/**" = ["PT018"]
+"src/pararnn/solvers/**" = ["PT018"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["pararnn", "examples", "scripts"]

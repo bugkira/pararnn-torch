@@ -11,6 +11,9 @@ concurrency:
 permissions:
   contents: read
 
+# Merge gate: lint + CPU tests only. Self-hosted CUDA lives in gpu.yml so an
+# offline lab box cannot leave this workflow queued / red forever.
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -39,40 +42,6 @@ jobs:
       - name: Sync and test (CPU; CUDA tests deselected)
         run: |
           uv sync --group dev
-          echo "CUDA-marked tests (deselected here; covered by the gpu job):"
+          echo "CUDA-marked tests (deselected here; covered by gpu.yml):"
           uv run pytest --collect-only -q -m cuda
           uv run pytest -q -m "not cuda"
-
-  gpu:
-    # Lab box only. Fork PRs must not run here (untrusted code on the GPUs,
-    # and forks have no [self-hosted, cuda] runner to pick the job up).
-    # continue-on-error: a queued/offline self-hosted runner must not hold
-    # the whole workflow red; CPU lint+test remain the merge gate.
-    if: github.repository == 'bugkira/pararnn-torch' && github.event.pull_request.head.repo.fork != true
-    name: gpu (${{ matrix.label }})
-    runs-on: [self-hosted, cuda]
-    timeout-minutes: 60
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: ampere-rtx3060-cc86
-            cuda_visible_devices: "0"
-          - label: turing-rtx2080ti-cc75
-            cuda_visible_devices: "1"
-    env:
-      # nvidia-smi is PCI bus order; CUDA defaults to FASTEST_FIRST and swaps
-      # these two cards. PCI_BUS_ID makes index 0 the 3060 and index 1 the 2080 Ti.
-      CUDA_DEVICE_ORDER: PCI_BUS_ID
-      CUDA_VISIBLE_DEVICES: ${{ matrix.cuda_visible_devices }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          python-version: "3.12"
-      - name: Sync, identify GPU, and test
-        run: |
-          uv sync --group dev
-          uv run python scripts/gpu.py
-          uv run pytest -q

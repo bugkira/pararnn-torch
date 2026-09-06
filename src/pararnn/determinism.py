@@ -60,9 +60,7 @@ def warn_cublas_workspace_once() -> None:
     )
 
 
-def _param_grads_bitmatch(
-    a: tuple[Tensor | None, ...], b: tuple[Tensor | None, ...]
-) -> bool:
+def _param_grads_bitmatch(a: tuple[Tensor | None, ...], b: tuple[Tensor | None, ...]) -> bool:
     if len(a) != len(b):
         return False
     for g1, g2 in zip(a, b, strict=True):

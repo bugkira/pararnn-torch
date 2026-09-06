@@ -512,9 +512,7 @@ def _gru_head_vjp_tiled_pre_kernel(
                 0.0,
             )
             hn += tl.sum(a * u_k[:, None], axis=0)
-        nx = load_acc(
-            wx_ptr + wx_base + (2 * d_h + head_off + o) * stride_wx_d, mask_o, 0.0
-        )
+        nx = load_acc(wx_ptr + wx_base + (2 * d_h + head_off + o) * stride_wx_d, mask_o, 0.0)
         n = _nv_tanh(hn + nx)
         store_acc(gwx_ptr + gwx_base + (2 * d_h + head_off + o) * stride_gwx_d, n, mask_o)
 
@@ -524,9 +522,7 @@ def _gru_head_vjp_tiled_pre_kernel(
         h = load_acc(h_ptr + h_base + o * stride_h_d, mask_o, 0.0)
         mu = load_acc(mu_ptr + mu_base + o * stride_mu_d, mask_o, 0.0)
         z = load_acc(z_ptr + z_base + o * stride_z_d, mask_o, 0.0)
-        n = load_acc(
-            gwx_ptr + gwx_base + (2 * d_h + head_off + o) * stride_gwx_d, mask_o, 0.0
-        )
+        n = load_acc(gwx_ptr + gwx_base + (2 * d_h + head_off + o) * stride_gwx_d, mask_o, 0.0)
         d_z = mu * (n - h)
         d_npre = mu * z * (1.0 - n * n)
         d_zpre = d_z * z * (1.0 - z)
@@ -626,18 +622,12 @@ def _gru_head_vjp_tiled_outer_kernel(
             0.0,
         )
         d_r = load_acc(
-            gwx_ptr
-            + b * stride_gwx_b
-            + t * stride_gwx_t
-            + (d_h + head_off + o) * stride_gwx_d,
+            gwx_ptr + b * stride_gwx_b + t * stride_gwx_t + (d_h + head_off + o) * stride_gwx_d,
             mask_o,
             0.0,
         )
         d_n = load_acc(
-            gwx_ptr
-            + b * stride_gwx_b
-            + t * stride_gwx_t
-            + (2 * d_h + head_off + o) * stride_gwx_d,
+            gwx_ptr + b * stride_gwx_b + t * stride_gwx_t + (2 * d_h + head_off + o) * stride_gwx_d,
             mask_o,
             0.0,
         )
@@ -767,9 +757,7 @@ def gru_head_recurrence_vjp(
             g_an_b.sum(0).to(dt),
         )
 
-    g_az_b = torch.zeros(
-        batch, n_heads, d_head, d_head, device=h_prev.device, dtype=torch.float32
-    )
+    g_az_b = torch.zeros(batch, n_heads, d_head, d_head, device=h_prev.device, dtype=torch.float32)
     g_ar_b = torch.zeros_like(g_az_b)
     g_an_b = torch.zeros_like(g_az_b)
     z_buf = torch.empty(batch, time, d_h, device=h_prev.device, dtype=torch.float32)
