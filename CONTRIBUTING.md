@@ -36,6 +36,9 @@ User-visible changes go under `[Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md).
 Use the PR template checklist. Lab notes under `docs/internal/` stay local
 (gitignored). Apple trees under `third_party/` stay local reference only.
 
+Before a PyPI / tag cut: `bash scripts/check_wheel.sh` (build + twine +
+clean-venv import outside the repo).
+
 ## Scripts
 
 Benches and training entrypoints: [`scripts/README.md`](scripts/README.md).

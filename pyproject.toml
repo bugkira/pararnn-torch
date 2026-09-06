@@ -1,7 +1,7 @@
 [project]
 name = "pararnn-torch"
 version = "0.17.3"
-description = "Hardware-efficient parallel training and O(1) decode for nonlinear RNNs (Newton+scan)"
+description = "Train nonlinear RNNs in parallel (Newton+scan); decode one step at a time."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [

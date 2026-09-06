@@ -11,12 +11,16 @@ All notable changes to this project are documented here. Format follows [Keep a 
   [`examples/recurrent_state_loop.py`](examples/recurrent_state_loop.py).
 - [`docs/shapes-layout.md`](docs/shapes-layout.md) — contiguity contract,
   `cu_seqlens` × fused/eager/raise matrix, non-contig smoke for bugs.
+- [`scripts/check_wheel.sh`](scripts/check_wheel.sh) — pre-release
+  `uv build` + twine + clean-venv smoke outside the repo.
 
 ### Changed
 
 - Docs prose pass: tighten user-facing markdown (affirmative claims, less
   filler); [`docs/vllm.md`](docs/vllm.md) `MambaBase` / `mamba_type=MAMBA1`
   boundaries; `SECURITY.md` supported line → 0.17.x.
+- PyPI / GitHub summary aligned:
+  `Train nonlinear RNNs in parallel (Newton+scan); decode one step at a time.`
 - Ignore `docs/sources/positioning/user-friction/` dumps (large JSONL lab
   cache); peer README snapshots under `positioning/` stay tracked.
 

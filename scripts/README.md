@@ -20,7 +20,7 @@ Configs live under [`configs/`](../configs/) (`train/`, `bench/`, `cells/`).
 | [`bench_m2rnn_k_scale.py`](bench_m2rnn_k_scale.py) | CLI flags | Critical Newton depth K*(T) + asymptotics (`--init both`) |
 | [`train_babylm.py`](train_babylm.py) | [`configs/train/babylm.yaml`](../configs/train/babylm.yaml) | BabyLM LM train with MLflow |
 | [`bench_time.py`](bench_time.py) | [`configs/bench/newton_fused.yaml`](../configs/bench/newton_fused.yaml) | Fused vs eager Newton wall time |
-| [`run_multiseed_benches.sh`](run_multiseed_benches.sh) | multiseed YAML under `configs/bench/` | Seed sweeps → `outputs/multiseed/` |
+| [`check_wheel.sh`](check_wheel.sh) | — | Build sdist+wheel, twine check, clean-venv smoke outside the repo |
 
 Extras: `uv sync --extra flashrnn` for FlashRNN arms; `uv sync --extra lm` for BabyLM data deps; `uv sync --extra train` / `--group dev` for MLflow.
 
