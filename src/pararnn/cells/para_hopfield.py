@@ -78,9 +78,7 @@ class ParaHopfield(nn.Module):
             Parameter placement.
         """
         super().__init__()
-        input_size, hidden_size = resolve_layer_sizes(
-            input_size, hidden_size, d_in=d_in, d_h=d_h
-        )
+        input_size, hidden_size = resolve_layer_sizes(input_size, hidden_size, d_in=d_in, d_h=d_h)
         factory_kwargs = {"device": device, "dtype": dtype}
         if beta is None:
             # Attention-scale default (Vaswani et al.); Modern Hopfield β is the
@@ -98,9 +96,7 @@ class ParaHopfield(nn.Module):
         self.mix = "dense"
         self.jac_structure = "dense"
         self.beta = float(beta)
-        self.W_x = nn.Linear(
-            input_size, 2 * hidden_size * hidden_size, bias=True, **factory_kwargs
-        )
+        self.W_x = nn.Linear(input_size, 2 * hidden_size * hidden_size, bias=True, **factory_kwargs)
         self.reset_parameters()
         if hidden_size > _DH_DENSE_CAP:
             warnings.warn(
@@ -129,9 +125,7 @@ class ParaHopfield(nn.Module):
         """``W_x(x)`` with shape ``(..., 2 d_h²)`` for Newton reuse."""
         return self.W_x(x)
 
-    def step(
-        self, h_prev: Tensor, x: Tensor | None = None, *, wx: Tensor | None = None
-    ) -> Tensor:
+    def step(self, h_prev: Tensor, x: Tensor | None = None, *, wx: Tensor | None = None) -> Tensor:
         return self._recurrence(h_prev, x, wx=wx)[0]
 
     def step_with_jacobian(

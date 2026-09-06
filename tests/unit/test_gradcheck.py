@@ -60,9 +60,7 @@ def _make_cell(kind: str) -> nn.Module:
         return ParaCfC(**kwargs)
     if kind == "hopfield":
         # No App. C.1 clamp on this cell; dense Softmax map is C^∞.
-        return ParaHopfield(
-            input_size=_D_IN, hidden_size=_D_H, dtype=torch.float64
-        )
+        return ParaHopfield(input_size=_D_IN, hidden_size=_D_H, dtype=torch.float64)
     return ParaSLSTM(**kwargs, mix="diag")
 
 
