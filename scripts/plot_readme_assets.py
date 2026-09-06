@@ -62,7 +62,7 @@ def plot_slstm_speedup() -> Path:
     ax.set_xticklabels([str(t) for t in t_vals])
     ax.set_xlabel("Sequence length T")
     ax.set_ylabel("Forward median (ms)")
-    ax.set_title("ParaSLSTM diag — fused Newton vs sequential")
+    ax.set_title("ParaSLSTM — parallel Newton train vs sequential time loop")
     ax.legend(frameon=False, loc="upper left")
     fig.text(
         0.02,
@@ -83,7 +83,6 @@ def plot_k_star_wall() -> Path:
     cells = ["ParaCfC", "ParaTitans", "ParaHopfield", "ParaRWKV7"]
     fused_ms = [11, 13, 250, 237]
     seq_ms = [52_000, 62_000, 38_000, 81_000]
-    kstar = ["K*=2", "K*=2", "K*=2", "K*=0"]
     fig, ax = plt.subplots(figsize=(7.2, 4.2), dpi=160)
     xs = range(len(cells))
     w = 0.36
@@ -103,9 +102,11 @@ def plot_k_star_wall() -> Path:
     )
     ax.set_yscale("log")
     ax.set_xticks(list(xs))
-    ax.set_xticklabels([f"{c}\n{k}" for c, k in zip(cells, kstar, strict=True)])
-    ax.set_ylabel("Wall time @ T=131072 (ms, log)")
-    ax.set_title(r"$K^*(T)$ campaign — fused/scan vs sequential @ 131k")
+    ax.set_xticklabels(
+        [f"{c}\n{k} Newton steps" for c, k in zip(cells, ["2", "2", "2", "0"], strict=True)]
+    )
+    ax.set_ylabel("Wall time at T=131072 (ms, log scale)")
+    ax.set_title("Parallel train vs sequential loop at sequence length 131k")
     ax.legend(frameon=False)
     for bar, val in zip(bars, fused_ms, strict=True):
         ax.text(
@@ -119,7 +120,7 @@ def plot_k_star_wall() -> Path:
     fig.text(
         0.02,
         0.02,
-        "RTX 3060, τ=1e-4, B=1 · scripts/bench_k_star.py · lab GPU",
+        "RTX 3060 · agreement tol 1e-4 · B=1 · scripts/bench_k_star.py · lab GPU",
         fontsize=8,
         color="#555555",
     )

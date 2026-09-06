@@ -13,17 +13,29 @@ Fused Triton kernels target CC ≥ 8.0. Use
 scan paths. Wall-clock will be slower than fused; numerics stay on the same
 Alg. 1 surface.
 
+## What is critical Newton depth (K*)?
+
+Training walks a few **Newton iterations** over the whole sequence. **K\*(T)**
+is the smallest iteration count where the parallel result still matches a
+plain sequential for-loop within tolerance τ≈1e-4, as a function of sequence
+length T.
+
+For several cells here K\* stays **2** from short T through T=131072 (does not
+grow with T). RWKV-7 is an exact parallel scan, so K\*=0. Set
+`NewtonConfig(max_iters=None)` to use the measured schedules in
+`pararnn.solvers.newton.k_star`.
+
 ## How many Newton iterations should I use?
 
 - Pin with `NewtonConfig(max_iters=3)` for ParaGRU / ParaLSTM-style cells
   (Danieli et al. 2025 §2.1 / App. A empirical agreement).
-- Use `max_iters=None` for measured K*(T) auto schedules
+- Use `max_iters=None` for measured K\*(T) auto schedules
   (`pararnn.solvers.newton.k_star`); campaign through T=131072 via
   `scripts/bench_k_star.py`.
 - Override with `newton_iters_by_t={64: 2, 1024: 3, …}` when you have a table.
 
 If residual stays high, try Picard warm-start (`picard_iters`) before raising
-K.
+the iteration budget.
 
 ## Does `torch.compile` work?
 
