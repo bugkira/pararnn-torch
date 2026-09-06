@@ -5,7 +5,7 @@
 [![PyPI](https://img.shields.io/pypi/v/pararnn-torch.svg)](https://pypi.org/project/pararnn-torch/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/bugkira/pararnn-torch)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22302587.svg)](https://doi.org/10.5281/zenodo.22302587)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22302586.svg)](https://doi.org/10.5281/zenodo.22302586)
 [![ParaRNN](https://img.shields.io/static/v1?label=ParaRNN&message=ICLR%202026&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2510.21450)
 [![M²RNN](https://img.shields.io/static/v1?label=M%C2%B2RNN&message=arXiv%3A2603.14360&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2603.14360)
 
@@ -40,6 +40,10 @@ RTX 2080 Ti). **bf16 fused** needs Ampere+ (CC ≥ 8.0). Elsewhere
 
 ## News
 
+- **[2026-09]** Public launch: PyPI `pararnn-torch`, GitHub public,
+  ParaSLSTM preprint **v2** on Zenodo
+  ([doi:10.5281/zenodo.22558086](https://doi.org/10.5281/zenodo.22558086);
+  concept [10.5281/zenodo.22302586](https://doi.org/10.5281/zenodo.22302586)).
 - **[2026-09]** Long-context campaign through **T=131072**: several cells need
   only **2 Newton iterations** to match sequential unroll; RWKV-7 needs **0**
   (exact parallel scan). `NewtonConfig(max_iters=None)` picks those schedules.
@@ -49,6 +53,10 @@ RTX 2080 Ti). **bf16 fused** needs Ampere+ (CC ≥ 8.0). Elsewhere
   (`labels` CE, safetensors), continuous batch + vLLM plugin hooks.
 - **[2026-09]** Factorized Newton for Dreamer-style `ParaGRU(mix='head')`;
   matrix-state M²RNN with measured iteration growth.
+
+![ParaSLSTM fused Newton vs sequential](assets/slstm_fused_vs_sequential.png)
+
+Diag-sLSTM fused Newton vs sequential (lab, see [Benchmarks](#benchmarks)).
 
 ## What you get
 
@@ -395,7 +403,7 @@ If you use this library, please cite the software and the ParaRNN framework.
   title        = {{pararnn-torch}: Hardware-efficient parallel training for nonlinear {RNNs}},
   year         = {2026},
   url          = {https://github.com/bugkira/pararnn-torch},
-  version      = {0.17.3}
+  version      = {0.17.4}
 }
 
 @misc{sereda2026paraslstm,
@@ -403,9 +411,10 @@ If you use this library, please cite the software and the ParaRNN framework.
   title        = {{ParaSLSTM}: Work-Efficient Parallel Training of Nonlinear {sLSTM} via Tropical Warm-Starts},
   month        = sep,
   year         = 2026,
+  note         = {Version 2},
   publisher    = {Zenodo},
-  doi          = {10.5281/zenodo.22302587},
-  url          = {https://doi.org/10.5281/zenodo.22302587}
+  doi          = {10.5281/zenodo.22558086},
+  url          = {https://doi.org/10.5281/zenodo.22558086}
 }
 
 @inproceedings{danieli2026pararnn,
@@ -422,7 +431,8 @@ If you use this library, please cite the software and the ParaRNN framework.
 
 - Danieli et al. *ParaRNN*. ICLR 2026 (Oral). [arXiv:2510.21450](https://arxiv.org/abs/2510.21450).
 - Mishra et al. *M²RNN*. [arXiv:2603.14360](https://arxiv.org/abs/2603.14360).
-- Sereda. *ParaSLSTM*. [doi:10.5281/zenodo.22302587](https://doi.org/10.5281/zenodo.22302587).
+- Sereda. *ParaSLSTM* (v2). [doi:10.5281/zenodo.22558086](https://doi.org/10.5281/zenodo.22558086)
+  (concept [10.5281/zenodo.22302586](https://doi.org/10.5281/zenodo.22302586)).
 - Beck et al. *xLSTM*. [arXiv:2405.04517](https://arxiv.org/abs/2405.04517).
 - Lim et al. *DEER*. ICLR 2024. [arXiv:2309.12252](https://arxiv.org/abs/2309.12252).
 - Merrill et al. *The Illusion of State in State-Space Models*. [arXiv:2404.08819](https://arxiv.org/abs/2404.08819).

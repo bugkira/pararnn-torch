@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.17.4] - 2026-09-07
+
+Public GitHub launch, ParaSLSTM Zenodo v2, inference contract, wheel smoke.
+
 ### Added
 
 - [`docs/inference.md`](docs/inference.md) — inference contract: recurrent
@@ -13,6 +17,9 @@ All notable changes to this project are documented here. Format follows [Keep a 
   `cu_seqlens` × fused/eager/raise matrix, non-contig smoke for bugs.
 - [`scripts/check_wheel.sh`](scripts/check_wheel.sh) — pre-release
   `uv build` + twine + clean-venv smoke outside the repo.
+- [`assets/social-preview.png`](assets/social-preview.png) /
+  [`.github/social-preview.png`](.github/social-preview.png) — 1280×640
+  speedup card for GitHub Social preview.
 
 ### Changed
 
@@ -21,6 +28,8 @@ All notable changes to this project are documented here. Format follows [Keep a 
   boundaries; `SECURITY.md` supported line → 0.17.x.
 - PyPI / GitHub summary aligned:
   `Train nonlinear RNNs in parallel (Newton+scan); decode one step at a time.`
+- ParaSLSTM Zenodo **v2** DOI `10.5281/zenodo.22558086` (concept
+  `10.5281/zenodo.22302586`); badge tracks the concept DOI.
 - Ignore `docs/sources/positioning/user-friction/` dumps (large JSONL lab
   cache); peer README snapshots under `positioning/` stay tracked.
 

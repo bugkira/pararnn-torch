@@ -10,11 +10,14 @@ authors:
 repository-code: "https://github.com/bugkira/pararnn-torch"
 url: "https://github.com/bugkira/pararnn-torch"
 license: MIT
-doi: 10.5281/zenodo.22302587
+doi: 10.5281/zenodo.22558086
 identifiers:
   - type: doi
-    value: 10.5281/zenodo.22302587
-    description: ParaSLSTM preprint on Zenodo
+    value: 10.5281/zenodo.22558086
+    description: ParaSLSTM preprint v2 on Zenodo
+  - type: doi
+    value: 10.5281/zenodo.22302586
+    description: Zenodo concept DOI (always resolves to latest version)
 abstract: >-
   PyTorch sequence module for parallel training of nonlinear RNNs
   (GRU, LSTM, sLSTM) via Newton iterations and an associative scan.
@@ -41,10 +44,11 @@ preferred-citation:
     via Tropical Warm-Starts
   year: 2026
   month: 9
+  version: "2"
   publisher:
     name: Zenodo
-  doi: 10.5281/zenodo.22302587
-  url: "https://doi.org/10.5281/zenodo.22302587"
+  doi: 10.5281/zenodo.22558086
+  url: "https://doi.org/10.5281/zenodo.22558086"
 references:
   - type: conference-paper
     authors:
