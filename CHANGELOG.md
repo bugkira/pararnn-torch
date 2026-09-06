@@ -4,6 +4,20 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-06
+
+`ParaHopfield`: recurrent Modern-Hopfield slot
+\(h_t = V_t\,\mathrm{softmax}(\beta K_t h_{t-1})\) with dense Newton Jacobian
+and `scan_dense` (small \(d_h\)).
+
+### Added
+
+- `ParaHopfield`: \(K_t,V_t\in\mathbb{R}^{d_h\times d_h}\) from
+  `Linear(d_in → 2 d_h²)`; default \(\beta=1/\sqrt{d_h}\); analytic dense
+  `step_with_jacobian`; eager / Triton `scan_dense` (no fused cell+scan yet);
+  Autograd eq. 2.6 VJP (`uses_packed_vjp` false). Docs/tests cap \(d_h\le 32\)
+  (warn above). Adoption slot in [`docs/adoption.md`](docs/adoption.md).
+
 ## [0.14.0] - 2026-09-06
 
 `ParaCfC`: Liquid-style closed-form continuous-time cell with irregular Δt
@@ -399,7 +413,8 @@ installable surface.
 - Generic-cell autograd path and sequential reference solver.
 - Numerics tests: parallel vs sequential agreement, layer forward/backward.
 
-[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/bugkira/pararnn-torch/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/bugkira/pararnn-torch/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/bugkira/pararnn-torch/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/bugkira/pararnn-torch/compare/v0.11.0...v0.12.0

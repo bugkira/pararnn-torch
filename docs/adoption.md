@@ -106,6 +106,25 @@ y = core(torch.cat((feat, dt), dim=-1))
 Gate \(a=\sigma(-\mathrm{softplus}(f)\,\Delta t)\) and diagonal mix \(u\) keep
 the Newton Jacobian channelwise diagonal (fused Alg. 1 on CUDA).
 
+## Modern Hopfield / attractor slot
+
+For a recurrent one-step Modern-Hopfield update with input-conditioned
+pattern matrices, use `ParaHopfield`. Softmax couples channels, so Newton
+uses a dense Jacobian and `scan_dense` (keep \(d_h\le 32\); tests use 8):
+
+```python
+from pararnn import NewtonConfig, ParaHopfield, ParaRNN
+
+core = ParaRNN(
+    ParaHopfield(d_model, 8),
+    config=NewtonConfig(max_iters=6, jac_structure="dense"),
+)
+y = core(x)  # (B, T, d_model) → (B, T, 8)
+```
+
+Default \(\beta=1/\sqrt{d_h}\). Fused cell+scan and packed VJP are parked;
+eq. 2.6 uses Autograd on `step`.
+
 ## Scope
 
 - Local `save_pretrained` / `from_pretrained` (`config.json` + `model.safetensors`).

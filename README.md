@@ -24,6 +24,8 @@ Package **`pararnn-torch`**, import **`pararnn`**. **Alpha** — fused kernels a
 
 `ParaCfC` is a Liquid-style closed-form continuous-time cell: features in `x[..., :-1]`, irregular Δt in `x[..., -1]`, gate \(a=\sigma(-\mathrm{softplus}(f)\,\Delta t)\), and diagonal nonlinear mix \(u\) (fused Alg. 1).
 
+`ParaHopfield` is a recurrent Modern-Hopfield slot: \(h_t = V_t\,\mathrm{softmax}(\beta K_t h_{t-1})\) with \(K_t,V_t\in\mathbb{R}^{d_h\times d_h}\) from \(x_t\). Softmax couples channels, so Newton uses a dense Jacobian and `scan_dense` (recommend \(d_h\le 32\)).
+
 Implementation of the Newton+scan core follows [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450).
 
 ## Install
@@ -208,6 +210,27 @@ y = cfc(torch.cat((feat, dt), dim=-1))
 Fused Alg. 1 on CUDA (`pararnn::newton_cfc_fused`); `project_wx` packs
 `(f, c, Δt)` as `(B, T, 3 d_h)`.
 
+### ParaHopfield (Modern Hopfield / dense)
+
+Recurrent one-step Hopfield with input-conditioned pattern matrices
+\(K_t,V_t\) (Modern Hopfield / soft attention over a \(d_h\)-pattern bag from
+\(x_t\)):
+
+```python
+from pararnn import NewtonConfig, ParaHopfield, ParaRNN
+
+# Dense J + scan_dense: keep d_h ≤ 32 (tests use 8).
+hop = ParaRNN(
+    ParaHopfield(64, 8),
+    config=NewtonConfig(max_iters=6, jac_structure="dense"),
+    device=device,
+)
+y = hop(torch.randn(4, 128, 64, device=device))
+```
+
+`scan_backend="auto"` picks Triton `scan_dense` on CUDA; fused cell+scan is
+parked. Eq. 2.6 VJP uses Autograd on `step` (`uses_packed_vjp` is false).
+
 ## Results
 
 Interactive API tour: [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb)
@@ -266,7 +289,7 @@ API notes stay in [`docs/distributed.md`](docs/distributed.md).
 
 ## API overview
 
-- **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM`, `ParaM2RNN`, `ParaNLRU`, `ParaCfC` — recurrent maps \(f(h_{t-1}, x_t)\). M²RNN state is `(B, T, K, V)`. ParaNLRU is the nonlinear RG-LRU-style diag cell. ParaCfC is the Liquid irregular-Δt diag cell (`x[..., -1]` = Δt).
+- **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM`, `ParaM2RNN`, `ParaNLRU`, `ParaCfC`, `ParaHopfield` — recurrent maps \(f(h_{t-1}, x_t)\). M²RNN state is `(B, T, K, V)`. ParaNLRU is the nonlinear RG-LRU-style diag cell. ParaCfC is the Liquid irregular-Δt diag cell (`x[..., -1]` = Δt). ParaHopfield is the dense Modern-Hopfield slot (`d_h≤32`).
 - **Sequence module:** `ParaRNN(cell, config=NewtonConfig(max_iters=3))` — stacks one or more cells (`ParaM2RNN` also works through `newton_apply` / `sequential_apply` directly).
 - **Trunk block:** `ParaSLSTMBlock(d_model, mlp_ratio=4)` — RMSNorm + ParaSLSTM + SwiGLU residuals for LM stacks ([`docs/adoption.md`](docs/adoption.md), [`docs/xlstm.md`](docs/xlstm.md)).
 - **CausalLM / vLLM:** `ParaSLSTMForCausalLM` (`labels` CE, `generate`, `model.safetensors`) + `BlockStackPool` continuous batch +

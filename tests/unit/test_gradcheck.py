@@ -13,12 +13,13 @@ import torch
 from torch import Tensor, nn
 from torch.func import functional_call
 
-from pararnn.cells import ParaCfC, ParaGRU, ParaLSTM, ParaNLRU, ParaSLSTM
+from pararnn.cells import ParaCfC, ParaGRU, ParaHopfield, ParaLSTM, ParaNLRU, ParaSLSTM
 from pararnn.solvers import NewtonConfig, newton_apply
 
 # Tiny shapes: gradcheck is O(n_inputs) forwards. B=2, T=3, d_in=2, d_h=3
 # is enough for a Blelloch pad-to-4 and a multi-slot state, and keeps this
 # file well under a minute on CPU (measured 5.2 s for all 9 cases).
+# Hopfield uses dense J; d_h=3 keeps jacrev / scan_dense cheap for CI.
 _B, _T, _D_IN, _D_H = 2, 3, 2, 3
 
 # eps=1e-6: PyTorch float64 gradcheck default (gradcheck.py). Central
@@ -36,7 +37,7 @@ _GRADCHECK_ATOL = 1e-5
 # do not loosen.
 _GRADCHECK_RTOL = 1e-4
 
-_KINDS = ("gru", "lstm", "slstm", "nlru", "cfc")
+_KINDS = ("gru", "lstm", "slstm", "nlru", "cfc", "hopfield")
 
 
 def _make_cell(kind: str) -> nn.Module:
@@ -57,6 +58,11 @@ def _make_cell(kind: str) -> nn.Module:
         return ParaNLRU(**kwargs)
     if kind == "cfc":
         return ParaCfC(**kwargs)
+    if kind == "hopfield":
+        # No App. C.1 clamp on this cell; dense Softmax map is C^∞.
+        return ParaHopfield(
+            input_size=_D_IN, hidden_size=_D_H, dtype=torch.float64
+        )
     return ParaSLSTM(**kwargs, mix="diag")
 
 
@@ -88,6 +94,11 @@ def _gradcheck_config(cell: nn.Module) -> NewtonConfig:
         # T=3 is in the auto-P=1 bucket (slstm_auto_picard, T<=64). Pin P so
         # a residual retry cannot change the guess.
         kwargs["picard_iters"] = 1
+    if isinstance(cell, ParaHopfield):
+        # Dense Softmax couples channels; K=6 matches MixTanh / hopfield
+        # numerics tests. Fallback: raise to 8 on residual before loosening FD.
+        kwargs["max_iters"] = 6
+        kwargs["jac_structure"] = "dense"
     return NewtonConfig(**kwargs)
 
 
