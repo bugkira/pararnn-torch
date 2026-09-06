@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-06
+
+Dreamer-style `ParaGRU(mix='head')`: factorized CUDA Newton, reverse, and VJP.
+
 ### Added
 
 - `ParaGRU(mix='head', n_heads=…)`: block-diagonal recurrent `A_z,A_r,A_n`
@@ -297,7 +301,8 @@ installable surface.
 - Generic-cell autograd path and sequential reference solver.
 - Numerics tests: parallel vs sequential agreement, layer forward/backward.
 
-[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/bugkira/pararnn-torch/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/bugkira/pararnn-torch/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/bugkira/pararnn-torch/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/bugkira/pararnn-torch/compare/v0.6.0...v0.7.0
