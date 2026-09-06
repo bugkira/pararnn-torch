@@ -6,11 +6,17 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Added
 
+- [`docs/inference.md`](docs/inference.md) — inference contract: recurrent
+  carry size, `decode_step` / `out=` / CUDA Graph, `generate()`, paged pool;
+  [`examples/recurrent_state_loop.py`](examples/recurrent_state_loop.py).
 - [`docs/shapes-layout.md`](docs/shapes-layout.md) — contiguity contract,
   `cu_seqlens` × fused/eager/raise matrix, non-contig smoke for bugs.
 
 ### Changed
 
+- Docs prose pass: tighten user-facing markdown (affirmative claims, less
+  filler); [`docs/vllm.md`](docs/vllm.md) `MambaBase` / `mamba_type=MAMBA1`
+  boundaries; `SECURITY.md` supported line → 0.17.x.
 - Ignore `docs/sources/positioning/user-friction/` dumps (large JSONL lab
   cache); peer README snapshots under `positioning/` stay tracked.
 

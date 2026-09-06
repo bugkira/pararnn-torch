@@ -2,15 +2,15 @@
 
 ## Does parallel Newton match sequential unroll?
 
-Yes within documented tolerances — that is the **agreement** claim
-(τ ≈ 1e-4 in float32). Keep `pytest -m "not cuda"` and GPU
-numerics (`pytest -m cuda`) green when changing Jacobians, scans, or fused
-kernels. Float32 and bfloat16 have separate budgets.
+Yes within documented tolerances — the **agreement** claim (τ ≈ 1e-4 in
+float32). Keep `pytest -m "not cuda"` and GPU numerics (`pytest -m cuda`)
+green when changing Jacobians, scans, or fused kernels. Float32 and bfloat16
+have separate budgets.
 
-Full contract (residual gate vs agreement τ, four echelons):
+Full contract (residual gate, agreement τ, four echelons):
 [`docs/numerics-contract.md`](docs/numerics-contract.md).
 
-Before opening a bug, run the public check:
+Before opening a bug, run:
 
 ```python
 from pararnn import ParaGRU, NewtonConfig, verify_agreement
@@ -22,23 +22,22 @@ print(report.ok, report.max_abs)  # True, … if healthy
 `report.ok` uses the same band as the numerics tests (default atol `1e-4` in
 float32). Paste `report.to_dict()` into the issue if it fails.
 
-At train start you can set `NewtonConfig(verify_first_step=True)` on a
-`ParaRNN`: the first Newton forward runs that check once, then training
-continues at full speed.
+At train start, `NewtonConfig(verify_first_step=True)` on a `ParaRNN` runs
+that check once on the first Newton forward, then continues at full speed.
 
 ## Residual gate vs agreement τ?
 
-**Different thresholds.**
+Two independent thresholds:
 
 - **Agreement τ** — gap between Newton trajectory and sequential unroll.
-  Brand claim. Checked by `verify_agreement` / CI / `verify_first_step`.
+  Product claim. `verify_agreement` / CI / `verify_first_step`.
 - **Residual** `max|F(H)|` — Newton solver health.
   `residual_fail=1.0` (default) raises `NewtonDivergenceError`; a warn fires
   near `1e-3`. Logged as `newton_residual` next to loss.
 
-A finite loss with no `DivergenceError` does **not** prove sequential match.
-A residual ≥ 1 means the solver left its basin — do not step the
-optimizer on that batch.
+Finite loss with no `DivergenceError` leaves agreement unchecked — run
+`verify_agreement`. Residual ≥ 1 means the solver left its basin; skip
+`optimizer.step()` on that batch.
 
 ## CUDA OOM / long T / which flag?
 
@@ -48,22 +47,20 @@ Usually geometry (width / heads / stored H*). Cheat sheet:
 2. Hopfield → keep `d_h ≤ 32`.
 3. RWKV-7 on long text (12 GiB) → slim `n_heads=1`, `d_head=16`.
 
-Full decision tree + peak-mem smoke:
-[`docs/oom-cookbook.md`](docs/oom-cookbook.md).
-OOM is loud; silent wrong answers are the numerics contract
-([`docs/numerics-contract.md`](docs/numerics-contract.md)).
+Decision tree + peak-mem smoke: [`docs/oom-cookbook.md`](docs/oom-cookbook.md).
+Silent wrong answers: [`docs/numerics-contract.md`](docs/numerics-contract.md).
 
 ## What about Turing GPUs (e.g. RTX 2080 Ti)?
 
-They are first-class for **fp32 / fp16 fused** Newton — this lab’s benches
-include an RTX 2080 Ti. Only **bf16 fused** needs Ampere+ (CC ≥ 8.0); on
-Turing use fp16 or fp32 (algebra inside the kernel stays fp32 either way).
+First-class for **fp32 / fp16 fused** Newton — this lab’s benches include an
+RTX 2080 Ti. **bf16 fused** needs Ampere+ (CC ≥ 8.0); on Turing use fp16 or
+fp32 (algebra inside the kernel stays fp32 either way).
 
 ## What if I am on CPU, Mac, or Windows?
 
-There is no fused CUDA path. Use
-`NewtonConfig(scan_backend="auto")` — eager Newton+scan still matches the
-sequential oracle within the numerics contract (`verify_agreement`).
+No fused CUDA path. `NewtonConfig(scan_backend="auto")` selects eager
+Newton+scan; it still matches the sequential oracle within the numerics
+contract (`verify_agreement`).
 
 ## What is critical Newton depth (K*)?
 
@@ -72,8 +69,8 @@ is the smallest iteration count where the parallel result still matches a
 plain sequential for-loop within tolerance τ≈1e-4, as a function of sequence
 length T.
 
-For several cells here K\* stays **2** from short T through T=131072 (does not
-grow with T). RWKV-7 is an exact parallel scan, so K\*=0. Set
+For several cells here K\* stays **2** from short T through T=131072 (flat in
+T). RWKV-7 is an exact parallel scan, so K\*=0. Set
 `NewtonConfig(max_iters=None)` to use the measured schedules in
 `pararnn.solvers.newton.k_star`.
 
@@ -99,13 +96,13 @@ re-run the bug-report env one-liner.
 Internally, `require_fused_triton()` (first fused / Triton scan launch) checks
 the 3.6.x pin, then runs a one-shot CUDA JIT smoke (masked load +
 `associative_scan`). Call `pararnn.kernels.check_triton_environment()`
-yourself before a long train if you want the same gate early. Fallback:
+before a long train if you want the same gate early. Fallback:
 `NewtonConfig(scan_backend="eager")`. Loads use `precision.load_acc` /
 `store_acc` (masked `tl.load`).
 
 ## Does `torch.compile` / autocast work?
 
-Yes under the documented wrappers — see
+Yes under the documented wrappers —
 [`docs/compile-amp.md`](docs/compile-amp.md).
 
 - **`fullgraph=True`:** `compile_safe_config()` (fixed `K`, no residual host
@@ -136,13 +133,26 @@ Matrix + smoke: [`docs/shapes-layout.md`](docs/shapes-layout.md).
 with `T=1`, decode uses Triton `decode_step` when available. Force either path
 with `solver='newton'|'sequential'`.
 
+## How do I pass recurrent state between decode steps?
+
+Fixed-size carry `(slots, d_h)` per layer — size stays constant as you
+generate. Prefill with `sequential_apply` / Newton, then `decode_wx` +
+`decode_step(..., out=)` for each `T=1` token. CausalLM:
+`ParaSLSTMForCausalLM.generate`. CUDA Graph: pin `wx` / state buffers (see
+`examples/decode_step.py`). Contract: [`docs/inference.md`](docs/inference.md).
+
+## Why Mamba1 metadata for the vLLM plugin?
+
+`ParaSLSTMRecurrentLayer` subclasses `MambaBase` with `mamba_type=MAMBA1`.
+The worker allocates mamba temporal pages `(C, 4, d_h)` and
+`Mamba1AttentionMetadata`. Boundaries: [`docs/vllm.md`](docs/vllm.md).
+
 ## Where are benches?
 
-Under [`scripts/`](scripts/README.md) (not shipped in the wheel). Peers often
-name this `benchmarks/`; here the entrypoint is `scripts/bench_*.py` plus
+[`scripts/`](scripts/README.md) (source tree; absent from the wheel). Index:
 [`scripts/README.md`](scripts/README.md).
 
 ## Is Apple ml-pararnn in this package?
 
-No. `third_party/ml-pararnn` is a local read-only reference under Apple’s
+`third_party/ml-pararnn` is a local read-only reference under Apple’s
 license. Public MIT code is reimplemented from the paper equations.

@@ -1,19 +1,17 @@
 # Shapes, layout, and packed `cu_seqlens`
 
-Peer libraries drown in `CUDA illegal memory access` after `.transpose()`,
-slicing, or ragged packs. This page is the ParaRNN contract: what we copy,
-what we fuse, and what we refuse loudly.
+Contract for contiguity and ragged packs: what we copy, what we fuse, and
+what we refuse loudly.
 
 ## Layout (contiguity)
 
 Fused / Triton Newton paths **copy** inputs to a contiguous layout before
-pointer arithmetic (`tests/numerics/test_noncontiguous.py`). Strided
+device arithmetic (`tests/numerics/test_noncontiguous.py`). Strided
 `(B, T, d)` views from `[:, ::2]`, feature skips, or permute round-trips
 must still match sequential within the numerics band.
 
-Practical rule: prefer contiguous batch-first `(B, T, d_in)` when you can.
-If you pass a view, expect an extra copy on the fused path — correct
-results, slightly more traffic.
+Prefer contiguous batch-first `(B, T, d_in)` when you can. A view still
+works on the fused path with an extra copy — correct results, more traffic.
 
 `W_x` and some packed VJP helpers still see caller strides in places; the
 non-contig suite covers the train forward+backward surface for diag
@@ -35,13 +33,13 @@ Layout: `x` with batch `1` and length `N`, plus `cu_seqlens` of length
 | `ParaLSTM` / `ParaSLSTM(mix='diag')` | fused when eligible | fused → Triton scan fallback at segment heads | See newton package docstring |
 | Dense / Hopfield / others | eager / triton per cell | follow `_resolve_backend` | Prefer pad to rectangular if unsure |
 
-There is **no silent** `fused` → `eager` remap when the user pins
-`scan_backend='fused'`. That path raises.
+Pinned `scan_backend='fused'` with an unsupported pack raises. There is no
+silent remap to eager on that pin.
 
 ```python
 from pararnn import NewtonConfig, ParaRNN
 
-# Ragged pack: use auto (or eager). Do not pin fused on head-mix cells.
+# Ragged pack: scan_backend="auto" (or "eager"). Head-mix + explicit fused raises.
 cfg = NewtonConfig(scan_backend="auto", max_iters=3)
 # x: (1, N, d_in), cu_seqlens: (S+1,)
 y = model(x, cu_seqlens=cu_seqlens)
@@ -53,7 +51,7 @@ Pad to a rectangular batch when you need head-fused speed on variable lengths.
 
 `.eval()` / `solver='sequential'` on CUDA with `T=1` uses Triton
 `decode_step` when available. Keep the single-token layout contiguous;
-see [`docs/vllm.md`](vllm.md) / continuous batch notes for serve packing.
+see [`inference.md`](inference.md) / [`vllm.md`](vllm.md) for serve packing.
 
 ## Smoke (paste into a bug)
 
@@ -80,5 +78,5 @@ Packed / head / fused failures: include `scan_backend`, `mix`, and whether
 
 - [`backward-scan-cap.md`](backward-scan-cap.md) — long-T tile pads
 - [`oom-cookbook.md`](oom-cookbook.md) — VRAM geometry
-- [`numerics-contract.md`](numerics-contract.md) — agreement vs residual
+- [`numerics-contract.md`](numerics-contract.md) — agreement and residual
 - [`compile-amp.md`](compile-amp.md) — `verify_first_step` skips packed `cu_seqlens`

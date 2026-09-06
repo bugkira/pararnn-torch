@@ -34,7 +34,7 @@ green. Document tolerances per dtype (float32 vs bfloat16) from unit roundoff.
 
 User-visible changes go under `[Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md).
 Use the PR template checklist. Lab notes under `docs/internal/` stay local
-(gitignored); do not commit Apple trees under `third_party/`.
+(gitignored). Apple trees under `third_party/` stay local reference only.
 
 ## Scripts
 

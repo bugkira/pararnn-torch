@@ -8,7 +8,7 @@ Package **`pararnn-torch`**, import **`pararnn`**. Python 3.10+.
 # when published on PyPI:
 pip install pararnn-torch
 
-# bleeding edge / until first PyPI release:
+# from git (until / beside PyPI):
 pip install "pararnn-torch @ git+https://github.com/bugkira/pararnn-torch"
 ```
 

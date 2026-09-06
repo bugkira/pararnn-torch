@@ -1,7 +1,7 @@
 # Cell catalog
 
-Drop-in snippets for each cell in the Models table. README keeps the layered
-entrypoints (block → CausalLM → `ParaRNN`); this page holds the zoo.
+Snippets for each cell in the Models table. README keeps block → CausalLM →
+`ParaRNN`; this page is the zoo.
 
 Shared pattern: wrap with `ParaRNN` or call `newton_apply` / `sequential_apply`.
 `.train()` → parallel Newton · `.eval()` → sequential `step` · CUDA `T=1` →
@@ -120,7 +120,7 @@ On 12 GiB cards, wall-clock at T ≳ 64k prefers slim
 
 ## ParaTitans
 
-Shallow L=1 surprise-GD memory. Deep multi-layer MLP memory stays parked.
+Shallow L=1 surprise-GD memory. Deep multi-layer MLP memory is parked.
 
 ```python
 from pararnn import ParaTitans

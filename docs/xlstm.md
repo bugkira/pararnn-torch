@@ -6,7 +6,7 @@
 
 `ParaSLSTM` state is `(B, T, 4, d_h) = (c, n, m, h)` with hidden slot 3 (`pararnn.layout`).
 
-Three mix modes; they are not interchangeable for training:
+Three mix modes (pick one for a given training run; Jacobians differ):
 
 | `mix` | Role | Scan / kernel |
 |---|---|---|
@@ -89,7 +89,7 @@ flag at each `cu_seqlens[:-1]`). Triton `scan_diag` and fused ParaGRU
 compare those starts to `offs_t` in-tile. LSTM/sLSTM packed fused uses
 the Triton scan path. Eager Hillis–Steele remains the CPU / fallback scan.
 
-`bidirectional` and `proj_size` are outside the current API.
+`bidirectional` and `proj_size` are unplanned for the current API.
 
 ### Scan backend
 

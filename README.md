@@ -12,15 +12,14 @@
 **Train nonlinear RNNs in parallel over the sequence, decode one step at a
 time.** Package **`pararnn-torch`**, import **`pararnn`**.
 
-Ordinary GRU/LSTM/sLSTM (and cousins) usually walk token-by-token. That is
-fine for generation, and slow for training long contexts. ParaRNN trains the
-*same* cell with a few Newton updates + a parallel scan over time — so
-training cost grows much more gently with sequence length `T`, while
-`.eval()` still uses the familiar one-step recurrence.
+GRU/LSTM/sLSTM (and cousins) walk token-by-token at decode. ParaRNN trains
+the *same* cell with a few Newton updates + a parallel scan over time, so
+train wall-clock scales gently with sequence length `T`. `.eval()` keeps the
+one-step recurrence.
 
 Alpha. Fused kernels need **Linux + NVIDIA CUDA** (fp32/fp16; lab includes
-RTX 2080 Ti). **bf16 fused** needs Ampere+ (CC ≥ 8.0). CPU / Mac / Windows
-without CUDA use the eager fallback via `scan_backend="auto"`.
+RTX 2080 Ti). **bf16 fused** needs Ampere+ (CC ≥ 8.0). Elsewhere
+`scan_backend="auto"` selects the eager Newton+scan path.
 
 - [News](#news)
 - [What you get](#what-you-get)
@@ -53,28 +52,25 @@ without CUDA use the eager fallback via `scan_backend="auto"`.
 
 ## What you get
 
-A library of **nonlinear recurrent cells** with one training/inference API —
-in the same niche as FlashAttention / Flash Linear Attention, for recurrence
-instead of attention.
+Nonlinear recurrent cells with one train / decode API (paper Alg. 1):
 
-- **Fast training on long `T`** — a handful of Newton iterations + parallel
-  scan (paper Alg. 1); measured **100–1000×** vs walking the same cell
-  token-by-token
-- **Cheap decode** — `.eval()` uses sequential `step`; on CUDA with `T=1`,
-  a fused `decode_step` (+ optional CUDA graphs)
-- **One API, many cells** — GRU, LSTM, sLSTM, Liquid CfC, Hopfield, RWKV-7,
-  Titans-style memory, …
-- **Stack-ready** — residual trunk block, CausalLM, paged state, continuous
-  batch, speculative verify, optional vLLM registration
-- **Honest iteration budgets** — we measure how many Newton steps you need
-  vs `T` (see [Glossary](#glossary)); `max_iters=None` uses those tables
-- **Train hygiene** — packed backward, `torch.compile` presets, DDP / FSDP2
+- **Long-`T` train** — Newton iterations + parallel scan; measured
+  **100–1000×** vs sequential unroll of the same cell
+- **Decode** — `.eval()` sequential `step`; CUDA `T=1` → fused `decode_step`
+  (CUDA graphs with pinned `out=` buffers)
+- **Cell zoo** — GRU, LSTM, sLSTM, Liquid CfC, Hopfield, RWKV-7, Titans-style
+  memory, …
+- **Stack** — `ParaSLSTMBlock`, CausalLM, paged state, continuous batch,
+  speculative verify, optional vLLM plugin
+- **K\*(T)** — measured Newton budgets vs `T` ([Glossary](#glossary));
+  `max_iters=None` reads those tables
+- **Train path** — packed VJP, `compile_safe_config()`, DDP / FSDP2
 
-**Swap paths** (details in [`docs/adoption.md`](docs/adoption.md)):
+**Swap paths** ([`docs/adoption.md`](docs/adoption.md)):
 
 - Attention trunk → `ParaSLSTMBlock`
 - Dreamer RSSM → `ParaGRU(mix='head', n_heads=8)`
-- Liquid / CfC → `ParaCfC` (put Δt in the last channel of `x`)
+- Liquid / CfC → `ParaCfC` (Δt in the last channel of `x`)
 
 ## Glossary
 
@@ -86,8 +82,8 @@ instead of attention.
 | **Newton + scan** | Parallel train path: refine a whole-sequence guess with a few Newton steps; each step uses an associative scan over `T`. |
 | **K / `max_iters`** | Number of Newton iterations you budget per forward. |
 | **K\*(T)** | Smallest `K` where parallel output still matches sequential within tolerance τ≈1e-4. Measured per cell vs `T`; often **constant** (2) through 131k tokens. |
-| **Agreement τ** | Max abs gap Newton vs sequential. Brand claim. Checked by `verify_agreement`. |
-| **Residual gate** | `max|F(H)|`. Explosion fuse (`residual_fail=1.0` → `NewtonDivergenceError`). Separate from τ. |
+| **Agreement τ** | Max abs gap Newton vs sequential. Product claim. `verify_agreement`. |
+| **Residual gate** | `max|F(H)|`. Explosion fuse (`residual_fail=1.0` → `NewtonDivergenceError`). |
 | **Fused** | Triton CUDA kernel for Newton+scan (Linux + NVIDIA; bf16 needs Ampere+). |
 | **Jacobian class** | Structure of ∂f/∂h — `diag` / `head` / `dense` / matrix-state — picks which kernel/scan we use. |
 | **`verify_agreement`** | One-batch Newton vs sequential check ([numerics contract](docs/numerics-contract.md)). |
@@ -124,7 +120,7 @@ serve hooks are this repo’s extras.
 # when published on PyPI:
 pip install pararnn-torch
 
-# bleeding edge / until first PyPI release:
+# from git (until / beside PyPI):
 pip install "pararnn-torch @ git+https://github.com/bugkira/pararnn-torch"
 
 # editable:
@@ -133,13 +129,13 @@ uv sync --group dev
 uv run pytest -q -m "not cuda"
 ```
 
-PyPI Trusted Publishing is wired in
-[`.github/workflows/release.yml`](.github/workflows/release.yml). Hardware and
-Triton troubleshooting: [`INSTALL.md`](INSTALL.md) · [`FAQs.md`](FAQs.md).
+PyPI Trusted Publishing:
+[`.github/workflows/release.yml`](.github/workflows/release.yml). Hardware /
+Triton: [`INSTALL.md`](INSTALL.md) · [`FAQs.md`](FAQs.md).
 
-Place modules with `.to(device)` like any `nn.Module`. Data parallel:
-[`docs/distributed.md`](docs/distributed.md). Lab benches:
-[`scripts/`](scripts/README.md) (omitted from the wheel).
+Place modules with `.to(device)`. Data parallel:
+[`docs/distributed.md`](docs/distributed.md). Lab benches (source tree only):
+[`scripts/`](scripts/README.md).
 
 ## Quickstart
 
@@ -254,8 +250,7 @@ uv run python scripts/slstm_vs_flashrnn.py --config configs/bench/newton_slstm_f
 
 ## Usage
 
-Layered entrypoints live above. Cell zoo snippets:
-[`docs/cells.md`](docs/cells.md).
+Cell zoo: [`docs/cells.md`](docs/cells.md).
 
 ### sLSTM / xLSTM-style
 
@@ -295,9 +290,9 @@ Distributed wrap: [`docs/distributed.md`](docs/distributed.md) ·
 
 ## Evaluation
 
-- **Numerics** — parallel vs sequential agreement (`pytest -m cuda`); residual
-  history if Newton fails to converge
-- **Expressivity** — running-XOR parity ([`examples/parity.py`](examples/parity.py))
+- **Numerics** — parallel ↔ sequential (`pytest -m cuda`); residual history on
+  `NewtonDivergenceError`
+- **Expressivity** — running-XOR ([`examples/parity.py`](examples/parity.py))
 - **Wall-clock** — [`scripts/bench_k_star.py`](scripts/bench_k_star.py),
   [`scripts/slstm_vs_flashrnn.py`](scripts/slstm_vs_flashrnn.py)
 - **LM smoke** — BabyLM notes under [`results/`](results/)
@@ -324,7 +319,8 @@ More: [`scripts/README.md`](scripts/README.md). Distributed demos:
   `newton_apply` / `sequential_apply` (`ParaM2RNN`, `ParaRWKV7`).
 - **Trunk** — `ParaSLSTMBlock(d_model, mlp_ratio=4)` ([`docs/adoption.md`](docs/adoption.md)).
 - **CausalLM / serve** — `ParaSLSTMForCausalLM`, `BlockStackPool`,
-  `vllm.general_plugins` ([`docs/vllm.md`](docs/vllm.md)).
+  `vllm.general_plugins` ([`docs/inference.md`](docs/inference.md),
+  [`docs/vllm.md`](docs/vllm.md)).
 - **Solver** — `NewtonConfig(scan_backend="auto", max_iters=None|int)`;
   `picard_iters` warms the first guess for sLSTM / M²RNN;
   `verify_first_step=True` for a one-shot agreement smoke on `ParaRNN`;
@@ -348,6 +344,7 @@ h = sequential_apply(cell, x)
 [`oom-cookbook.md`](docs/oom-cookbook.md) ·
 [`compile-amp.md`](docs/compile-amp.md) ·
 [`shapes-layout.md`](docs/shapes-layout.md) ·
+[`inference.md`](docs/inference.md) ·
 [`structure.md`](docs/structure.md) · [`INSTALL.md`](INSTALL.md) ·
 [`FAQs.md`](FAQs.md).
 
@@ -362,6 +359,8 @@ h = sequential_apply(cell, x)
   [OOM cookbook](docs/oom-cookbook.md) (Hopfield `d_h` cap, RWKV slim heads).
 - **Shapes / packing:** [`docs/shapes-layout.md`](docs/shapes-layout.md) —
   contiguous copies on fused paths; `cu_seqlens` support matrix.
+- **Inference / carry:** [`docs/inference.md`](docs/inference.md) —
+  `decode_step` + `out=`, `generate()`, vLLM via Mamba1 pages.
 - **Determinism:** packed VJP uses tile `tl.sum` then `.sum` (no `tl.atomic*`);
   set `CUBLAS_WORKSPACE_CONFIG=:4096:8` under
   `torch.use_deterministic_algorithms(True)`.

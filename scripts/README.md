@@ -1,7 +1,8 @@
 # Scripts
 
-Development benches, training entrypoints, and diagnostics. Omitted from the
-wheel. Prefer [`examples/`](../examples/) for first contact with the API.
+Development benches, training entrypoints, and diagnostics. Present in the
+source tree; absent from the wheel. First contact with the API:
+[`examples/`](../examples/).
 
 Configs live under [`configs/`](../configs/) (`train/`, `bench/`, `cells/`).
 
@@ -47,7 +48,7 @@ uv run python scripts/train_babylm.py --config configs/train/babylm.yaml
 One-off probes: `diag_*.py`, `eval_*_diag.py`, `profile_hotpath.py`,
 `compare_naive.py`, `bench_slstm_*.py`, `bench_packed_vjp.py`,
 `bench_hybrid_pk.py`, `bench_newton_patch.py`, `seq_parallel_ranks.py`.
-Useful when chasing a residual or scan bug; not a public API contract.
+Useful when chasing a residual or scan bug. Lab-only; no public API promise.
 
 ## Utilities
 

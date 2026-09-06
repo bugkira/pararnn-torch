@@ -5,7 +5,7 @@ labels: enhancement
 ---
 
 **Summary**
-What should exist that does not today?
+What should exist?
 
 **Use case**
 Who needs it (train / decode / research cell / serve)?

@@ -1,8 +1,7 @@
 # `torch.compile` and Autocast / AMP
 
-Supported-wrapper contract. Tickets are few; debug cost per ticket is high.
-Source of truth in CI: `tests/numerics/test_compile.py`,
-`tests/numerics/test_autocast.py`.
+Wrapper contract for Dynamo and AMP. CI:
+`tests/numerics/test_compile.py`, `tests/numerics/test_autocast.py`.
 
 ## Cheat sheet
 
@@ -41,7 +40,7 @@ module / input dtype).
 | `GradScaler` around the step | Fine; scaler sees the loss you pass it |
 
 Half-precision training recipe: explicit `.to(dtype)` on cell/`ParaRNN` and
-`x`, then optional GradScaler. Autocast alone will leave Newton in fp32.
+`x`, then optional GradScaler. Autocast alone leaves Newton in fp32.
 
 ## `torch.compile` boundaries
 
@@ -70,9 +69,8 @@ Paste:
 
 - `torch`, CUDA, Triton, GPU (bug-template one-liner)
 - whether you used `compile_safe_config` / which `scan_backend`
-- module dtype vs autocast dtype
+- module dtype and autocast dtype
 - `torch._dynamo.explain(...)` graph-break summary if compile fails
 
 Related: [`numerics-contract.md`](numerics-contract.md),
-[`oom-cookbook.md`](oom-cookbook.md), [`compile-amp.md`](compile-amp.md),
-README Compatibility.
+[`oom-cookbook.md`](oom-cookbook.md), README Compatibility.

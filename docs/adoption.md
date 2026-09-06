@@ -1,7 +1,7 @@
 # Adoption: drop-in recurrent trunk
 
-This page is the short path from install to a working stack. Low-level cell
-APIs live in [`docs/cells.md`](cells.md) and [`docs/xlstm.md`](xlstm.md).
+Short path from install to a working stack. Cell APIs:
+[`docs/cells.md`](cells.md), [`docs/xlstm.md`](xlstm.md).
 
 ## Replace an Attention block
 
@@ -51,7 +51,8 @@ model = ParaSLSTMForCausalLM.from_pretrained("./ckpt")
 
 Smoke: [`examples/causal_lm_smoke.py`](../examples/causal_lm_smoke.py).
 Packed continuous batch: [`examples/continuous_batch.py`](../examples/continuous_batch.py).
-Serve plugin: [`docs/vllm.md`](vllm.md).
+Serve: [`inference.md`](inference.md) (carry / `decode_step`) ·
+[`vllm.md`](vllm.md) (plugin).
 
 ## Dreamer / RSSM recurrent slot
 
@@ -84,8 +85,9 @@ from pararnn import ParaNLRU, ParaRNN
 core = ParaRNN(ParaNLRU(d_model, d_model))
 ```
 
-This is the same diag-Jacobian class as fused ParaGRU; it is not a
-weight-compatible drop-in for Griffin's $`a^{c r_t}`$ parameterization.
+This shares the diag-Jacobian class with fused ParaGRU. Griffin's
+$`a^{c r_t}`$ parameterization needs its own weight map; treat `ParaNLRU` as
+a nonlinear slot with the same Newton path, with separate checkpoints.
 
 ## Liquid / irregular-Δt slot
 
@@ -143,14 +145,14 @@ s2 = newton_apply(cell, x)
 ```
 
 This is a factorized matrix-state delta brick (same class as the M²RNN
-linear warm-start). Full RWKV-7 token-mix / Wind CUDA stay outside the
-library.
+linear warm-start). Full RWKV-7 token-mix and Wind CUDA live in the RWKV
+stack.
 
 ## Titans / shallow neural memory slot
 
 For a vector memory with one surprise-GD associative step plus a diagonal
 nonlinear polish (Behrouz et al. arXiv:2501.00663 flavor), use
-`ParaTitans`. Deep multi-layer MLP memory stays parked:
+`ParaTitans`. Deep multi-layer MLP memory is parked:
 
 ```python
 from pararnn import ParaTitans, ParaRNN
@@ -162,9 +164,8 @@ The Newton Jacobian is channelwise diagonal (fused Alg. 1 on CUDA).
 
 ## Scope
 
-- Local `save_pretrained` / `from_pretrained` (`config.json` + `model.safetensors`).
-  Hugging Face `AutoModel` registration stays outside this package.
-- Compose Attention / GQA in your trainer next to `ParaSLSTMBlock` when you
-  want a hybrid stack.
-- RSSM / Dreamer keep encoder, prior, and actor in the RL codebase; this
-  library supplies the recurrent `h_t` slot.
+Local `save_pretrained` / `from_pretrained` (`config.json` + `model.safetensors`).
+Hugging Face `AutoModel` registration is a separate integration workstream.
+Compose Attention / GQA in your trainer next to `ParaSLSTMBlock` for a hybrid
+stack. RSSM / Dreamer keep encoder, prior, and actor in the RL codebase; this
+library supplies the recurrent `h_t` slot.

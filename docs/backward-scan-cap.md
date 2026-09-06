@@ -8,7 +8,7 @@
 
 Leaf pads: LSTM ``64×64=4096``, unfused sLSTM scan ``64×32=2048``, fused sLSTM ``512×32=16384``.
 
-**Head GRU (``ParaGRU(mix='head')``).** No hard T pad: fused / streamed-``A`` / tiled paths walk time sequentially in one program per ``(batch, head)``. Checked through **T=4096** (Newton, reverse, VJP, fwd+bwd) on CUDA; dense ``scan_backend='eager'`` oracle builds ``(B,T,d_h,d_h)`` and OOMs first — compare factorized paths instead. Test: ``test_paragru_head_long_t_fused_smoke``.
+**Head GRU (``ParaGRU(mix='head')``).** No hard T pad: fused / streamed-``A`` / tiled paths walk time sequentially in one program per ``(batch, head)``. Checked through **T=4096** (Newton, reverse, VJP, fwd+bwd) on CUDA; dense ``scan_backend='eager'`` oracle builds ``(B,T,d_h,d_h)`` and OOMs first — use the factorized paths for long-T. Test: ``test_paragru_head_long_t_fused_smoke``.
 
 Median latency (ms), float32, RTX 2080 Ti, ``K=3``, ``scripts/bench_gru_head.py`` / ad-hoc long-T:
 

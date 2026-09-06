@@ -1,17 +1,16 @@
 # Long-T / OOM cookbook
 
 A `CUDA out of memory` on the first train steps usually means the cell’s
-memory geometry does not fit the card (hidden width, heads, or stored
-\(H^*\)). This page is the cheat sheet before you open an issue.
+memory geometry exceeds the card (hidden width, heads, or stored \(H^*\)).
+Cheat sheet before you open an issue.
 
-Silent wrong answers (Newton vs sequential) are a different failure mode —
-see [`numerics-contract.md`](numerics-contract.md).
+Silent wrong answers (Newton ↔ sequential): [`numerics-contract.md`](numerics-contract.md).
 
 ## Cheat sheet
 
 1. **Train GRU / sLSTM (diag) toward ~100k tokens?**  
-   Use `NewtonConfig(recompute=True)` so backward rematerializes \(H^*\)
-   instead of keeping the full trajectory in `save_for_backward`.
+   `NewtonConfig(recompute=True)` rematerializes \(H^*\) in backward; the
+   Autograd Function drops the full trajectory from `save_for_backward`.
 
 2. **Hopfield?**  
    Keep `d_h ≤ 32`. The dense Jacobian + `scan_dense` path is
@@ -19,7 +18,7 @@ see [`numerics-contract.md`](numerics-contract.md).
    Lab: \(d_h=32\), \(T=2048\) peaks ~617 MiB (dense \(J\)).
 
 3. **RWKV-7 on long context (consumer 12 GiB)?**  
-   Use **slim heads**: `n_heads=1`, `d_head=16`. State is
+   Slim heads: `n_heads=1`, `d_head=16`. State is
    `(B, T, n_heads, d_head, d_head)` — a fat `4×16` (or larger) layout OOMs
    near \(T \gtrsim 64\mathrm{k}\) on 12 GiB. README long-T benches use slim.
 
@@ -63,7 +62,7 @@ The pain is **train** with a stored full-sequence \(H^*\).
 
 ## Lab anchors (order of magnitude)
 
-Measured on this repo’s cards; treat as envelopes, not SLAs.
+Measured on this repo’s cards. Use as triage envelopes.
 
 | Setup | Note |
 |---|---|
@@ -102,6 +101,6 @@ the issue.
 | `NewtonConfig(recompute=True)` | Level-2: drop \(H^*\) from the Autograd Function; rematerialize in backward |
 | `chunk_len` / `fused_time_loop` | Windowed Newton along \(T\) (different residual path — verify agreement) |
 | `torch.utils.checkpoint` | Outer rematerialization across stacked blocks |
-| `max_iters=None` | Measured \(K^*(T)\) — numerics budget, not a VRAM fix |
+| `max_iters=None` | Measured \(K^*(T)\) — Newton iteration budget; VRAM still scales with geometry |
 
 Tests: `tests/numerics/test_recompute.py`.
