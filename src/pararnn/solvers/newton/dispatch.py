@@ -73,6 +73,34 @@ def _resolve_backend(
             picard_adapt=auto_p and isinstance(cell, ParaSLSTM),
         )
     requested = config.scan_backend
+    # ParaM2RNN: factorized Kronecker; CUDA auto/fused → Triton SRAM (K,V≤64).
+    if getattr(cell, "jac_structure", None) == "m2rnn":
+        from pararnn.kernels.newton_m2rnn import can_fuse_m2rnn
+
+        k_dim = int(getattr(cell, "k_dim", 0))
+        v_dim = int(getattr(cell, "v_dim", 0))
+        if requested == "fused" and not can_fuse_m2rnn(k_dim, v_dim, x):
+            raise TypeError(
+                "ParaM2RNN fused Newton needs CUDA float16/float32/bfloat16 "
+                f"(got {k_dim}×{v_dim} {x.dtype} {x.device})"
+            )
+        if requested in ("auto", "fused") and can_fuse_m2rnn(k_dim, v_dim, x):
+            if not torch.compiler.is_compiling() and requested == "auto":
+                log.debug(
+                    "scan_backend_auto",
+                    extra={
+                        "chosen": "fused",
+                        "cell": "ParaM2RNN",
+                        "device": str(x.device),
+                        "dtype": str(x.dtype),
+                        "k_dim": k_dim,
+                        "v_dim": v_dim,
+                    },
+                )
+            return replace(config, scan_backend="fused")
+        if requested == "auto":
+            return replace(config, scan_backend="eager")
+        return config
     # ParaSLSTM head: auto/triton/fused → factorized fused path on CUDA;
     # eager keeps the dense-J oracle. Packed cu_seqlens: no silent fused→eager.
     if (

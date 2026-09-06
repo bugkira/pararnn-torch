@@ -80,8 +80,15 @@ def _resolve_picard(cell: nn.Module, x: Tensor, config: NewtonConfig) -> NewtonC
             return replace(config, picard_iters=chosen)
         return replace(config, picard_iters=0)
     if config.picard_iters and not isinstance(cell, ParaSLSTM):
+        from pararnn.cells.para_m2rnn import ParaM2RNN
+
+        if isinstance(cell, ParaM2RNN):
+            # picard_iters>=1: frozen-W warm-start (one W=0 scan). Extra
+            # values are treated the same (single warm-start).
+            return config
         raise TypeError(
-            f"NewtonConfig(picard_iters=) is ParaSLSTM only (got {type(cell).__name__})"
+            f"NewtonConfig(picard_iters=) is ParaSLSTM / ParaM2RNN only "
+            f"(got {type(cell).__name__})"
         )
     return config
 

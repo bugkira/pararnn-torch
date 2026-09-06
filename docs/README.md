@@ -10,5 +10,9 @@ Triton ``@jit`` kernels stay module-level one-liners.
 | [`structure.md`](structure.md) | Layout of `src/`, tests, configs |
 | [`backward-scan-cap.md`](backward-scan-cap.md) | Long-T scan: chunked adjoint; hierarchical / eager-aggregate tile scan |
 | [`vllm.md`](vllm.md) | vLLM plugin + `BlockStackPool` continuous batch / CausalLM |
+| [`sources/`](sources/) | Local PDF cache of upstream papers (`fetch_papers.sh`; `*.pdf` gitignored) |
 | [`../scripts/README.md`](../scripts/README.md) | Bench / train / diagnostic script index |
 | [`../notebooks/README.md`](../notebooks/README.md) | Colab / Jupyter ParaSLSTM demo |
+
+Drafts of *our* notes/preprints live under `internal/papers/` (gitignored):
+`ParaSLSTM/`, `M2RNN/`.

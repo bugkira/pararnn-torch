@@ -12,7 +12,7 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
+from pararnn.cells import ParaGRU, ParaLSTM, ParaM2RNN, ParaSLSTM
 from pararnn.solvers import NewtonConfig, newton_apply
 
 # Dynamo eager: same semantics as inductor without a 10 s+ CPU compile
@@ -27,7 +27,7 @@ _CPU_BACKEND = "eager"
 _COMPILE_ATOL = 1e-5
 _COMPILE_RTOL = 1e-5
 
-_KINDS = ("gru", "lstm", "slstm")
+_KINDS = ("gru", "lstm", "slstm", "m2rnn")
 
 
 def compile_safe_config(*, scan_backend: str = "eager") -> NewtonConfig:
@@ -49,7 +49,12 @@ def compile_safe_config(*, scan_backend: str = "eager") -> NewtonConfig:
 
 
 def _make_cell(kind: str, device: torch.device | None = None) -> nn.Module:
-    kwargs: dict[str, object] = {"input_size": 4, "hidden_size": 8}
+    if kind == "m2rnn":
+        kwargs: dict[str, object] = {"d_in": 4, "k_dim": 4, "v_dim": 4}
+        if device is not None:
+            kwargs["device"] = device
+        return ParaM2RNN(**kwargs)
+    kwargs = {"input_size": 4, "hidden_size": 8}
     if device is not None:
         kwargs["device"] = device
     if kind == "gru":
@@ -57,6 +62,13 @@ def _make_cell(kind: str, device: torch.device | None = None) -> nn.Module:
     if kind == "lstm":
         return ParaLSTM(**kwargs)
     return ParaSLSTM(**kwargs, mix="diag")
+
+
+def _x_for(kind: str, batch: int, time: int, device: torch.device | None = None) -> Tensor:
+    d_in = 4
+    scale = 0.15 if kind == "m2rnn" else 1.0
+    kw = {"device": device} if device is not None else {}
+    return scale * torch.randn(batch, time, d_in, **kw)
 
 
 def _fwd(cell: nn.Module, config: NewtonConfig):
@@ -75,7 +87,7 @@ def _assert_close(got: Tensor, ref: Tensor) -> None:
 def test_compile_safe_inference_matches_eager(kind: str) -> None:
     torch.manual_seed(0)
     cell = _make_cell(kind).eval()
-    x = torch.randn(2, 8, 4)
+    x = _x_for(kind, 2, 8)
     cfg = compile_safe_config()
     fn = _fwd(cell, cfg)
     compiled = torch.compile(fn, backend=_CPU_BACKEND)
@@ -89,7 +101,7 @@ def test_compile_safe_training_matches_eager(kind: str) -> None:
     cell_c = _make_cell(kind)
     cell_c.load_state_dict(cell_e.state_dict())
     cfg = compile_safe_config()
-    x_e = torch.randn(2, 8, 4, requires_grad=True)
+    x_e = _x_for(kind, 2, 8).requires_grad_(True)
     x_c = x_e.detach().clone().requires_grad_(True)
     y_e = newton_apply(cell_e, x_e, cfg)
     w = torch.randn_like(y_e)
@@ -159,12 +171,12 @@ def test_compile_safe_fullgraph_training_matches_eager() -> None:
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("kind", ["gru", "lstm", "slstm"])
+@pytest.mark.parametrize("kind", ["gru", "lstm", "slstm", "m2rnn"])
 @torch.no_grad()
 def test_compile_safe_fused_inference_matches_eager(kind: str, cuda_device: torch.device) -> None:
     torch.manual_seed(4)
     cell = _make_cell(kind, device=cuda_device).eval()
-    x = torch.randn(2, 16, 4, device=cuda_device)
+    x = _x_for(kind, 2, 16, device=cuda_device)
     cfg = compile_safe_config(scan_backend="auto")
     fn = _fwd(cell, cfg)
     compiled = torch.compile(fn)
@@ -275,6 +287,45 @@ def test_compile_safe_head_slstm_fullgraph_training(cuda_device: torch.device) -
     cell_c.load_state_dict(cell_e.state_dict())
     cfg = compile_safe_config(scan_backend="fused")
     x_e = (0.3 * torch.randn(2, 8, 4, device=cuda_device)).detach().requires_grad_(True)
+    x_c = x_e.detach().clone().requires_grad_(True)
+    y_e = newton_apply(cell_e, x_e, cfg)
+    w = torch.randn_like(y_e)
+    (y_e * w).sum().backward()
+    compiled = torch.compile(_fwd(cell_c, cfg), fullgraph=True)
+    y_c = compiled(x_c)
+    (y_c * w).sum().backward()
+    _assert_close(y_c, y_e.detach())
+    assert x_e.grad is not None and x_c.grad is not None
+    _assert_close(x_c.grad, x_e.grad)
+    for p_e, p_c in zip(cell_e.parameters(), cell_c.parameters(), strict=True):
+        assert p_e.grad is not None and p_c.grad is not None
+        _assert_close(p_c.grad, p_e.grad)
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_compile_safe_m2rnn_fullgraph_inference(cuda_device: torch.device) -> None:
+    """Fused M²RNN is ``pararnn::newton_m2rnn_fused``: fullgraph OK."""
+    torch.compiler.reset()
+    torch.manual_seed(12)
+    cell = ParaM2RNN(d_in=4, k_dim=4, v_dim=4, device=cuda_device).eval()
+    x = _x_for("m2rnn", 2, 16, device=cuda_device)
+    fn = _fwd(cell, compile_safe_config(scan_backend="fused"))
+    explanation = torch._dynamo.explain(fn)(x)
+    assert explanation.graph_break_count == 0, explanation.break_reasons
+    compiled = torch.compile(fn, fullgraph=True)
+    _assert_close(compiled(x), fn(x))
+
+
+@pytest.mark.cuda
+def test_compile_safe_m2rnn_fullgraph_training(cuda_device: torch.device) -> None:
+    torch.compiler.reset()
+    torch.manual_seed(13)
+    cell_e = ParaM2RNN(d_in=4, k_dim=4, v_dim=4, device=cuda_device)
+    cell_c = ParaM2RNN(d_in=4, k_dim=4, v_dim=4, device=cuda_device)
+    cell_c.load_state_dict(cell_e.state_dict())
+    cfg = compile_safe_config(scan_backend="fused")
+    x_e = _x_for("m2rnn", 2, 16, device=cuda_device).requires_grad_(True)
     x_c = x_e.detach().clone().requires_grad_(True)
     y_e = newton_apply(cell_e, x_e, cfg)
     w = torch.randn_like(y_e)

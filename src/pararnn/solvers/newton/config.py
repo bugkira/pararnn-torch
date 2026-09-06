@@ -85,6 +85,8 @@ class NewtonConfig:
         Windowed solve length; ``None`` = full ``T``.
     picard_iters : int or None
         ParaSLSTM warm-start depth ``P``; ``None`` = auto ``{1,3,5}``; ``0`` = zero-hidden.
+        On ``ParaM2RNN``, ``>=1`` selects frozen-``W`` warm-start
+        (``m2rnn_frozen_w_scan``); ``0`` / ``None`` keep App. A init.
     picard_adapt : bool or None
         Auto-raise ``P`` on large residual when ``picard_iters`` was auto.
     picard_retry_atol : float or None
@@ -126,6 +128,7 @@ class NewtonConfig:
     # Backward windows the eq. 2.6 reverse scan the same way (carry μ via ∇_{h0}).
     chunk_len: int | None = None
     # None = auto P ∈ {1, 3, 5} from T for ParaSLSTM. Explicit 0 is zero-hidden.
+    # ParaM2RNN: >=1 → frozen-W (W=0) linear scan warm-start before Newton.
     picard_iters: int | None = None
     # None: retry P when picard_iters was auto. True/False force. Better initial guess.
     picard_adapt: bool | None = None

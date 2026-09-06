@@ -12,6 +12,8 @@ Configs live under [`configs/`](../configs/) (`train/`, `bench/`, `cells/`).
 | [`slstm_vs_flashrnn.py`](slstm_vs_flashrnn.py) | [`configs/bench/newton_slstm_flashrnn.yaml`](../configs/bench/newton_slstm_flashrnn.yaml) | Diag-sLSTM Newton vs FlashRNN forward timing |
 | [`bench_gru_head.py`](bench_gru_head.py) | CLI flags | `ParaGRU(mix='head')` fused vs eager vs sequential; `--d-head-grid` |
 | [`bench_slstm_head.py`](bench_slstm_head.py) | CLI flags | `ParaSLSTM(mix='head')` fused/stream tiers vs seq; T asymptotics |
+| [`bench_m2rnn.py`](bench_m2rnn.py) | CLI flags | `ParaM2RNN` fused / eager / sequential latency |
+| [`bench_m2rnn_k_scale.py`](bench_m2rnn_k_scale.py) | CLI flags | Critical Newton depth \(K^*(T)\) + asymptotics (`--init both`) |
 | [`train_babylm.py`](train_babylm.py) | [`configs/train/babylm.yaml`](../configs/train/babylm.yaml) | BabyLM LM train with MLflow |
 | [`bench_time.py`](bench_time.py) | [`configs/bench/newton_fused.yaml`](../configs/bench/newton_fused.yaml) | Fused vs eager Newton wall time |
 | [`run_multiseed_benches.sh`](run_multiseed_benches.sh) | multiseed YAML under `configs/bench/` | Seed sweeps → `outputs/multiseed/` |
@@ -47,4 +49,4 @@ Useful when chasing a residual or scan bug; not a public API contract.
 | [`utils/cuda_timing.py`](utils/cuda_timing.py) | CUDA median timers |
 | [`utils/flashrnn_glue.py`](utils/flashrnn_glue.py) | FlashRNN wrapper for benches |
 | [`aggregate_bench_seeds.py`](aggregate_bench_seeds.py) | Multiseed CSV → summary |
-| [`fetch_papers.sh`](fetch_papers.sh) | Local PDF cache under `docs/papers/` (gitignored) |
+| [`fetch_papers.sh`](fetch_papers.sh) | Local PDF cache under `docs/sources/` (gitignored) |

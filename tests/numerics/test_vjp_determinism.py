@@ -18,7 +18,7 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
+from pararnn.cells import ParaGRU, ParaLSTM, ParaM2RNN, ParaSLSTM
 from pararnn.determinism import reset_determinism_warnings
 from pararnn.kernels.vjp_gru import gru_recurrence_vjp, gru_recurrence_vjp_eager
 from pararnn.kernels.vjp_lstm import lstm_recurrence_vjp, lstm_recurrence_vjp_eager
@@ -26,11 +26,13 @@ from pararnn.kernels.vjp_slstm import slstm_recurrence_vjp, slstm_recurrence_vjp
 from pararnn.solvers import NewtonConfig, newton_apply
 from pararnn.solvers.vjp import cell_vjp
 
-_KINDS = ("gru", "lstm", "slstm")
+_KINDS = ("gru", "lstm", "slstm", "m2rnn")
 _DTYPES = (torch.float32, torch.float16)
 
 
 def _make_cell(kind: str, device: torch.device, dtype: torch.dtype) -> nn.Module:
+    if kind == "m2rnn":
+        return ParaM2RNN(d_in=8, k_dim=4, v_dim=4, device=device, dtype=dtype)
     kw = {"d_in": 8, "d_h": 32, "device": device, "dtype": dtype}
     if kind == "gru":
         return ParaGRU(**kw)
@@ -40,21 +42,24 @@ def _make_cell(kind: str, device: torch.device, dtype: torch.dtype) -> nn.Module
 
 
 def _inputs(kind: str, device: torch.device, dtype: torch.dtype) -> tuple[Tensor, Tensor, Tensor]:
-    batch, time, d_in, d_h = 4, 17, 8, 32
+    batch, time, d_in = 4, 17, 8
     x = torch.randn(batch, time, d_in, device=device, dtype=dtype)
-    if kind == "gru":
-        h = torch.randn(batch, time, d_h, device=device, dtype=dtype)
-        mu = torch.randn(batch, time, d_h, device=device, dtype=dtype)
+    if kind == "m2rnn":
+        h = torch.randn(batch, time, 4, 4, device=device, dtype=dtype)
+        mu = torch.randn(batch, time, 4, 4, device=device, dtype=dtype)
+    elif kind == "gru":
+        h = torch.randn(batch, time, 32, device=device, dtype=dtype)
+        mu = torch.randn(batch, time, 32, device=device, dtype=dtype)
     elif kind == "lstm":
-        h = torch.randn(batch, time, 2, d_h, device=device, dtype=dtype)
-        mu = torch.randn(batch, time, 2, d_h, device=device, dtype=dtype)
+        h = torch.randn(batch, time, 2, 32, device=device, dtype=dtype)
+        mu = torch.randn(batch, time, 2, 32, device=device, dtype=dtype)
     else:
-        c = torch.randn(batch, time, d_h, device=device, dtype=dtype) * 0.5
-        n = torch.nn.functional.softplus(torch.randn(batch, time, d_h, device=device, dtype=dtype))
-        m = torch.randn(batch, time, d_h, device=device, dtype=dtype) * 0.5
-        hh = torch.randn(batch, time, d_h, device=device, dtype=dtype) * 0.5
+        c = torch.randn(batch, time, 32, device=device, dtype=dtype) * 0.5
+        n = torch.nn.functional.softplus(torch.randn(batch, time, 32, device=device, dtype=dtype))
+        m = torch.randn(batch, time, 32, device=device, dtype=dtype) * 0.5
+        hh = torch.randn(batch, time, 32, device=device, dtype=dtype) * 0.5
         h = torch.stack((c, n, m, hh), dim=-2)
-        mu = torch.randn(batch, time, 4, d_h, device=device, dtype=dtype)
+        mu = torch.randn(batch, time, 4, 32, device=device, dtype=dtype)
     return h, x, mu
 
 
@@ -72,7 +77,7 @@ def _atol_rtol(kind: str, dtype: torch.dtype) -> tuple[float, float]:
 def test_packed_vjp_param_grads_bitwise_stable(
     kind: str, dtype: torch.dtype, cuda_device: torch.device
 ) -> None:
-    """Recurrent ``a_*`` / ``R`` and ``W_x`` grads bit-match across two VJPs.
+    """Recurrent ``a_*`` / ``R`` / ``W`` and ``W_x`` grads bit-match across two VJPs.
 
     ``∇x`` is a GEMM (``g_wx @ W``); cuBLAS bit-stability is out of scope.
     """
@@ -92,7 +97,7 @@ def test_packed_vjp_param_grads_bitwise_stable(
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("kind", _KINDS)
+@pytest.mark.parametrize("kind", ("gru", "lstm", "slstm"))
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_triton_vjp_matches_eager_formulas(
     kind: str, dtype: torch.dtype, cuda_device: torch.device
@@ -132,8 +137,11 @@ def test_newton_under_use_deterministic_algorithms(
     torch.manual_seed(13)
     cell = _make_cell(kind, cuda_device, torch.float32)
     batch, time, d_in = 2, 16, 8
-    x = torch.randn(batch, time, d_in, device=cuda_device, dtype=torch.float32)
-    cfg = NewtonConfig(max_iters=2, residual_atol=None)
+    scale = 0.15 if kind == "m2rnn" else 1.0
+    x = scale * torch.randn(batch, time, d_in, device=cuda_device, dtype=torch.float32)
+    # M²RNN needs a few more iters to land in the sequential-agreement band.
+    k = 4 if kind == "m2rnn" else 2
+    cfg = NewtonConfig(max_iters=k, residual_atol=None)
     prev = torch.are_deterministic_algorithms_enabled()
     torch.use_deterministic_algorithms(True)
     try:
@@ -145,7 +153,6 @@ def test_newton_under_use_deterministic_algorithms(
     finally:
         torch.use_deterministic_algorithms(prev)
         reset_determinism_warnings()
-
 
 @pytest.mark.cuda
 @pytest.mark.filterwarnings("ignore:mix='head' is block-diagonal ParaGRU:UserWarning")
@@ -197,6 +204,46 @@ def test_head_slstm_fused_deterministic_bitmatch(cuda_device: torch.device) -> N
     torch.manual_seed(19)
     cell = ParaSLSTM(4, 4, mix="head", n_heads=2, device=cuda_device)
     x = 0.3 * torch.randn(2, 8, 4, device=cuda_device)
+    cfg = NewtonConfig(max_iters=4, scan_backend="fused", residual_atol=None)
+    prev = torch.are_deterministic_algorithms_enabled()
+    torch.use_deterministic_algorithms(True)
+    try:
+        outs = []
+        grads = []
+        for _ in range(2):
+            cell.zero_grad(set_to_none=True)
+            xx = x.detach().clone().requires_grad_(True)
+            y = newton_apply(cell, xx, cfg)
+            y.sum().backward()
+            outs.append(y.detach().clone())
+            grads.append(
+                (
+                    xx.grad.detach().clone() if xx.grad is not None else None,
+                    tuple(
+                        p.grad.detach().clone() if p.grad is not None else None
+                        for p in cell.parameters()
+                    ),
+                )
+            )
+        torch.testing.assert_close(outs[0], outs[1], atol=0.0, rtol=0.0)
+        assert grads[0][0] is not None and grads[1][0] is not None
+        assert int((grads[0][0] != grads[1][0]).sum().item()) == 0
+        for g1, g2 in zip(grads[0][1], grads[1][1], strict=True):
+            assert g1 is not None and g2 is not None
+            assert int((g1 != g2).sum().item()) == 0
+    finally:
+        torch.use_deterministic_algorithms(prev)
+        reset_determinism_warnings()
+
+
+@pytest.mark.cuda
+def test_m2rnn_fused_deterministic_bitmatch(cuda_device: torch.device) -> None:
+    """Two identical fused M²RNN Newton + bwd calls bit-match."""
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    reset_determinism_warnings()
+    torch.manual_seed(23)
+    cell = ParaM2RNN(d_in=8, k_dim=4, v_dim=4, device=cuda_device)
+    x = 0.15 * torch.randn(2, 16, 8, device=cuda_device)
     cfg = NewtonConfig(max_iters=4, scan_backend="fused", residual_atol=None)
     prev = torch.are_deterministic_algorithms_enabled()
     torch.use_deterministic_algorithms(True)

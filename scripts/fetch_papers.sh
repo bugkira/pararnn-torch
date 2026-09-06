@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Download the working bibliography into docs/papers/. Run from repo root:
+# Download the working bibliography into docs/sources/. Run from repo root:
 #   bash scripts/fetch_papers.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="$ROOT/docs/papers"
+DEST="$ROOT/docs/sources"
 mkdir -p "$DEST"
 
 fetch() {
@@ -20,6 +20,7 @@ fetch() {
 }
 
 fetch 2510.21450 pararnn-danieli-2025
+fetch 2603.14360 m2rnn-mishra-2026
 fetch 2309.16318 deeppcr-danieli-2023
 fetch 2309.12252 deer-lim-2024
 fetch 2407.19115 quasi-deer-elk-gonzalez-2024

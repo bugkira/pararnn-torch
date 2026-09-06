@@ -6,8 +6,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22302587.svg)](https://doi.org/10.5281/zenodo.22302587)
 [![ParaRNN](https://img.shields.io/static/v1?label=ParaRNN&message=ICLR%202026&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2510.21450)
+[![M²RNN](https://img.shields.io/static/v1?label=M%C2%B2RNN&message=arXiv%3A2603.14360&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2603.14360)
 
-PyTorch sequence module for parallel *training* of nonlinear RNNs (GRU, LSTM, sLSTM). Decode is the sequential unroll; on CUDA, T=1 uses a Triton step kernel.
+PyTorch sequence module for parallel *training* of nonlinear RNNs (GRU, LSTM, sLSTM, M²RNN). Decode is the sequential unroll; on CUDA, T=1 uses a Triton step kernel.
 
 Package **`pararnn-torch`**, import **`pararnn`**. **Alpha** — fused kernels are Triton on CUDA (compute capability ≥ 8.0).
 
@@ -17,7 +18,9 @@ Package **`pararnn-torch`**, import **`pararnn`**. **Alpha** — fused kernels a
 
 `ParaSLSTM` with `mix='diag'` is the main fused path for exponentially gated sLSTM and xLSTM-style stacks. `ParaGRU` and `ParaLSTM` follow the same Newton wrapper. For Dreamer-style block recurrence, use `ParaGRU(mix='head', n_heads=8)` (block-diagonal `A_*`, full `W_x`; CUDA factorized Newton; `scan_backend='eager'` for the dense-J oracle). Cho gates only — LayerNorm in Dreamer LN-GRU sits outside this cell.
 
-Implementation follows [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450).
+`ParaM2RNN` is a research cell for the matrix-state recurrence in [Mishra et al., arXiv:2603.14360](https://arxiv.org/abs/2603.14360): state \(H\in\mathbb{R}^{K\times V}\) with dense value-axis mix \(HW\) inside \(\tanh\). Training uses a *factorized* Newton Jacobian (\(O(KV^{2})\) matvecs, no dense \((KV)^{2}\)); measured critical depth \(K^{*}(T)\) is consistent with \(\Theta(\log T)\). Upstream product kernels keep time sequential; this library supplies the parallel-train path on the same math.
+
+Implementation of the Newton+scan core follows [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450).
 
 ## Install
 
@@ -44,7 +47,7 @@ uv run pytest -q -m "not cuda"
 
 Place modules on a device like any `nn.Module` (`.to(device)`, or `device=` / `dtype=` on the cell and `ParaRNN`). Data parallel: wrap that module with `DistributedDataParallel` or FSDP2 `fully_shard` ([`docs/distributed.md`](docs/distributed.md)).
 
-`scripts/` holds development benchmarks and profiling; it is omitted from the wheel ([`scripts/README.md`](scripts/README.md)).
+`scripts/` holds development benchmarks and profiling; it is omitted from the wheel ([`scripts/README.md`](scripts/README.md)). Local literature PDFs: `bash scripts/fetch_papers.sh` → [`docs/sources/`](docs/sources/) (gitignored).
 
 ## Quickstart
 
@@ -95,6 +98,21 @@ larger hybrid tiled. Long-T train VRAM: `NewtonConfig(recompute=True)`.
 | `B=4`, `T=128` | 96 / 128 | 9–10 | — |
 | `B=1`, `T=4096` | 64 | 51 | 83 |
 | `B=1`, `T=4096` | 96 | 220 | 293 |
+
+### M²RNN (research)
+
+```python
+from pararnn import ParaM2RNN, newton_apply, sequential_apply
+
+m2 = ParaM2RNN(d_in=32, k_dim=16, v_dim=16, device=device)
+x = 0.15 * torch.randn(2, 128, 32, device=device)
+h_seq = sequential_apply(m2, x)
+h_par = newton_apply(m2, x, NewtonConfig(max_iters=8, residual_atol=1e-5))
+```
+
+State shape is `(B, T, K, V)`. Prefer `residual_atol` early-stop over a fixed
+over-provisioned \(K\) on large \(K{\times}V\). Critical-depth recipe:
+`scripts/bench_m2rnn_k_scale.py`.
 
 ## Results
 
@@ -150,18 +168,18 @@ API notes stay in [`docs/distributed.md`](docs/distributed.md).
 
 ## API overview
 
-- **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM` — recurrent maps \(f(h_{t-1}, x_t)\).
-- **Sequence module:** `ParaRNN(cell, config=NewtonConfig(max_iters=3))` — stacks one or more cells.
+- **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM`, `ParaM2RNN` — recurrent maps \(f(h_{t-1}, x_t)\). M²RNN state is `(B, T, K, V)`.
+- **Sequence module:** `ParaRNN(cell, config=NewtonConfig(max_iters=3))` — stacks one or more cells (`ParaM2RNN` also works through `newton_apply` / `sequential_apply` directly).
 - **Trunk block:** `ParaSLSTMBlock(d_model, mlp_ratio=4)` — RMSNorm + ParaSLSTM + SwiGLU residuals for LM stacks (`docs/xlstm.md`).
 - **CausalLM / vLLM:** `ParaSLSTMForCausalLM` + `BlockStackPool` continuous batch +
   `vllm.general_plugins` registration (`docs/vllm.md`, `examples/continuous_batch.py`).
-- **Solver config:** `NewtonConfig(scan_backend="auto")` picks fused Triton on CUDA when available, else Triton scan + `step`, else eager Blelloch.
+- **Solver config:** `NewtonConfig(scan_backend="auto")` picks fused Triton on CUDA when available, else Triton scan + `step`, else eager Blelloch. For `ParaM2RNN`, `picard_iters>=1` selects a frozen-\(W\) warm-start.
 - **Low-level solvers** (bypass `ParaRNN`):
 
 ```python
 from pararnn.solvers import newton_apply, sequential_apply
 
-h = newton_apply(cell, x)  # (B, T, hidden_size)
+h = newton_apply(cell, x)  # (B, T, hidden_size) or (B, T, K, V) for ParaM2RNN
 h = sequential_apply(cell, x)
 ```
 
@@ -173,16 +191,16 @@ h = sequential_apply(cell, x)
 
 ## Compatibility
 
-- **`torch.compile`:** with the compile-safe preset (fixed K, no residual host sync), `newton_apply` traces as a single graph (`fullgraph=True`) on eager and fused paths. Fused Alg. 1 kernels are `pararnn::newton_*_fused` custom ops with `register_fake` (`tests/numerics/test_compile.py`, `kernels/custom_ops.py`). Eq. 2.6 stays on the module-level `Autograd.Function` (fused ops do not carry `W_x`).
+- **`torch.compile`:** with the compile-safe preset (fixed K, no residual host sync), `newton_apply` traces as a single graph (`fullgraph=True`) on eager and fused paths (including `ParaM2RNN`). Fused Alg. 1 kernels are `pararnn::newton_*_fused` custom ops with `register_fake` (`tests/numerics/test_compile.py`, `kernels/custom_ops.py`). Eq. 2.6 stays on the module-level `Autograd.Function` (fused ops do not carry `W_x`).
 - **Precision / AMP:** put the module and `x` in fp16/bf16/fp32 explicitly. Under outer `torch.autocast`, Newton opts out and stays in the tensor dtype so the eq. 2.6 VJP keeps one dtype (`tests/numerics/test_autocast.py`).
 - **DDP / FSDP / checkpoint:** wrap `ParaRNN` with DDP or FSDP2 (`docs/distributed.md`, `examples/ddp_fsdp.py`). Non-reentrant `torch.utils.checkpoint` and `state_dict` round-trip: `tests/numerics/test_checkpoint.py`. For ultra-long train \(T\), `NewtonConfig(recompute=True)` rematerializes \(H^\star\) in the eq. 2.6 backward (`tests/numerics/test_recompute.py`).
-- **Deterministic algorithms:** packed eq. 2.6 VJP (diag GRU/LSTM/sLSTM) reduces with tile `tl.sum` then `.sum` — no Triton atomics; parameter grads bit-match across identical calls (`tests/numerics/test_vjp_determinism.py`). With `torch.use_deterministic_algorithms(True)`, set `CUBLAS_WORKSPACE_CONFIG=:4096:8` for cuBLAS GEMMs (`W_x` / `∇x`); the first packed `cell_vjp` under that flag re-checks param grads once and logs a single warning if they drift (`pararnn.determinism`).
+- **Deterministic algorithms:** packed eq. 2.6 VJP (diag GRU/LSTM/sLSTM and `ParaM2RNN`) reduces with tile `tl.sum` then `.sum` where applicable — no Triton atomics on the packed path; parameter grads bit-match across identical calls (`tests/numerics/test_vjp_determinism.py`). With `torch.use_deterministic_algorithms(True)`, set `CUBLAS_WORKSPACE_CONFIG=:4096:8` for cuBLAS GEMMs (`W_x` / `∇x`); the first packed `cell_vjp` under that flag re-checks param grads once and logs a single warning if they drift (`pararnn.determinism`).
 
 ## Method
 
 Training imposes \(F(H)_t = h_t - f(h_{t-1}, x_t) = 0\) and Newton-solves it with a parallel scan (Alg. 1, \(K=3\)). Paper 1-based indices vs code 0-based slots: [`src/pararnn/layout.py`](src/pararnn/layout.py).
 
-GRU/LSTM warm-start follows App. A: \(h_l^{(0)} = f(0, x_l)\). sLSTM starts from the zero-hidden unroll (running \(m\) and \(n\)). Recurrent weights are clipped elementwise (App. C.1). Channels stay separate inside diagonal / 2×2 / 4×4 cells (eq. 3.3). Backward uses paper eq. 2.6 (one reverse scan).
+GRU/LSTM warm-start follows App. A: \(h_l^{(0)} = f(0, x_l)\). sLSTM starts from the zero-hidden unroll (running \(m\) and \(n\)). Recurrent weights are clipped elementwise (App. C.1). Channels stay separate inside diagonal / 2×2 / 4×4 cells (eq. 3.3). Backward uses paper eq. 2.6 (one reverse scan). For `ParaM2RNN`, the Jacobian is the factorized map \(J[\Delta]=f\Delta+(1-f)(1-Z^{\odot2})\odot(\Delta W)\).
 
 ## Citation
 
@@ -214,6 +232,7 @@ When an arXiv identifier is assigned, the Zenodo badge and `@misc` entry above w
 ## References
 
 - Danieli, Rodríguez, Sarabia, Suau, Zappella. *ParaRNN*. ICLR 2026 (Oral). [arXiv:2510.21450](https://arxiv.org/abs/2510.21450).
+- Mishra, Tan, Stoica, Gonzalez, Dao. *M²RNN*. [arXiv:2603.14360](https://arxiv.org/abs/2603.14360).
 - Sereda. *ParaSLSTM*. [doi:10.5281/zenodo.22302587](https://doi.org/10.5281/zenodo.22302587).
 - Beck et al. *xLSTM*. [arXiv:2405.04517](https://arxiv.org/abs/2405.04517).
 - Lim et al. *DEER*. ICLR 2024. [arXiv:2309.12252](https://arxiv.org/abs/2309.12252).

@@ -514,3 +514,70 @@ def _(
 ) -> Tensor:
     del h_prev, wx, r_head, eps
     return torch.empty_like(partial)
+
+
+@torch.library.custom_op("pararnn::newton_m2rnn_fused", mutates_args=())
+def newton_m2rnn_fused(
+    k: Tensor,
+    v: Tensor,
+    f: Tensor,
+    w: Tensor,
+    h0: Tensor | None = None,
+    *,
+    max_iters: int,
+    omega: float,
+    frozen_w_init: bool = False,
+) -> Tensor:
+    """Fused factorized Alg. 1 for ``ParaM2RNN`` (SRAM ``K,V ≤ 64``).
+
+    Training grads go through ``newton_apply`` / eq. 2.6.
+    """
+    from pararnn.kernels.newton_m2rnn import _newton_m2rnn_fused_impl
+
+    return _newton_m2rnn_fused_impl(
+        k,
+        v,
+        f,
+        w,
+        h0,
+        max_iters=max_iters,
+        omega=omega,
+        frozen_w_init=frozen_w_init,
+    )
+
+
+@newton_m2rnn_fused.register_fake
+def _(
+    k: Tensor,
+    v: Tensor,
+    f: Tensor,
+    w: Tensor,
+    h0: Tensor | None = None,
+    *,
+    max_iters: int,
+    omega: float,
+    frozen_w_init: bool = False,
+) -> Tensor:
+    del f, w, h0, max_iters, omega, frozen_w_init
+    batch, time, k_dim = k.shape
+    v_dim = int(v.shape[-1])
+    return k.new_empty(batch, time, k_dim, v_dim)
+
+
+@torch.library.custom_op("pararnn::reverse_m2rnn_factor", mutates_args=())
+def reverse_m2rnn_factor(
+    z: Tensor,
+    f: Tensor,
+    w: Tensor,
+    partial: Tensor,
+) -> Tensor:
+    """Eq. 2.6 factorized reverse for ``ParaM2RNN`` (opaque to Dynamo)."""
+    from pararnn.kernels.newton_m2rnn import _reverse_m2rnn_factor_impl
+
+    return _reverse_m2rnn_factor_impl(z, f, w, partial)
+
+
+@reverse_m2rnn_factor.register_fake
+def _(z: Tensor, f: Tensor, w: Tensor, partial: Tensor) -> Tensor:
+    del z, f, w
+    return torch.empty_like(partial)

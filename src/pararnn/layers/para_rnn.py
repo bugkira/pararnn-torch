@@ -394,6 +394,9 @@ def _input_size(cell: nn.Module) -> int | None:
 
 
 def _state_shape(cell: nn.Module, batch: int) -> tuple[int, ...]:
+    tail = getattr(cell, "state_shape", None)
+    if tail is not None:
+        return (batch, *tuple(tail))
     hid = getattr(cell, "hidden_size", None)
     if hid is None:
         hid = cell.d_h

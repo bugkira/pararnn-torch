@@ -34,7 +34,8 @@ notebooks/*.executed.ipynb
 # example smoke artifacts
 parity_curves.json
 
-# papers (local only)
+# literature PDFs (local cache only)
+docs/sources/*.pdf
 docs/papers/*.pdf
 
 # Apple's official clone, if you keep one locally

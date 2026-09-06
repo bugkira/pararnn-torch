@@ -141,6 +141,9 @@ def sequential_apply_compiled(
 
 
 def _zero_state(cell: nn.Module, batch: int, ref: Tensor) -> Tensor:
+    tail = getattr(cell, "state_shape", None)
+    if tail is not None:
+        return ref.new_zeros((batch, *tuple(tail)))
     d_h = cell.d_h
     slots = getattr(cell, "state_slots", None)
     if slots is None:

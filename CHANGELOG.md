@@ -4,6 +4,32 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-06
+
+Research cell `ParaM2RNN`: factorized parallel Newton for matrix-state
+M²RNN (Mishra et al. arXiv:2603.14360), answering the dense-Jacobian /
+unknown-\(K\) objections in their §2.5.3 with structured \(J\) and measured
+\(K^{*}(T)=\Theta(\log T)\).
+
+### Added
+
+- Research cell `ParaM2RNN` (Mishra et al. arXiv:2603.14360): matrix state
+  `H∈R^{K×V}`, factorized Newton (`m2rnn_jvp` / `newton_m2rnn_factorized`)
+  without dense `(KV)²`, wired through `newton_apply` + eq. 2.6 reverse
+  (autograd cell VJP). CUDA Triton fused: SRAM `K,V≤64`; hybrid tiled scan for
+  larger `K,V` with `residual_atol` early-stop (avoids losing to sequential when
+  fixed `K` overshoots `K*`); packed VJP (`m2rnn_recurrence_vjp`). `auto` picks
+  fused on CUDA. Optional frozen-`W` warm-start via `picard_iters=1`
+  (`m2rnn_frozen_w_scan`); under default `W=I` measured \(\Delta K^*\approx 0\),
+  class still \(\Theta(\log T)\). Compile-safe + fullgraph CUDA fused and
+  deterministic bitmatch covered in `tests/numerics/test_compile.py` /
+  `test_vjp_determinism.py`. Recipe: `scripts/bench_m2rnn_k_scale.py --init both`.
+
+### Changed
+
+- Literature PDF cache path: `docs/papers/` → `docs/sources/`
+  (`scripts/fetch_papers.sh`, gitignore).
+
 ## [0.11.0] - 2026-09-06
 
 Beck-style `ParaSLSTM(mix='head')`: factorized CUDA Newton, reverse, and VJP.

@@ -5,7 +5,9 @@ starts from the zero-hidden unroll. Backward is eq. 2.6 (one reverse scan).
 
 ``scan_backend='fused'`` is a handwritten Triton kernel for ParaGRU,
 ParaLSTM, and ParaSLSTM ``mix='diag'``, and factorized Newton for
-``ParaGRU(mix='head')``. ``'auto'`` picks fused on CUDA for those cells.
+``ParaGRU(mix='head')`` / ``ParaSLSTM(mix='head')``. ``'auto'`` picks fused
+on CUDA for those cells. ``ParaM2RNN`` uses a factorized Kronecker scan
+(``newton_m2rnn_factorized``) on every backend alias; no dense ``(KV)²``.
 Packed ``cu_seqlens``: fused diag ParaGRU stays in-kernel; head ParaGRU
 raises on explicit ``fused`` and remaps ``auto`` → ``eager``; LSTM/sLSTM
 fused falls back to Triton scan with ``J=0`` at segment heads.
@@ -222,11 +224,12 @@ def newton_apply(
     ----------
     cell : nn.Module
         Cell with ``step`` (prefer ``step_with_jacobian``). Fused: ParaGRU,
-        ParaLSTM, ParaSLSTM ``mix='diag'``.
+        ParaLSTM, ParaSLSTM ``mix='diag'|'head'``. Factorized Kronecker:
+        ``ParaM2RNN`` (recipe ``max_iters=4``).
     x : Tensor of shape (batch, time, d_in)
         With ``cu_seqlens``, shape ``(1, N, d_in)``.
     config : NewtonConfig, optional
-        Defaults to ``NewtonConfig()`` (``K=3``).
+        Defaults to ``NewtonConfig()`` (``K=3``; use ``K=4`` for ``ParaM2RNN``).
     h0 : Tensor, optional
         Paper ``h_0`` (default zeros). Packed: ``(S, ...)``. With
         ``block_table``: pool ``(C, ...)``.
@@ -240,7 +243,8 @@ def newton_apply(
     Returns
     -------
     H : Tensor of shape (batch, time, *state)
-        Solved trajectory (GRU ``d_h``; LSTM ``(2, d_h)``; sLSTM ``(4, d_h)``).
+        Solved trajectory (GRU ``d_h``; LSTM ``(2, d_h)``; sLSTM ``(4, d_h)``;
+        M²RNN ``(K, V)``).
 
     Raises
     ------
@@ -372,6 +376,10 @@ def _newton_solve(
     cu_seqlens: Tensor | None = None,
     block_table: Tensor | None = None,
 ) -> Tensor:
+    if getattr(cell, "jac_structure", None) == "m2rnn":
+        return _newton_m2rnn(
+            cell, x, config, h0=h0, stats=stats, cu_seqlens=cu_seqlens, block_table=block_table
+        )
     if config.chunk_len is not None:
         return _newton_chunked(cell, x, config, h0=h0, stats=stats)
     if config.fused_time_loop and config.scan_backend != "fused":
@@ -756,6 +764,20 @@ def _eq26_vjp(
     is the h0 adjoint. Ragged: one adjoint per sequence start.
     """
     h_prev = _prepend(states, h0, cu_seqlens)
+    if getattr(cell, "jac_structure", None) == "m2rnn" and cu_seqlens is None:
+        from pararnn.kernels.newton_m2rnn import m2rnn_t0_vjp, reverse_factor_scan_m2rnn
+
+        wx = _input_affine(cell, x)
+        if wx is None:
+            raise TypeError("ParaM2RNN factorized VJP needs cell.W_x")
+        with torch.no_grad():
+            mu = reverse_factor_scan_m2rnn(cell, h_prev, partial, wx=wx)
+            h0_vjp = m2rnn_t0_vjp(cell, h_prev, mu, wx=wx)
+        packed = uses_packed_vjp(cell)
+        grad_x, param_grads = cell_vjp(cell, h_prev, x, mu, packed=packed)
+        grad_h0 = None if h0 is None else h0_vjp
+        return grad_x, param_grads, grad_h0
+
     # Factorized reverse for ParaGRU / ParaSLSTM head on CUDA (matches fused forward).
     if (
         isinstance(cell, ParaGRU)
@@ -929,6 +951,9 @@ def _input_affine(cell: nn.Module, x: Tensor) -> Tensor | None:
 def _zero_state_like_input(cell: nn.Module, x: Tensor) -> Tensor:
     """Zeros with a time axis, matching ``step``'s previous-state layout."""
     batch, time, _ = x.shape
+    tail = getattr(cell, "state_shape", None)
+    if tail is not None:
+        return x.new_zeros(batch, time, *tuple(tail))
     d_h = cell.d_h
     slots = getattr(cell, "state_slots", None)
     if slots is None:
@@ -936,3 +961,65 @@ def _zero_state_like_input(cell: nn.Module, x: Tensor) -> Tensor:
     if slots == 1:
         return x.new_zeros(batch, time, d_h)
     return x.new_zeros(batch, time, slots, d_h)
+
+
+def _newton_m2rnn(
+    cell: nn.Module,
+    x: Tensor,
+    config: NewtonConfig,
+    *,
+    h0: Tensor | None = None,
+    stats: NewtonStats | None = None,
+    cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
+) -> Tensor:
+    """Factorized Kronecker Newton for ``ParaM2RNN`` (no dense ``(KV)²``)."""
+    from pararnn.cells.para_m2rnn import ParaM2RNN
+    from pararnn.kernels.newton_m2rnn import newton_m2rnn_factorized
+
+    if not isinstance(cell, ParaM2RNN):
+        raise TypeError(f"_newton_m2rnn needs ParaM2RNN, got {type(cell).__name__}")
+    if cu_seqlens is not None or block_table is not None:
+        raise ValueError(
+            "ParaM2RNN factorized Newton is rectangular-batch only "
+            "(no cu_seqlens / block_table yet)"
+        )
+    if config.chunk_len is not None:
+        raise ValueError("ParaM2RNN does not support chunk_len yet")
+    if config.coords == "log":
+        raise TypeError("NewtonConfig(coords='log') is ParaSLSTM only")
+    # picard_iters>=1 → frozen-W (W=0) warm-start; see m2rnn_frozen_w_scan.
+    frozen_w = int(config.picard_iters or 0) > 0
+
+    compiling = torch.compiler.is_compiling()
+    history: list[float] = []
+    force_eager = config.scan_backend == "eager"
+    backend_tag = "fused" if config.scan_backend == "fused" else "factor_m2rnn"
+    # Default residual_atol early-stops past K*; fixed over-provisioned K loses
+    # to sequential on large KV (wall ≈ K_used × scan).
+    states = newton_m2rnn_factorized(
+        cell,
+        x,
+        max_iters=config.max_iters,
+        omega=config.omega,
+        h0=h0,
+        residual_history=None if (compiling or not force_eager) else history,
+        force_eager=force_eager,
+        residual_atol=None if compiling else config.residual_atol,
+        frozen_w_init=frozen_w,
+    )
+    if not compiling:
+        cfg = replace(config, scan_backend=backend_tag)
+        last = history[-1] if history else None
+        _fill_stats(
+            cell,
+            x,
+            states,
+            h0,
+            cfg,
+            iters=config.max_iters,
+            stats=stats,
+            residual_history=history,
+            known_residual=last,
+        )
+    return states

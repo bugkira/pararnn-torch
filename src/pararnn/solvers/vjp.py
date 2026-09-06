@@ -3,11 +3,9 @@
 The reverse scan already applied ``J^T``. This is ``∂L/∂(x, θ)`` from
 ``μ = ∇_H L`` through one batched ``f`` (eq. 2.6).
 
-ParaGRU / ParaLSTM / ParaSLSTM ``mix='diag'``: closed-form elementwise VJP +
-one ``W_x`` GEMM (same split as the fused forward). ``ParaGRU(mix='head')``:
-closed-form matrix VJP over blocks. Formulas live in ``pararnn.kernels.vjp_*``
-(``*_recurrence_vjp_eager``); CUDA diag uses the matching Triton kernel.
-Head/dense sLSTM and custom cells use Autograd on ``step``.
+ParaGRU / ParaLSTM / ParaSLSTM ``mix='diag'|'head'`` / ``ParaM2RNN``: closed-form
+elementwise or factorized VJP + one ``W_x`` GEMM. Formulas live in
+``pararnn.kernels.vjp_*``. Custom cells use Autograd on ``step``.
 """
 
 from __future__ import annotations
@@ -54,6 +52,8 @@ def _cell_vjp_body(
         return _slstm_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaSLSTM) and cell.mix == "head":
         return _slstm_head_vjp(cell, h_prev, x, mu)
+    if packed and getattr(cell, "jac_structure", None) == "m2rnn":
+        return _m2rnn_vjp(cell, h_prev, x, mu)
     return _autograd_vjp(cell, h_prev, x, mu)
 
 
@@ -62,6 +62,8 @@ def uses_packed_vjp(cell: nn.Module) -> bool:
     if isinstance(cell, ParaGRU):
         return cell.mix in ("diag", "head")
     if isinstance(cell, ParaLSTM):
+        return True
+    if getattr(cell, "jac_structure", None) == "m2rnn":
         return True
     return isinstance(cell, ParaSLSTM) and cell.mix in ("diag", "head")
 
@@ -267,5 +269,37 @@ def _slstm_head_vjp(
             "R_head": g_r,
             "W_x.weight": grad_w,
             "W_x.bias": grad_b,
+        },
+    )
+
+
+def _m2rnn_vjp(
+    cell: nn.Module, h_prev: Tensor, x: Tensor, mu: Tensor
+) -> tuple[Tensor | None, tuple[Tensor | None, ...]]:
+    """Eq. 2.6 cell VJP for ``ParaM2RNN`` (closed-form ``∇W``, ``∇W_x``)."""
+    from pararnn.kernels.vjp_m2rnn import m2rnn_recurrence_vjp
+
+    k_dim = int(cell.k_dim)
+    v_dim = int(cell.v_dim)
+    wx = cell.W_x(x)
+    k = wx[..., :k_dim]
+    v = wx[..., k_dim : k_dim + v_dim]
+    f_logit = wx[..., -1]
+    f = torch.sigmoid(f_logit)
+    _g_h, g_k, g_v, g_f, g_w = m2rnn_recurrence_vjp(
+        h_prev.detach(), k, v, f, cell.W, mu
+    )
+    del _g_h  # reverse scan already applied Jᵀ into μ; unused here
+    # f = σ(logit) ⇒ g_logit = g_f * f * (1-f)
+    g_logit = g_f * f * (1.0 - f)
+    g_wx = torch.cat([g_k, g_v, g_logit.unsqueeze(-1)], dim=-1)
+    grad_x, grad_wx_w, grad_wx_b = _linear_vjp(cell.W_x, x, g_wx)
+    return _align_grads(
+        cell,
+        grad_x,
+        {
+            "W": g_w,
+            "W_x.weight": grad_wx_w,
+            "W_x.bias": grad_wx_b,
         },
     )
