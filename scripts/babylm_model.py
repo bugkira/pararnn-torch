@@ -166,14 +166,28 @@ def _mix_solver(cell_type: str, n_heads: int) -> tuple[str, str, int | None]:
 
 
 def _newton_config(spec: dict, cell_type: str) -> NewtonConfig:
+    verify_first = bool(spec.get("verify_first_step", False))
     if cell_type != "diag_fused":
-        return NewtonConfig(max_iters=int(spec["newton_iters"]), scan_backend="eager")
-    return NewtonConfig(
-        max_iters=int(spec["newton_iters"]),
-        scan_backend="fused",
-        picard_iters=int(spec["picard_iters"]),
-        picard_adapt=bool(spec["picard_adapt"]),
-    )
+        return NewtonConfig(
+            max_iters=int(spec["newton_iters"]),
+            scan_backend="eager",
+            verify_first_step=verify_first,
+        )
+    kw: dict = {
+        "max_iters": int(spec["newton_iters"]),
+        "scan_backend": "fused",
+        "picard_iters": int(spec["picard_iters"]),
+        "picard_adapt": bool(spec["picard_adapt"]),
+        "verify_first_step": verify_first,
+    }
+    # Optional windowed fused path (NewtonConfig.fused_time_loop).
+    if bool(spec.get("fused_time_loop", False)):
+        kw["fused_time_loop"] = True
+        if spec.get("fused_window_len") is not None:
+            kw["fused_window_len"] = int(spec["fused_window_len"])
+    if spec.get("chunk_len") is not None:
+        kw["chunk_len"] = int(spec["chunk_len"])
+    return NewtonConfig(**kw)
 
 
 def count_params(model: nn.Module) -> int:

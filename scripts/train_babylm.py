@@ -29,7 +29,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.optim import AdamW
 
-from pararnn import NewtonDivergenceError
+from pararnn import AgreementError, NewtonDivergenceError
 from scripts.babylm_data import prepare_packed
 from scripts.babylm_model import (
     CELL_TYPES,
@@ -242,6 +242,10 @@ def train_one(spec: dict, *, cell_type: str, max_steps: int | None) -> dict:
                 "num_layers": spec["num_layers"],
                 "newton_iters": spec["newton_iters"],
                 "picard_iters": spec["picard_iters"],
+                "picard_adapt": bool(spec.get("picard_adapt", False)),
+                "verify_first_step": bool(spec.get("verify_first_step", False)),
+                "fused_time_loop": bool(spec.get("fused_time_loop", False)),
+                "fused_window_len": spec.get("fused_window_len"),
                 "warmup_steps": spec["warmup_steps"],
                 "weight_decay": spec["weight_decay"],
                 "seed": spec["seed"],
@@ -279,6 +283,17 @@ def train_one(spec: dict, *, cell_type: str, max_steps: int | None) -> dict:
                     )
                     (loss / accum).backward()
                     loss_acc += float(loss.detach()) / accum
+            except AgreementError as exc:
+                log.error(
+                    "agreement_failed cell=%s step=%d max_abs=%s atol=%s shape=%s "
+                    "(Newton vs sequential; see docs/numerics-contract.md)",
+                    cell_type,
+                    step,
+                    getattr(exc.report, "max_abs", "?"),
+                    getattr(exc.report, "atol", "?"),
+                    getattr(exc.report, "shape", "?"),
+                )
+                raise
             except NewtonDivergenceError as exc:
                 diverged = True
                 skipped += 1
@@ -380,22 +395,30 @@ def train_one(spec: dict, *, cell_type: str, max_steps: int | None) -> dict:
         )
         mlflow.log_metric("peak_vram_gb", peak)
         mlflow.log_metric("val_ppl_final", last_ppl)
-        ckpt = ckpt_dir / f"{cell_type}.pt"
+        tag = str(spec.get("results_tag", cell_type))
+        result["results_tag"] = tag
+        result["newton_iters"] = int(spec["newton_iters"])
+        result["picard_iters"] = int(spec["picard_iters"])
+        result["fused_time_loop"] = bool(spec.get("fused_time_loop", False))
+        result["fused_window_len"] = spec.get("fused_window_len")
+        ckpt = ckpt_dir / f"{tag}.pt"
         torch.save(
             {
                 "model": model.state_dict(),
                 "cell_type": cell_type,
+                "results_tag": tag,
                 "spec": {k: spec[k] for k in spec if k != "why"},
                 "result": result,
             },
             ckpt,
         )
-        out_json = results_dir / f"babylm_{cell_type}.json"
+        out_json = results_dir / f"babylm_{tag}.json"
         out_json.write_text(json.dumps(result, indent=2))
         mlflow.log_artifact(str(out_json))
         log.info(
-            "babylm_train_done cell=%s ppl=%.2f tok/s=%.0f peak_gb=%.2f watchdog=%d skip=%d",
+            "babylm_train_done cell=%s tag=%s ppl=%.2f tok/s=%.0f peak_gb=%.2f watchdog=%d skip=%d",
             cell_type,
+            tag,
             last_ppl,
             result["tok_per_s"],
             peak,

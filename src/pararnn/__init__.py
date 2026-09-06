@@ -1,7 +1,8 @@
 """Parallel Newton training and O(1) decode for nonlinear RNNs (Danieli et al.).
 
 Public surface is ``__all__``: cells / ``ParaRNN``, ``newton_apply``,
-paged pool + decode, ``ParaSLSTMForCausalLM``, speculative verify.
+``verify_agreement``, paged pool + decode, ``ParaSLSTMForCausalLM``,
+speculative verify.
 """
 
 from importlib.metadata import PackageNotFoundError, version
@@ -31,8 +32,16 @@ from pararnn.solvers import (
     sequential_apply,
 )
 from pararnn.speculative import LinearDraftResult, verify_linear_draft
+from pararnn.verify import (
+    AgreementError,
+    AgreementReport,
+    default_agreement_atol,
+    verify_agreement,
+)
 
 __all__ = [
+    "AgreementError",
+    "AgreementReport",
     "BlockStackPool",
     "LinearDraftResult",
     "NewtonConfig",
@@ -57,13 +66,15 @@ __all__ = [
     "can_decode_step",
     "decode_step",
     "decode_wx",
+    "default_agreement_atol",
     "newton_apply",
     "paged_apply",
     "sequential_apply",
+    "verify_agreement",
     "verify_linear_draft",
 ]
 
 try:
     __version__ = version("pararnn-torch")
 except PackageNotFoundError:
-    __version__ = "0.17.0"
+    __version__ = "0.17.2"

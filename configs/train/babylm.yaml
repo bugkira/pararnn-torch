@@ -63,6 +63,10 @@ grad_clip: 1.0
 newton_iters: 3
 picard_iters: 3
 picard_adapt: true
+# Opt-in numerics smoke: first Newton forward per ParaRNN layer runs
+# verify_agreement once (docs/numerics-contract.md). Off for pure timing
+# smokes; on for real trains.
+verify_first_step: true
 # App. C.1 clamp. Z2 disabled it; LM keeps it.
 max_recurrent_norm: 0.5
 

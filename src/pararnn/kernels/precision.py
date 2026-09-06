@@ -39,6 +39,9 @@ def is_fused_dtype_supported(dtype: torch.dtype, device: torch.device | str | in
 
 def validate_cuda_tensors(*tensors: Tensor, name: str) -> bool:
     """CUDA, one device, one fused dtype. Return True if DRAM is fp16/bf16."""
+    from pararnn.kernels._compat import require_fused_triton
+
+    require_fused_triton()
     if not tensors:
         raise ValueError(f"{name}: no tensors")
     ref = tensors[0]

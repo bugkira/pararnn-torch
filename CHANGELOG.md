@@ -4,6 +4,41 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-09-07
+
+Numerics contract against silent wrong answers: residual gate, measured
+\(K^*(T)\), opt-in `verify_agreement` / `verify_first_step`, and docs that
+keep those thresholds separate. Triton dialect preflight on first fused
+launch.
+
+### Added
+
+- `pararnn.verify_agreement(module, x)` — numerics contract helper: compare
+  Newton+scan to the sequential unroll and return `AgreementReport`
+  (`ok`, `max_abs`, tolerances). Accepts a cell, `ParaRNN`, or
+  `ParaSLSTMBlock`. Optional `raise_on_fail=True` → `AgreementError`.
+- `NewtonConfig(verify_first_step=True)` — one-shot `verify_agreement` on the
+  first `ParaRNN` Newton forward (skipped under `torch.compile` / packed
+  `cu_seqlens`); `ParaRNN.reset_agreement_check()` to re-arm.
+- [`docs/numerics-contract.md`](docs/numerics-contract.md) — brand invariant:
+  residual gate (`max|F|`) and agreement τ; four echelons (runtime / K*(T) /
+  opt-in oracle / docs).
+- Bug report template: env one-liner (torch / CUDA / Triton / GPU) plus
+  `verify_agreement` paste hint.
+- BabyLM train: optional `verify_first_step` in YAML (default on in
+  `babylm.yaml`); `AgreementError` aborts the run; `newton_residual` already
+  logged to MLflow each step.
+
+### Changed
+
+- Install / README / FAQ hardware honesty: fp32/fp16 fused on Linux+NVIDIA
+  including Turing (lab: 2080 Ti); bf16 fused needs Ampere+; CPU/Mac/Windows
+  → eager `scan_backend="auto"`.
+- FAQ / README glossary: residual gate and agreement τ as separate thresholds.
+- `pararnn.kernels._compat`: Triton 3.6.x pin + capability probes; first fused
+  / Triton scan launch also runs a lazy one-shot CUDA JIT smoke
+  (`check_triton_environment` / `require_fused_triton`).
+
 ## [0.17.1] - 2026-09-06
 
 ``NewtonConfig(max_iters=None)`` fills Newton depth from a measured
@@ -486,7 +521,8 @@ installable surface.
 - Generic-cell autograd path and sequential reference solver.
 - Numerics tests: parallel vs sequential agreement, layer forward/backward.
 
-[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.17.2...HEAD
+[0.17.2]: https://github.com/bugkira/pararnn-torch/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/bugkira/pararnn-torch/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/bugkira/pararnn-torch/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/bugkira/pararnn-torch/compare/v0.15.0...v0.16.0

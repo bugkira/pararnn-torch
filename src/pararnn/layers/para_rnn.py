@@ -116,6 +116,8 @@ class ParaRNN(nn.Module):
         self.hidden_layout = hidden_layout
         self.dropout = dropout
         self.last_stats: list[NewtonStats] = []
+        # Once True, verify_first_step will not run again (reset via method).
+        self._agreement_verified: bool = False
         self.layers = nn.ModuleList(_build_layers(cell, num_layers, device=device, dtype=dtype))
         if dropout > 0 and len(self.layers) == 1:
             warnings.warn(
@@ -139,11 +141,37 @@ class ParaRNN(nn.Module):
             return False
         return self.training
 
+    def reset_agreement_check(self) -> None:
+        """Allow ``verify_first_step`` to run again on the next Newton forward."""
+        self._agreement_verified = False
+
     def reset_parameters(self) -> None:
         for cell in self.layers:
             reset = getattr(cell, "reset_parameters", None)
             if callable(reset):
                 reset()
+
+    def _maybe_verify_first_step(self, x: Tensor) -> None:
+        """One-shot parallel↔sequential smoke when ``config.verify_first_step``."""
+        if not self.config.verify_first_step or self._agreement_verified:
+            return
+        if torch.compiler.is_compiling():
+            return
+        # Set before verify_agreement re-enters forward with solver='newton'.
+        self._agreement_verified = True
+        from pararnn.verify import verify_agreement
+
+        report = verify_agreement(self, x, raise_on_fail=True)
+        log.info(
+            "verify_first_step_ok",
+            extra={
+                "max_abs": report.max_abs,
+                "atol": report.atol,
+                "shape": report.shape,
+                "dtype": report.dtype,
+                "max_residual": report.max_residual,
+            },
+        )
 
     def extra_repr(self) -> str:
         return (
@@ -231,6 +259,8 @@ class ParaRNN(nn.Module):
                     "n_seq": None if cs is None else int(cs.numel()) - 1,
                 },
             )
+        if use_newton and cs is None:
+            self._maybe_verify_first_step(x)
         for i, cell in enumerate(self.layers):
             if use_newton:
                 st = NewtonStats()

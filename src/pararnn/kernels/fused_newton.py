@@ -23,6 +23,7 @@ from pararnn.cells.para_lstm import ParaLSTM
 from pararnn.cells.para_nlru import ParaNLRU
 from pararnn.cells.para_slstm import ParaSLSTM
 from pararnn.cells.para_titans import ParaTitans
+from pararnn.kernels._compat import require_fused_triton
 
 
 def fused_newton(
@@ -81,6 +82,7 @@ def fused_newton(
         When the cell / knobs combination is unsupported (including head
         GRU with ``cu_seqlens`` or ``fused_early_exit``).
     """
+    require_fused_triton()
     early = residual_fn is not None and early_exit_atol is not None
     if isinstance(cell, (ParaNLRU, ParaCfC, ParaTitans)):
         if log_coords:

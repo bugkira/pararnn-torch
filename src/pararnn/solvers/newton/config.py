@@ -111,6 +111,10 @@ class NewtonConfig:
         Rematerialize ``H*`` in backward (VRAM trade); default stores ``H*`` (IFT).
     fused_early_exit : bool
         Host-sync early-stop inside fused ``K`` (experimental; needs ``residual_atol``).
+    verify_first_step : bool
+        On a ``ParaRNN``, run :func:`pararnn.verify_agreement` once on the first
+        Newton forward (smoke: shapes / device / dialect vs sequential τ).
+        Default ``False`` (opt-in; ~one sequential unroll cost).
 
     See Also
     --------
@@ -175,6 +179,9 @@ class NewtonConfig:
     # ablations / residual curves. Requires ``residual_atol``; rejects
     # ``fused_time_loop``. Eager already early-stops via ``residual_atol`` alone.
     fused_early_exit: bool = False
+    # Opt-in numerics smoke on ParaRNN: first Newton forward calls
+    # verify_agreement(..., raise_on_fail=True). Skipped under torch.compile.
+    verify_first_step: bool = False
 
 
 # Lengths compiled as Triton BLOCK_T in the fused walk kernel. Not Apple App. C.

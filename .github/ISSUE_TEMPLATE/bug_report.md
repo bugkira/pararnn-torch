@@ -5,11 +5,17 @@ labels: bug
 ---
 
 **Environment**
+
+Paste the output of:
+
+```bash
+python -c "import torch, pararnn; import importlib.util as u; t=(__import__('triton').__version__ if u.find_spec('triton') else 'n/a'); print('pararnn', getattr(pararnn,'__version__', '?'), '| torch', torch.__version__, '| cuda', torch.version.cuda, '| triton', t, '| gpu', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
+```
+
+Also fill in:
 - OS:
 - Python:
-- `torch` / CUDA (or CPU):
-- `pararnn-torch` version or git SHA:
-- GPU (if any):
+- install path (`pip` / `uv` / editable git SHA):
 
 **What happened**
 (short description)
@@ -17,10 +23,16 @@ labels: bug
 **Minimal reproduction**
 ```python
 # paste a short script
+from pararnn import verify_agreement
+# report = verify_agreement(cell_or_model, x)
+# print(report.to_dict())
 ```
 
 **Expected**
-(e.g. sequential ↔ Newton max abs error < …)
+(e.g. `verify_agreement(...).ok` with fp32 atol 1e-4; or a clean
+`NewtonDivergenceError` when residual ≥ 1 — residual gate ≠ agreement τ;
+see `docs/numerics-contract.md`)
 
 **Logs**
-(Newton residual, traceback, `uv run python scripts/gpu.py` output)
+(`newton_residual` / `report.to_dict()` / traceback; optional:
+`uv run python scripts/gpu.py`)

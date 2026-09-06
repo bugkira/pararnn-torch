@@ -18,8 +18,9 @@ fine for generation, and slow for training long contexts. ParaRNN trains the
 training cost grows much more gently with sequence length `T`, while
 `.eval()` still uses the familiar one-step recurrence.
 
-Alpha. Fast fused kernels need NVIDIA Ampere+ (CUDA compute capability ≥ 8.0)
-and Triton; older GPUs fall back to a slower but correct path.
+Alpha. Fused kernels need **Linux + NVIDIA CUDA** (fp32/fp16; lab includes
+RTX 2080 Ti). **bf16 fused** needs Ampere+ (CC ≥ 8.0). CPU / Mac / Windows
+without CUDA use the eager fallback via `scan_backend="auto"`.
 
 - [News](#news)
 - [What you get](#what-you-get)
@@ -85,8 +86,11 @@ instead of attention.
 | **Newton + scan** | Parallel train path: refine a whole-sequence guess with a few Newton steps; each step uses an associative scan over `T`. |
 | **K / `max_iters`** | Number of Newton iterations you budget per forward. |
 | **K\*(T)** | Smallest `K` where parallel output still matches sequential within tolerance τ≈1e-4. Measured per cell vs `T`; often **constant** (2) through 131k tokens. |
-| **Fused** | Triton CUDA kernel for that Newton+scan path (Ampere+). |
+| **Agreement τ** | Max abs gap Newton vs sequential. Brand claim. Checked by `verify_agreement`. |
+| **Residual gate** | `max|F(H)|`. Explosion fuse (`residual_fail=1.0` → `NewtonDivergenceError`). Separate from τ. |
+| **Fused** | Triton CUDA kernel for Newton+scan (Linux + NVIDIA; bf16 needs Ampere+). |
 | **Jacobian class** | Structure of ∂f/∂h — `diag` / `head` / `dense` / matrix-state — picks which kernel/scan we use. |
+| **`verify_agreement`** | One-batch Newton vs sequential check ([numerics contract](docs/numerics-contract.md)). |
 
 More on iterations: [`FAQs.md`](FAQs.md#what-is-critical-newton-depth-k).
 
@@ -114,7 +118,7 @@ serve hooks are this repo’s extras.
 | Command | see below | `git clone … && uv sync --group dev` |
 | PyTorch | bring your own (CPU or CUDA) | pinned in `pyproject.toml` (cu128) |
 | Python | 3.10+ | 3.10+ |
-| Fused Triton | CUDA CC ≥ 8.0 (Ampere+) | same; else `scan_backend="auto"` → eager |
+| Fused Triton | Linux + NVIDIA (fp32/fp16; bf16 → CC ≥ 8.0) | same; else `scan_backend="auto"` → eager |
 
 ```bash
 # when published on PyPI:
@@ -322,7 +326,10 @@ More: [`scripts/README.md`](scripts/README.md). Distributed demos:
 - **CausalLM / serve** — `ParaSLSTMForCausalLM`, `BlockStackPool`,
   `vllm.general_plugins` ([`docs/vllm.md`](docs/vllm.md)).
 - **Solver** — `NewtonConfig(scan_backend="auto", max_iters=None|int)`;
-  `picard_iters` warms the first guess for sLSTM / M²RNN.
+  `picard_iters` warms the first guess for sLSTM / M²RNN;
+  `verify_first_step=True` for a one-shot agreement smoke on `ParaRNN`.
+- **Numerics check** — `verify_agreement(module, x)` → `AgreementReport`;
+  full contract: [`docs/numerics-contract.md`](docs/numerics-contract.md).
 - **Speculative** — `verify_linear_draft`.
 - **Paged** — `PagedStatePool` / `paged_apply`.
 - **Decode** — `decode_step`, `decode_wx`, `can_decode_step`.
@@ -336,6 +343,7 @@ h = sequential_apply(cell, x)
 
 **Docs:** adoption · cells · [`xlstm.md`](docs/xlstm.md) ·
 [`distributed.md`](docs/distributed.md) · [`vllm.md`](docs/vllm.md) ·
+[`numerics-contract.md`](docs/numerics-contract.md) ·
 [`structure.md`](docs/structure.md) · [`INSTALL.md`](INSTALL.md) ·
 [`FAQs.md`](FAQs.md).
 
@@ -382,7 +390,7 @@ If you use this library, please cite the software and the ParaRNN framework.
   title        = {{pararnn-torch}: Hardware-efficient parallel training for nonlinear {RNNs}},
   year         = {2026},
   url          = {https://github.com/bugkira/pararnn-torch},
-  version      = {0.17.1}
+  version      = {0.17.2}
 }
 
 @misc{sereda2026paraslstm,
