@@ -51,6 +51,59 @@ Place modules on a device like any `nn.Module` (`.to(device)`, or `device=` / `d
 
 ## Quickstart
 
+Product entry: a trunk block or a tiny CausalLM. Cell-level `ParaRNN` APIs are
+under [Cells](#cells). Adoption notes: [`docs/adoption.md`](docs/adoption.md).
+
+### Trunk block
+
+```python
+import torch
+from pararnn import NewtonConfig, ParaSLSTMBlock
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+block = ParaSLSTMBlock(64, mlp_ratio=4.0, config=NewtonConfig(max_iters=3)).to(device)
+x = torch.randn(2, 128, 64, device=device)
+
+block.train()
+y = block(x)          # Newton + scan inside the recurrent branch
+y.sum().backward()
+
+block.eval()
+y_eval = block(x)     # sequential step (T=1 CUDA: decode_step)
+```
+
+### CausalLM
+
+```python
+from pararnn import ParaSLSTMConfig, ParaSLSTMForCausalLM
+
+cfg = ParaSLSTMConfig(
+    vocab_size=256,
+    hidden_size=64,
+    num_hidden_layers=2,
+    mlp_ratio=2.0,
+)
+model = ParaSLSTMForCausalLM(cfg).to(device)
+ids = torch.randint(0, 256, (2, 32), device=device)
+
+model.train()
+logits, loss = model(ids, labels=ids)
+loss.backward()
+
+model.eval()
+out = model.generate(ids[:1, :8], max_new_tokens=16)
+model.save_pretrained("./ckpt")   # config.json + model.safetensors
+model = ParaSLSTMForCausalLM.from_pretrained("./ckpt")
+```
+
+Smoke: [`examples/causal_lm_smoke.py`](examples/causal_lm_smoke.py). Continuous
+batch: [`examples/continuous_batch.py`](examples/continuous_batch.py).
+
+## Cells
+
+Low-level recurrent maps wrapped by `ParaRNN`. Prefer the block / CausalLM
+above unless you are wiring a custom stack.
+
 ```python
 import torch
 from pararnn import NewtonConfig, ParaGRU, ParaRNN, ParaSLSTM
@@ -87,6 +140,8 @@ y = slstm(torch.randn(4, 128, 64, device=device))
 rssm_h = ParaRNN(ParaGRU(512, 512, mix="head", n_heads=8), device=device)
 y = rssm_h(torch.randn(4, 64, 512, device=device))
 ```
+
+Thin imagination-slot smoke: [`examples/rssm_recurrent.py`](examples/rssm_recurrent.py).
 
 Head fused Newton medians (ms), float32, RTX 2080 Ti, `K=3`
 (`scripts/bench_gru_head.py`). Paths: `d_head≤64` full SRAM, `≤128` streamed-`A`,
@@ -149,11 +204,15 @@ uv run python scripts/train_babylm.py --config configs/train/babylm.yaml   # nee
 ## Examples
 
 Standalone scripts: install `pararnn-torch`, copy a file, run it. Knobs live
-in the script; metrics go to stdout.
+in the script; metrics go to stdout. Start with the CausalLM / block path in
+[`docs/adoption.md`](docs/adoption.md).
 
 | Script | What it shows | Command | Extras |
 |---|---|---|---|
-| [`examples/train_smoke.py`](examples/train_smoke.py) | GRU identity CE smoke: AdamW | `uv run python examples/train_smoke.py` | — |
+| [`examples/causal_lm_smoke.py`](examples/causal_lm_smoke.py) | CausalLM: `labels` CE, `generate`, safetensors save/load | `uv run python examples/causal_lm_smoke.py` | — |
+| [`examples/continuous_batch.py`](examples/continuous_batch.py) | Packed prefill + T=1 decode via `BlockStackPool` | `uv run python examples/continuous_batch.py` | — |
+| [`examples/rssm_recurrent.py`](examples/rssm_recurrent.py) | Dreamer-style `ParaGRU(mix='head')` imagination slot | `uv run python examples/rssm_recurrent.py` | — |
+| [`examples/train_smoke.py`](examples/train_smoke.py) | Cell-level GRU + linear head CE smoke | `uv run python examples/train_smoke.py` | — |
 | [`examples/ddp_fsdp.py`](examples/ddp_fsdp.py) | DDP / FSDP2 one-step wrap of `ParaRNN` | `uv run torchrun --nproc_per_node=2 examples/ddp_fsdp.py` | two visible GPUs for NCCL |
 | [`examples/speculative_draft.py`](examples/speculative_draft.py) | Greedy linear-draft verify: one Newton scan vs sequential | `uv run python examples/speculative_draft.py` | — |
 | [`examples/decode_step.py`](examples/decode_step.py) | T=1 Triton decode vs eager `cell.step` | `uv run python examples/decode_step.py` | — |
@@ -170,9 +229,9 @@ API notes stay in [`docs/distributed.md`](docs/distributed.md).
 
 - **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM`, `ParaM2RNN` — recurrent maps \(f(h_{t-1}, x_t)\). M²RNN state is `(B, T, K, V)`.
 - **Sequence module:** `ParaRNN(cell, config=NewtonConfig(max_iters=3))` — stacks one or more cells (`ParaM2RNN` also works through `newton_apply` / `sequential_apply` directly).
-- **Trunk block:** `ParaSLSTMBlock(d_model, mlp_ratio=4)` — RMSNorm + ParaSLSTM + SwiGLU residuals for LM stacks (`docs/xlstm.md`).
-- **CausalLM / vLLM:** `ParaSLSTMForCausalLM` + `BlockStackPool` continuous batch +
-  `vllm.general_plugins` registration (`docs/vllm.md`, `examples/continuous_batch.py`).
+- **Trunk block:** `ParaSLSTMBlock(d_model, mlp_ratio=4)` — RMSNorm + ParaSLSTM + SwiGLU residuals for LM stacks ([`docs/adoption.md`](docs/adoption.md), [`docs/xlstm.md`](docs/xlstm.md)).
+- **CausalLM / vLLM:** `ParaSLSTMForCausalLM` (`labels` CE, `generate`, `model.safetensors`) + `BlockStackPool` continuous batch +
+  `vllm.general_plugins` registration ([`docs/adoption.md`](docs/adoption.md), [`docs/vllm.md`](docs/vllm.md), `examples/continuous_batch.py`).
 - **Solver config:** `NewtonConfig(scan_backend="auto")` picks fused Triton on CUDA when available, else Triton scan + `step`, else eager Blelloch. For `ParaM2RNN`, `picard_iters>=1` selects a frozen-\(W\) warm-start.
 - **Low-level solvers** (bypass `ParaRNN`):
 
@@ -187,7 +246,7 @@ h = sequential_apply(cell, x)
 - **Paged state:** `PagedStatePool` / `paged_apply` — O(1) slot per request; sequential CUDA and fused Newton index the pool through `block_table`. `offload` / `reload` park a slot on pinned host RAM.
 - **Decode step:** `decode_step` — T=1 Triton recurrent step (gates + mix). `out=` reuses a buffer; `block_table` is slot ids into a pool. `decode_wx` fills `W_x(x)` for CUDA graphs. `can_decode_step` reports whether the kernel will run.
 
-**Details:** output shapes, `mix=`, LSTM layout, scan backends — [`docs/xlstm.md`](docs/xlstm.md#api-notes). Data / tensor parallel — [`docs/distributed.md`](docs/distributed.md). vLLM plugin — [`docs/vllm.md`](docs/vllm.md). Repo layout — [`docs/structure.md`](docs/structure.md).
+**Details:** drop-in adoption — [`docs/adoption.md`](docs/adoption.md). Output shapes, `mix=`, LSTM layout, scan backends — [`docs/xlstm.md`](docs/xlstm.md#api-notes). Data / tensor parallel — [`docs/distributed.md`](docs/distributed.md). vLLM plugin — [`docs/vllm.md`](docs/vllm.md). Repo layout — [`docs/structure.md`](docs/structure.md).
 
 ## Compatibility
 

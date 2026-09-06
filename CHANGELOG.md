@@ -4,6 +4,16 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- Product entry path: README Quickstart leads with `ParaSLSTMBlock` /
+  `ParaSLSTMForCausalLM`; [`docs/adoption.md`](docs/adoption.md) covers
+  Attention swap, CausalLM, and the Dreamer RSSM recurrent slot.
+- `ParaSLSTMForCausalLM.forward(..., labels=)` returns shifted CE loss;
+  `save_pretrained` / `from_pretrained` write and prefer `model.safetensors`
+  (dependency `safetensors`), with `pytorch_model.bin` fallback.
+- Examples: `examples/causal_lm_smoke.py`, `examples/rssm_recurrent.py`.
+
 ### Changed
 
 - CI: merge gate is lint + CPU tests only; self-hosted CUDA moved to

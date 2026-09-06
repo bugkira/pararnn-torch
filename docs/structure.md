@@ -9,6 +9,7 @@ One trunk (`main`). Three layers:
 ```
 ParaRNN/
 ├── docs/
+│   ├── adoption.md             # drop-in block / CausalLM / RSSM slot
 │   ├── xlstm.md
 │   ├── distributed.md          # DDP / FSDP2 / TP / context-parallel scan
 │   ├── vllm.md                 # vLLM general_plugins + CausalLM

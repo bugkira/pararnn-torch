@@ -32,7 +32,8 @@ materializing `(4 d_head)²`; the dense-J oracle remains available via
 ## Stacking
 
 `ParaSLSTMBlock` is the library drop-in trunk layer (RMSNorm → `ParaRNN(ParaSLSTM)`
-→ residual → RMSNorm → SwiGLU → residual):
+→ residual → RMSNorm → SwiGLU → residual). Short adoption path (CausalLM,
+torchtitan-style swap, RSSM slot): [`docs/adoption.md`](adoption.md).
 
 ```python
 from pararnn import NewtonConfig, ParaSLSTMBlock

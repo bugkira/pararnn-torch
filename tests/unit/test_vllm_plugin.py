@@ -50,12 +50,61 @@ def test_causal_lm_forward_and_save(tmp_path: Path) -> None:
     assert any(p.grad is not None for p in model.parameters())
 
     model.save_pretrained(tmp_path)
+    assert (tmp_path / "model.safetensors").is_file()
+    assert (tmp_path / "pytorch_model.bin").is_file()
     restored = ParaSLSTMForCausalLM.from_pretrained(tmp_path)
     restored.eval()
     with torch.no_grad():
         a = model.eval()(ids)
         b = restored(ids)
     assert torch.allclose(a, b, atol=1e-5, rtol=1e-5)
+
+
+def test_causal_lm_labels_loss_backward() -> None:
+    torch.manual_seed(2)
+    cfg = ParaSLSTMConfig(
+        vocab_size=32,
+        hidden_size=16,
+        num_hidden_layers=1,
+        mlp_ratio=2.0,
+        newton_iters=1,
+        scan_backend="eager",
+    )
+    model = ParaSLSTMForCausalLM(cfg)
+    for block in model.blocks:
+        block.rnn.config = NewtonConfig(max_iters=1, scan_backend="eager", residual_fail=None)
+    ids = torch.randint(0, 32, (2, 6))
+    labels = ids.clone()
+    labels[:, 0] = -100
+    model.train()
+    logits, loss = model(ids, labels=labels)
+    assert logits.shape == (2, 6, 32)
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert any(p.grad is not None for p in model.parameters())
+
+
+def test_causal_lm_from_pretrained_bin_fallback(tmp_path: Path) -> None:
+    torch.manual_seed(3)
+    cfg = ParaSLSTMConfig(
+        vocab_size=40,
+        hidden_size=16,
+        num_hidden_layers=1,
+        mlp_ratio=2.0,
+        newton_iters=1,
+        scan_backend="eager",
+    )
+    model = ParaSLSTMForCausalLM(cfg)
+    for block in model.blocks:
+        block.rnn.config = NewtonConfig(max_iters=1, scan_backend="eager", residual_fail=None)
+    model.save_pretrained(tmp_path)
+    (tmp_path / "model.safetensors").unlink()
+    restored = ParaSLSTMForCausalLM.from_pretrained(tmp_path)
+    ids = torch.randint(0, 40, (1, 4))
+    model.eval()
+    restored.eval()
+    with torch.no_grad():
+        assert torch.allclose(model(ids), restored(ids), atol=1e-5, rtol=1e-5)
 
 
 def test_causal_lm_generate_grows() -> None:

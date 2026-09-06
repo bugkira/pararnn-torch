@@ -4633,6 +4633,7 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "python_full_version < '3.13'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "python_full_version >= '3.13'" },
+    { name = "safetensors" },
     { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform != 'darwin'" },
     { name = "triton", marker = "sys_platform == 'linux'" },
@@ -4672,6 +4673,7 @@ requires-dist = [
     { name = "flashrnn", marker = "extra == 'flashrnn'", specifier = ">=1.0.6" },
     { name = "mlflow", marker = "extra == 'train'" },
     { name = "numpy", specifier = ">=2.2.6" },
+    { name = "safetensors", specifier = ">=0.8.0" },
     { name = "tokenizers", marker = "extra == 'lm'", specifier = ">=0.21" },
     { name = "torch", specifier = ">=2.11.0" },
     { name = "triton", marker = "sys_platform == 'linux'", specifier = ">=3.6.0,<3.7" },

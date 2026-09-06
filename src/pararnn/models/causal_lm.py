@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from pararnn.kernels.decode import can_decode_step, decode_step, decode_wx
@@ -17,6 +18,9 @@ from pararnn.serve.continuous import BlockStackPool
 from pararnn.solvers.newton import LIBRARY_NEWTON_ITERS, NewtonConfig
 
 log = logging.getLogger(__name__)
+
+_SAFETENSORS_NAME = "model.safetensors"
+_BIN_NAME = "pytorch_model.bin"
 
 
 def _newton_config(cfg: ParaSLSTMConfig) -> NewtonConfig:
@@ -107,7 +111,13 @@ class ParaSLSTMForCausalLM(nn.Module):
     def pool(self) -> BlockStackPool | None:
         return self._pool
 
-    def forward(self, input_ids: Tensor, *, positions: Tensor | None = None) -> Tensor:
+    def forward(
+        self,
+        input_ids: Tensor,
+        *,
+        positions: Tensor | None = None,
+        labels: Tensor | None = None,
+    ) -> Tensor | tuple[Tensor, Tensor]:
         """Dense prefill / training forward through the block stack.
 
         Parameters
@@ -116,16 +126,22 @@ class ParaSLSTMForCausalLM(nn.Module):
             Token ids.
         positions : Tensor, optional
             Ignored; accepted for HF / vLLM call-site compatibility.
+        labels : Tensor of shape (batch, time), optional
+            Token targets. When set, returns ``(logits, loss)`` with shifted
+            cross-entropy (``logits[:, :-1]`` vs ``labels[:, 1:]``); ``-100``
+            is ignored. Without ``labels``, returns logits only.
 
         Returns
         -------
         Tensor of shape (batch, time, vocab_size)
-            LM-head logits.
+            LM-head logits when ``labels`` is omitted.
+        (logits, loss) : tuple[Tensor, Tensor]
+            When ``labels`` is provided.
 
         Raises
         ------
         ValueError
-            If ``input_ids`` is not rank-2.
+            If ``input_ids`` is not rank-2, or ``labels`` shape mismatches.
         """
         del positions
         if input_ids.dim() != 2:
@@ -133,7 +149,23 @@ class ParaSLSTMForCausalLM(nn.Module):
         h = self.embed(input_ids)
         for block in self.blocks:
             h = block(h)
-        return self.lm_head(self.norm(h))
+        logits = self.lm_head(self.norm(h))
+        if labels is None:
+            return logits
+        if labels.shape != input_ids.shape:
+            raise ValueError(
+                f"labels must match input_ids shape {tuple(input_ids.shape)}, "
+                f"got {tuple(labels.shape)}"
+            )
+        # Next-token CE: predict t+1 from positions 0..t.
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            ignore_index=-100,
+        )
+        return logits, loss
 
     @torch.no_grad()
     def forward_continuous(
@@ -298,10 +330,18 @@ class ParaSLSTMForCausalLM(nn.Module):
         return out
 
     def save_pretrained(self, directory: str | Path) -> None:
+        """Write ``config.json``, ``model.safetensors``, and model-type marker.
+
+        Also writes ``pytorch_model.bin`` so older loaders keep working.
+        ``safetensors.torch.save_model`` keeps tied ``embed`` / ``lm_head`` weights.
+        """
+        from safetensors.torch import save_model
+
         path = Path(directory)
         path.mkdir(parents=True, exist_ok=True)
         self.config.save_pretrained(path)
-        torch.save(self.state_dict(), path / "pytorch_model.bin")
+        save_model(self, str(path / _SAFETENSORS_NAME))
+        torch.save(self.state_dict(), path / _BIN_NAME)
         (path / "pararnn_model_type.json").write_text(
             json.dumps({"model": "ParaSLSTMForCausalLM"}) + "\n"
         )
@@ -309,9 +349,25 @@ class ParaSLSTMForCausalLM(nn.Module):
 
     @classmethod
     def from_pretrained(cls, directory: str | Path, *, map_location=None) -> ParaSLSTMForCausalLM:
+        """Load from a directory written by ``save_pretrained``.
+
+        Prefers ``model.safetensors``; falls back to ``pytorch_model.bin``.
+        Weights load on CPU, then move when ``map_location`` is set.
+        """
         path = Path(directory)
         cfg = ParaSLSTMConfig.from_pretrained(path)
         model = cls(cfg)
-        state = torch.load(path / "pytorch_model.bin", map_location=map_location, weights_only=True)
-        model.load_state_dict(state)
+        st_path = path / _SAFETENSORS_NAME
+        bin_path = path / _BIN_NAME
+        if st_path.is_file():
+            from safetensors.torch import load_model
+
+            load_model(model, str(st_path), device="cpu")
+        elif bin_path.is_file():
+            state = torch.load(bin_path, map_location="cpu", weights_only=True)
+            model.load_state_dict(state)
+        else:
+            raise FileNotFoundError(f"no {_SAFETENSORS_NAME} or {_BIN_NAME} under {path}")
+        if map_location is not None:
+            model.to(map_location)
         return model

@@ -1,0 +1,84 @@
+# Adoption: drop-in recurrent trunk
+
+This page is the short path from install to a working stack. Low-level cell
+APIs live in the [README Cells section](../README.md#cells) and
+[`docs/xlstm.md`](xlstm.md).
+
+## Replace an Attention block
+
+`ParaSLSTMBlock` is a pre-norm residual trunk:
+
+`RMSNorm → ParaRNN(ParaSLSTM) → residual → RMSNorm → SwiGLU → residual`
+
+```python
+import torch
+from pararnn import NewtonConfig, ParaSLSTMBlock
+
+d_model = 256
+block = ParaSLSTMBlock(
+    d_model,
+    mlp_ratio=4.0,
+    config=NewtonConfig(max_iters=3),
+)
+x = torch.randn(2, 128, d_model)
+y = block(x)  # (2, 128, 256)
+
+# Stack like transformer layers (no GQA inside this package):
+layers = torch.nn.ModuleList([ParaSLSTMBlock(d_model) for _ in range(8)])
+```
+
+In torchtitan / Megatron / Llama-Factory style code, swap the attention module
+for this block (or alternate Attention every `k` layers outside ParaRNN). The
+library owns the recurrent Newton solve; attention kernels stay in your stack.
+
+## Full CausalLM
+
+```python
+from pararnn import ParaSLSTMConfig, ParaSLSTMForCausalLM
+
+cfg = ParaSLSTMConfig(
+    vocab_size=32000,
+    hidden_size=512,
+    num_hidden_layers=8,
+    mlp_ratio=4.0,
+)
+model = ParaSLSTMForCausalLM(cfg)
+
+logits, loss = model(input_ids, labels=input_ids)  # train
+tokens = model.generate(prompt_ids, max_new_tokens=32)  # eval decode
+model.save_pretrained("./ckpt")  # config.json + model.safetensors
+model = ParaSLSTMForCausalLM.from_pretrained("./ckpt")
+```
+
+Smoke: [`examples/causal_lm_smoke.py`](../examples/causal_lm_smoke.py).
+Packed continuous batch: [`examples/continuous_batch.py`](../examples/continuous_batch.py).
+Serve plugin: [`docs/vllm.md`](vllm.md).
+
+## Dreamer / RSSM recurrent slot
+
+World-model imagination is usually `h_t = GRU(h_{t-1}, concat(z, a))`. Use
+`ParaGRU(mix='head')` inside `ParaRNN` for that slot; keep encoder / prior /
+actor in your RL code.
+
+```python
+from pararnn import NewtonConfig, ParaGRU, ParaRNN
+
+# Cho gates; Dreamer LayerNorm stays outside the cell.
+rssm_h = ParaRNN(
+    ParaGRU(d_in=z_dim + a_dim, d_h=512, mix="head", n_heads=8),
+    config=NewtonConfig(max_iters=3),
+)
+# .train() → parallel Newton over the imagination horizon
+# .eval()  → sequential step (T=1 CUDA: decode_step)
+```
+
+Smoke: [`examples/rssm_recurrent.py`](../examples/rssm_recurrent.py).
+
+## Scope
+
+- Local `save_pretrained` / `from_pretrained` (`config.json` + `model.safetensors`).
+  Hugging Face `AutoModel` registration stays outside this package.
+- Compose Attention / GQA in your trainer next to `ParaSLSTMBlock` when you
+  want a hybrid stack.
+- RSSM / Dreamer keep encoder, prior, and actor in the RL codebase; this
+  library supplies the recurrent `h_t` slot.
