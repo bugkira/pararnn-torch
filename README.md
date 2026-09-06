@@ -347,6 +347,7 @@ h = sequential_apply(cell, x)
 [`numerics-contract.md`](docs/numerics-contract.md) ·
 [`oom-cookbook.md`](docs/oom-cookbook.md) ·
 [`compile-amp.md`](docs/compile-amp.md) ·
+[`shapes-layout.md`](docs/shapes-layout.md) ·
 [`structure.md`](docs/structure.md) · [`INSTALL.md`](INSTALL.md) ·
 [`FAQs.md`](FAQs.md).
 
@@ -359,6 +360,8 @@ h = sequential_apply(cell, x)
 - **DDP / FSDP / checkpoint:** [`docs/distributed.md`](docs/distributed.md);
   ultra-long train VRAM → `NewtonConfig(recompute=True)` and the
   [OOM cookbook](docs/oom-cookbook.md) (Hopfield `d_h` cap, RWKV slim heads).
+- **Shapes / packing:** [`docs/shapes-layout.md`](docs/shapes-layout.md) —
+  contiguous copies on fused paths; `cu_seqlens` support matrix.
 - **Determinism:** packed VJP uses tile `tl.sum` then `.sum` (no `tl.atomic*`);
   set `CUBLAS_WORKSPACE_CONFIG=:4096:8` under
   `torch.use_deterministic_algorithms(True)`.

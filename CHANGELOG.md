@@ -4,6 +4,16 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- [`docs/shapes-layout.md`](docs/shapes-layout.md) — contiguity contract,
+  `cu_seqlens` × fused/eager/raise matrix, non-contig smoke for bugs.
+
+### Changed
+
+- Ignore `docs/sources/positioning/user-friction/` dumps (large JSONL lab
+  cache); peer README snapshots under `positioning/` stay tracked.
+
 ## [0.17.3] - 2026-09-07
 
 Long-T / OOM cheat sheet and `torch.compile` / AMP wrapper docs.

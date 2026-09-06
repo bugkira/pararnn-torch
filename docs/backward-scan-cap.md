@@ -20,8 +20,10 @@ Median latency (ms), float32, RTX 2080 Ti, ``K=3``, ``scripts/bench_gru_head.py`
 | ``B=1``, ``T=4096`` | 64 | 51 | 63 | 4 | 83 |
 | ``B=1``, ``T=4096`` | 96 | 220 | 86 | 14 | 293 |
 
-Packed ``cu_seqlens``: explicit ``scan_backend='fused'`` raises ``TypeError``;
-``auto`` remaps to ``eager`` with a ``UserWarning``. Use ``eager`` for ragged packs
+Packed ``cu_seqlens``: head-mix cells — explicit ``scan_backend='fused'``
+raises ``TypeError``; ``auto`` remaps to ``eager`` with a ``UserWarning``.
+Diag ``ParaGRU`` packs in fused kernels. Full matrix:
+[`shapes-layout.md`](shapes-layout.md). Use ``eager`` for head+ragged packs
 or pad to a rectangular batch.
 
 ## Remaining

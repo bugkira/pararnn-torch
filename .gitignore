@@ -38,6 +38,9 @@ parity_curves.json
 docs/sources/*.pdf
 docs/papers/*.pdf
 
+# peer issue/PR friction dumps (large JSONL; keep on disk)
+docs/sources/positioning/user-friction/
+
 # Apple's official clone, if you keep one locally
 third_party/
 

@@ -123,6 +123,13 @@ cfg = compile_safe_config(scan_backend="auto")
 fn = torch.compile(lambda z: newton_apply(cell, z, cfg), fullgraph=True)
 ```
 
+## Non-contiguous tensors / `cu_seqlens` packing?
+
+Fused paths copy to contiguous before Triton. Head-mix + pack: `auto` →
+eager; explicit `fused` raises `TypeError`. Diag GRU packs in fused kernels.
+
+Matrix + smoke: [`docs/shapes-layout.md`](docs/shapes-layout.md).
+
 ## train() vs eval()?
 
 `.train()` runs parallel Newton+scan. `.eval()` runs sequential `step`. On CUDA
