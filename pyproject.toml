@@ -96,6 +96,7 @@ src = ["src", "tests", "examples", "scripts"]
 target-version = "py310"
 # Triton kernels carry wide arithmetic expressions; the default 88 would shred them.
 line-length = 100
+extend-exclude = ["notebooks", "**/*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "C4", "PT"]
