@@ -34,11 +34,12 @@ md(
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bugkira/pararnn-torch/blob/main/notebooks/paraslstm_demo.ipynb)
 [![GitHub](https://img.shields.io/badge/GitHub-bugkira%2Fpararnn--torch-blue)](https://github.com/bugkira/pararnn-torch)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22302587.svg)](https://doi.org/10.5281/zenodo.22302587)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22302586.svg)](https://doi.org/10.5281/zenodo.22302586)
 
 Parallel **training** of nonlinear sLSTM via Newton + associative scan
 ([Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450)), with a tropical
-warm-start for exponentially gated cells ([ParaSLSTM](https://doi.org/10.5281/zenodo.22302587)).
+warm-start for exponentially gated cells
+([ParaSLSTM](https://doi.org/10.5281/zenodo.22558086)).
 
 **Run All** (~30–90 s on a Colab T4 / lab GPU): install → forward → trust → latency → decode.
 
@@ -55,8 +56,7 @@ md(
     """
 ## 0. Setup
 
-**Colab (private repo):** add a secret `GITHUB_TOKEN` with `repo` read access
-(Runtime → Secrets), then run the next cell.
+**Colab:** next cell installs `pararnn-torch` from PyPI (public).
 
 **Local:** skip the install cell if you already `uv sync`'d this checkout.
 """
@@ -65,24 +65,11 @@ md(
 code(
     """
 # Install: Colab only. Local editable installs already provide `pararnn`.
-import os
 import sys
 
 IN_COLAB = "google.colab" in sys.modules
 if IN_COLAB:
-    from google.colab import userdata
-
-    token = os.environ.get("GITHUB_TOKEN") or userdata.get("GITHUB_TOKEN")
-    if not token:
-        raise RuntimeError(
-            "Set Colab secret GITHUB_TOKEN (repo read) before installing "
-            "from the private GitHub source."
-        )
-    url = (
-        f"git+https://x-access-token:{token}@github.com/"
-        "bugkira/pararnn-torch.git"
-    )
-    get_ipython().run_line_magic("pip", f'install -q "pararnn-torch @ {url}"')
+    get_ipython().run_line_magic("pip", 'install -q "pararnn-torch>=0.17.4"')
 else:
     print("Local / non-Colab: expecting an existing pararnn install (uv sync).")
 """
@@ -274,9 +261,10 @@ md(
   title        = {{ParaSLSTM}: Work-Efficient Parallel Training of Nonlinear {sLSTM} via Tropical Warm-Starts},
   month        = sep,
   year         = 2026,
+  note         = {Version 2},
   publisher    = {Zenodo},
-  doi          = {10.5281/zenodo.22302587},
-  url          = {https://doi.org/10.5281/zenodo.22302587}
+  doi          = {10.5281/zenodo.22558086},
+  url          = {https://doi.org/10.5281/zenodo.22558086}
 }
 
 @inproceedings{danieli2026pararnn,

@@ -29,11 +29,10 @@ Regenerate the `.ipynb`:
 uv run python notebooks/_build_demo.py
 ```
 
-### Google Colab (private repo)
+### Google Colab
 
 1. Runtime → Change runtime type → **GPU**
-2. Runtime → Secrets → add `GITHUB_TOKEN` with read access to `bugkira/pararnn-torch`
-3. Open:
+2. Open and **Run All** (installs `pararnn-torch` from PyPI):
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bugkira/pararnn-torch/blob/main/notebooks/paraslstm_demo.ipynb)
 
