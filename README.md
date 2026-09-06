@@ -8,63 +8,107 @@
 [![ParaRNN](https://img.shields.io/static/v1?label=ParaRNN&message=ICLR%202026&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2510.21450)
 [![M²RNN](https://img.shields.io/static/v1?label=M%C2%B2RNN&message=arXiv%3A2603.14360&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2603.14360)
 
-PyTorch sequence module for parallel *training* of nonlinear RNNs (GRU, LSTM, sLSTM, M²RNN). Decode is the sequential unroll; on CUDA, T=1 uses a Triton step kernel.
+**Hardware-efficient building blocks for nonlinear recurrence:** parallel
+Newton+scan training (span \(O(\log T)\)) and \(O(1)\) sequential decode —
+GRU, LSTM, sLSTM, matrix-state, Liquid, Hopfield, RWKV-7, Titans-style memory,
+and more.
 
-Package **`pararnn-torch`**, import **`pararnn`**. **Alpha** — fused kernels are Triton on CUDA (compute capability ≥ 8.0).
+Package **`pararnn-torch`**, import **`pararnn`**. Alpha — fused kernels are
+Triton on CUDA (compute capability ≥ 8.0).
 
-## About
+- [News](#news)
+- [What you get](#what-you-get)
+- [Models](#models)
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [Benchmarks](#benchmarks)
+- [Usage](#usage)
+- [Examples](#examples)
+- [API overview](#api-overview)
+- [Compatibility](#compatibility)
+- [Method](#method)
+- [Citation](#citation)
 
-`ParaRNN` wraps a recurrent cell as an `nn.Module`. In `.train()` mode it solves the fixed-point constraints with Newton iterations and an associative scan (span \(O(\log T)\)). In `.eval()` mode it runs the sequential `step` unroll. On CUDA, `.eval()` at `T=1` uses a Triton decode kernel (one SRAM trip for gates + mix; `W_x` stays a GEMM).
+## News
 
-`ParaSLSTM` with `mix='diag'` is the main fused path for exponentially gated sLSTM and xLSTM-style stacks. `ParaGRU` and `ParaLSTM` follow the same Newton wrapper. For Dreamer-style block recurrence, use `ParaGRU(mix='head', n_heads=8)` (block-diagonal `A_*`, full `W_x`; CUDA factorized Newton; `scan_backend='eager'` for the dense-J oracle). Cho gates only — LayerNorm in Dreamer LN-GRU sits outside this cell.
+- **[2026-09]** \(K^*(T)\) campaign through **\(T{=}131072\)**: CfC / Hopfield /
+  Titans stay \(K^*\!=\!2\) (H1); RWKV-7 linear monoid \(K^*\!=\!0\). Auto
+  schedules via `NewtonConfig(max_iters=None)`.
+- **[2026-09]** Cell zoo: `ParaTitans`, `ParaRWKV7`, `ParaHopfield`, `ParaCfC`,
+  `ParaNLRU` (v0.13–0.17).
+- **[2026-09]** Product entry: `ParaSLSTMBlock`, `ParaSLSTMForCausalLM`
+  (`labels` CE, safetensors), continuous batch + vLLM plugin hooks.
+- **[2026-09]** Factorized Newton for `ParaGRU(mix='head')` / Dreamer slots;
+  M²RNN factorized Jacobian + \(K^*(T)\) asymptotics.
 
-`ParaM2RNN` is a research cell for the matrix-state recurrence in [Mishra et al., arXiv:2603.14360](https://arxiv.org/abs/2603.14360): state \(H\in\mathbb{R}^{K\times V}\) with dense value-axis mix \(HW\) inside \(\tanh\). Training uses a *factorized* Newton Jacobian (\(O(KV^{2})\) matvecs, no dense \((KV)^{2}\)); measured critical depth \(K^{*}(T)\) is consistent with \(\Theta(\log T)\). Upstream product kernels keep time sequential; this library supplies the parallel-train path on the same math.
+## What you get
 
-`ParaNLRU` is a nonlinear RG-LRU-style cell for Griffin / RecurrentGemma slots: input-only gate, diagonal mix \(u\), and \(\tanh\) inside the step, so the Newton Jacobian stays channelwise diagonal (fused Alg. 1).
+ParaRNN is a **library for nonlinear recurrent sequence models** — the FLA /
+FlashAttention role for cells whose Jacobian is structured enough for Newton +
+associative scan.
 
-`ParaCfC` is a Liquid-style closed-form continuous-time cell: features in `x[..., :-1]`, irregular Δt in `x[..., -1]`, gate \(a=\sigma(-\mathrm{softplus}(f)\,\Delta t)\), and diagonal nonlinear mix \(u\) (fused Alg. 1).
+- **Parallel train** — Alg. 1 Newton + PCR / fused Triton; measured speedups
+  of \(10^{2}\)–\(10^{3}\times\) vs same-cell sequential on long \(T\)
+- **O(1) decode** — sequential `step`; CUDA `T=1` Triton `decode_step` (+ CUDA
+  graphs via `decode_wx`)
+- **Growing cell catalog** — diagonal, head-block, dense, and matrix-state
+  Jacobians under one `ParaRNN` / `newton_apply` surface
+- **Stack-ready entrypoints** — trunk block, CausalLM, paged state,
+  continuous batch, speculative verify, optional vLLM registration
+- **Honest depth** — measured \(K^*(T)\) envelopes (`max_iters=None` or pin);
+  lab grid through 131k tokens
+- **Train hygiene** — packed eq. 2.6 VJP (no Triton atomics),
+  `torch.compile` fullgraph presets, DDP / FSDP2, deterministic-path checks
 
-`ParaHopfield` is a recurrent Modern-Hopfield slot: \(h_t = V_t\,\mathrm{softmax}(\beta K_t h_{t-1})\) with \(K_t,V_t\in\mathbb{R}^{d_h\times d_h}\) from \(x_t\). Softmax couples channels, so Newton uses a dense Jacobian and `scan_dense` (recommend \(d_h\le 32\)).
+Adoption paths (Attention swap, RSSM, Griffin, Liquid, …):
+[`docs/adoption.md`](docs/adoption.md).
 
-`ParaRWKV7` is the RWKV-7 Goose matrix-state delta monoid: \(S_t = S_{t-1}G_t + v_t^\top k_t\) with diagonal-plus-rank-1 \(G_t\) from input-only gates (Peng et al., arXiv:2503.14456). The recurrence is linear in \(S\); training uses a factorized step plus an associative \((G,U)\) scan (`newton_apply` redirects to that scan).
+## Models
 
-`ParaTitans` is a shallow L=1 Titans-inspired neural memory slot: surprise GD on \(\ell=\tfrac12\|h\odot k-v\|^2\) plus a diagonal \(\tanh\) polish, so the Newton Jacobian stays channelwise diagonal (fused Alg. 1). Deep multi-layer MLP memory is parked.
+| Cell | Jacobian | Parallel path | Notes |
+|---|---|---|---|
+| [`ParaSLSTM`](#slstm--xlstm-style) | diag / head | fused Alg. 1 | main xLSTM-style fused path (`mix='diag'`) |
+| [`ParaGRU`](#dreamer-style-block-gru) / `ParaLSTM` | diag / head | fused / factorized | Dreamer: `mix='head', n_heads=8` |
+| [`ParaM2RNN`](#m2rnn-research) | factor \(K{\times}V\) | factorized Newton | matrix state; \(K^*(T)\!\sim\!\Theta(\log T)\) |
+| [`ParaNLRU`](#paranlru) | diag | fused | Griffin / RG-LRU-style nonlinear slot |
+| [`ParaCfC`](#paracfc) | diag | fused | Liquid CfC; Δt = last channel of `x` |
+| [`ParaHopfield`](#parahopfield) | dense | `scan_dense` | Modern Hopfield; keep \(d_h\le 32\) |
+| [`ParaRWKV7`](#pararwkv7) | linear monoid | associative `(G,U)` scan | RWKV-7 Goose; \(K^*\!=\!0\) |
+| [`ParaTitans`](#paratitans) | diag | fused | shallow L=1 surprise-GD memory |
 
-Implementation of the Newton+scan core follows [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450).
+Newton+scan core follows [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450).
+Extras (HF wrappers, Mamba-predictor hybrids, IFT adjoint notes) are this
+repo’s.
 
 ## Install
 
-| | Users / clone | Contributors |
+| | Users | Contributors |
 |---|---|---|
 | Command | see below | `git clone … && uv sync --group dev` |
-| PyTorch | bring your own (CPU or CUDA) | pinned in `pyproject.toml` (cu128 index) |
+| PyTorch | bring your own (CPU or CUDA) | pinned in `pyproject.toml` (cu128) |
 | Python | 3.10+ | 3.10+ |
-
-**From source** (current release path; PyPI Trusted Publishing is wired in
-[`.github/workflows/release.yml`](.github/workflows/release.yml) for the first
-`v*` tag once the GitHub `pypi` environment is linked):
 
 ```bash
 pip install "pararnn-torch @ git+https://github.com/bugkira/pararnn-torch"
-# or editable:
-git clone https://github.com/bugkira/pararnn-torch
-cd pararnn-torch
+# editable:
+git clone https://github.com/bugkira/pararnn-torch && cd pararnn-torch
 uv sync --group dev
 uv run pytest -q -m "not cuda"
 ```
 
-**Hardware:** fused Triton bf16 needs CUDA compute capability ≥ 8.0 (Ampere and newer). Below that, `NewtonConfig(scan_backend="auto")` picks an eager fallback.
+PyPI Trusted Publishing is wired in
+[`.github/workflows/release.yml`](.github/workflows/release.yml).
 
-Place modules on a device like any `nn.Module` (`.to(device)`, or `device=` / `dtype=` on the cell and `ParaRNN`). Data parallel: wrap that module with `DistributedDataParallel` or FSDP2 `fully_shard` ([`docs/distributed.md`](docs/distributed.md)).
+**Hardware:** fused Triton bf16 needs CUDA CC ≥ 8.0. On older cards,
+`NewtonConfig(scan_backend="auto")` falls back to eager / Triton scan.
+Place modules with `.to(device)` like any `nn.Module`. Data parallel:
+[`docs/distributed.md`](docs/distributed.md).
 
-`scripts/` holds development benchmarks and profiling; it is omitted from the wheel ([`scripts/README.md`](scripts/README.md)). Local literature PDFs: `bash scripts/fetch_papers.sh` → [`docs/sources/`](docs/sources/) (gitignored).
+Lab benches live under [`scripts/`](scripts/README.md) (omitted from the wheel).
 
 ## Quickstart
 
-Product entry: a trunk block or a tiny CausalLM. Cell-level `ParaRNN` APIs are
-under [Cells](#cells). Adoption notes: [`docs/adoption.md`](docs/adoption.md).
-
-### Trunk block
+### 1. Trunk block (drop-in residual mixer)
 
 ```python
 import torch
@@ -79,64 +123,85 @@ y = block(x)          # Newton + scan inside the recurrent branch
 y.sum().backward()
 
 block.eval()
-y_eval = block(x)     # sequential step (T=1 CUDA: decode_step)
+y_eval = block(x)     # sequential step (CUDA T=1: decode_step)
 ```
 
-### CausalLM
+### 2. CausalLM
 
 ```python
 from pararnn import ParaSLSTMConfig, ParaSLSTMForCausalLM
 
-cfg = ParaSLSTMConfig(
-    vocab_size=256,
-    hidden_size=64,
-    num_hidden_layers=2,
-    mlp_ratio=2.0,
-)
+cfg = ParaSLSTMConfig(vocab_size=256, hidden_size=64, num_hidden_layers=2, mlp_ratio=2.0)
 model = ParaSLSTMForCausalLM(cfg).to(device)
 ids = torch.randint(0, 256, (2, 32), device=device)
 
-model.train()
 logits, loss = model(ids, labels=ids)
 loss.backward()
-
-model.eval()
 out = model.generate(ids[:1, :8], max_new_tokens=16)
 model.save_pretrained("./ckpt")   # config.json + model.safetensors
-model = ParaSLSTMForCausalLM.from_pretrained("./ckpt")
 ```
 
-Smoke: [`examples/causal_lm_smoke.py`](examples/causal_lm_smoke.py). Continuous
+Smoke: [`examples/causal_lm_smoke.py`](examples/causal_lm_smoke.py) · continuous
 batch: [`examples/continuous_batch.py`](examples/continuous_batch.py).
 
-## Cells
-
-Low-level recurrent maps wrapped by `ParaRNN`. Prefer the block / CausalLM
-above unless you are wiring a custom stack.
+### 3. Cell + `ParaRNN`
 
 ```python
-import torch
-from pararnn import NewtonConfig, ParaGRU, ParaRNN, ParaSLSTM
+from pararnn import NewtonConfig, ParaGRU, ParaRNN
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-cell = ParaGRU(input_size=32, hidden_size=64, device=device)
+cell = ParaGRU(32, 64, device=device)
 model = ParaRNN(cell, config=NewtonConfig(max_iters=3))
-x = torch.randn(4, 128, 32, device=device)
-
-model.train()
-y_train = model(x)  # Newton + associative scan
-y_train.sum().backward()
-
-model.eval()
-y_eval = model(x)  # sequential cell.step
+y = model(torch.randn(4, 128, 32, device=device))  # .train() → Newton
 ```
 
-- `.train()` with `solver='auto'` selects the parallel Newton path.
-- `.eval()` selects sequential `step`. At `T=1` on CUDA with gradients off, that step is `decode_step` (Triton). Pass `out=` in a decode loop; capture `decode_wx` then `decode_step` in a CUDA graph. Use `solver='newton'` or `solver='sequential'` to force either path.
+`.train()` → parallel Newton · `.eval()` → sequential `step` · CUDA `T=1` →
+`decode_step`. Force either path with `solver='newton'|'sequential'`.
 
-### sLSTM
+## Benchmarks
+
+Diag-sLSTM forward median (ms), \(B{=}8\), \(d_h{=}256\), float32, RTX 2080 Ti
+(`scripts/slstm_vs_flashrnn.py`). Fused Newton = this library’s Alg. 1;
+sequential = `torch.compile` of the same cell.
+
+| \(T\) | fused Newton | sequential compiled |
+|------:|-------------:|--------------------:|
+| 256 | 6.4 | 112 |
+| 1024 | 15.3 | 429 |
+| 2048 | 29.1 | 840 |
+| 4096 | 69.1 | 1735 |
+
+Long-context \(K^*(T)\) + wall time (`scripts/bench_k_star.py`, RTX 3060,
+τ=1e-4, B=1):
+
+| Cell | \(K^*\) through \(T{=}131072\) | @131k fused/scan vs seq |
+|---|---|---|
+| ParaCfC | 2 (H1) | ~11 ms vs ~52 s (~4600×) |
+| ParaTitans | 2 (H1) | ~13 ms vs ~62 s (~5000×) |
+| ParaHopfield | 2 (H1) | ~250 ms vs ~38 s (~150×) |
+| ParaRWKV7 | 0 (linear) | ~237 ms vs ~81 s (~340×, slim \(1{\times}16\)) |
+
+ParaNLRU smoke (3060, \(B{=}8\), \(T{=}2048\), \(d_h{=}256\), \(K{=}3\)): fused
+**~2.7 ms** vs sequential **~549 ms**.
+
+Z₂ prefix tagging ([`examples/parity.py`](examples/parity.py)): ParaSLSTM
+Newton last-token accuracy **1.0** at train length 16 and held-out 32.
+
+```bash
+uv run python scripts/bench_k_star.py --cell all --time
+uv run python scripts/slstm_vs_flashrnn.py --config configs/bench/newton_slstm_flashrnn.yaml
+uv run python examples/parity.py
+```
+
+Interactive tour: [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb)
+([Colab](https://colab.research.google.com/github/bugkira/pararnn-torch/blob/main/notebooks/paraslstm_demo.ipynb)).
+
+## Usage
+
+### sLSTM / xLSTM-style
 
 ```python
+from pararnn import ParaRNN, ParaSLSTM
+
 slstm = ParaRNN(ParaSLSTM(64, 64, mix="diag"), device=device)
 y = slstm(torch.randn(4, 128, 64, device=device))
 ```
@@ -144,45 +209,33 @@ y = slstm(torch.randn(4, 128, 64, device=device))
 ### Dreamer-style block GRU
 
 ```python
-# Block-diagonal recurrence (CUDA factorized Newton). Cho gates; LN stays outside.
-# n_heads sets block size: d_head = hidden // n_heads. Factorized path avoids
-# dense d×d; Dreamer-like 512/8 → d_head=64. Prefer more heads if latency-bound.
+# Block-diagonal A_*; CUDA factorized Newton. LN stays outside the cell.
 rssm_h = ParaRNN(ParaGRU(512, 512, mix="head", n_heads=8), device=device)
 y = rssm_h(torch.randn(4, 64, 512, device=device))
 ```
 
-Thin imagination-slot smoke: [`examples/rssm_recurrent.py`](examples/rssm_recurrent.py).
-
-Head fused Newton medians (ms), float32, RTX 2080 Ti, `K=3`
-(`scripts/bench_gru_head.py`). Paths: `d_head≤64` full SRAM, `≤128` streamed-`A`,
-larger hybrid tiled. Long-T train VRAM: `NewtonConfig(recompute=True)`.
+Smoke: [`examples/rssm_recurrent.py`](examples/rssm_recurrent.py). Head fused
+medians (`scripts/bench_gru_head.py`, 2080 Ti, \(K{=}3\)):
 
 | setup | `d_head` | Newton | fwd+bwd |
 |------:|---------:|-------:|-------:|
 | `B=4`, `T=128` | 64 | 2.4 | — |
-| `B=4`, `T=128` | 96 / 128 | 9–10 | — |
 | `B=1`, `T=4096` | 64 | 51 | 83 |
 | `B=1`, `T=4096` | 96 | 220 | 293 |
 
-### M²RNN (research)
+### M2RNN (research)
 
 ```python
-from pararnn import ParaM2RNN, newton_apply, sequential_apply
+from pararnn import ParaM2RNN, NewtonConfig, newton_apply, sequential_apply
 
 m2 = ParaM2RNN(d_in=32, k_dim=16, v_dim=16, device=device)
 x = 0.15 * torch.randn(2, 128, 32, device=device)
-h_seq = sequential_apply(m2, x)
 h_par = newton_apply(m2, x, NewtonConfig(max_iters=8, residual_atol=1e-5))
 ```
 
-State shape is `(B, T, K, V)`. Prefer `residual_atol` early-stop over a fixed
-over-provisioned \(K\) on large \(K{\times}V\). Critical-depth recipe:
-`scripts/bench_m2rnn_k_scale.py`.
+State `(B, T, K, V)`. Critical depth: `scripts/bench_m2rnn_k_scale.py`.
 
-### ParaNLRU (nonlinear RG-LRU slot)
-
-Input-only gate + diagonal mix \(u\) + \(\tanh\) inside the step (Griffin /
-RecurrentGemma-style slot with a channelwise-diagonal Newton Jacobian):
+### ParaNLRU
 
 ```python
 from pararnn import ParaNLRU, ParaRNN
@@ -191,75 +244,47 @@ nlru = ParaRNN(ParaNLRU(256, 256), device=device)
 y = nlru(torch.randn(4, 128, 256, device=device))
 ```
 
-Fused Alg. 1 on CUDA (`scan_backend="auto"`). Smoke latency on RTX 3060,
-\(B{=}8\), \(T{=}2048\), \(d_h{=}256\), float32, \(K{=}3\): fused median
-**2.7 ms** vs sequential **549 ms** (\(\sim 200\times\)).
-
-### ParaCfC (Liquid / irregular Δt)
-
-Closed-form continuous-time slot with Δt as the last channel of `x`
-(`d_in = features + 1`). Gate \(a=\sigma(-\mathrm{softplus}(f)\,\Delta t)\) and
-candidate \(\tanh(c + u\odot h)\) keep a channelwise-diagonal Newton Jacobian:
+### ParaCfC
 
 ```python
 from pararnn import ParaCfC, ParaRNN
 
-# d_in=257 → 256 features + Δt
-cfc = ParaRNN(ParaCfC(257, 256), device=device)
+cfc = ParaRNN(ParaCfC(257, 256), device=device)  # 256 features + Δt
 feat = torch.randn(4, 128, 256, device=device)
 dt = 0.05 + torch.rand(4, 128, 1, device=device)
 y = cfc(torch.cat((feat, dt), dim=-1))
 ```
 
-Fused Alg. 1 on CUDA (`pararnn::newton_cfc_fused`); `project_wx` packs
-`(f, c, Δt)` as `(B, T, 3 d_h)`.
-
-### ParaHopfield (Modern Hopfield / dense)
-
-Recurrent one-step Hopfield with input-conditioned pattern matrices
-\(K_t,V_t\) (Modern Hopfield / soft attention over a \(d_h\)-pattern bag from
-\(x_t\)):
+### ParaHopfield
 
 ```python
 from pararnn import NewtonConfig, ParaHopfield, ParaRNN
 
-# Dense J + scan_dense: keep d_h ≤ 32 (tests use 8).
 hop = ParaRNN(
     ParaHopfield(64, 8),
-    config=NewtonConfig(max_iters=6, jac_structure="dense"),
+    config=NewtonConfig(max_iters=None, jac_structure="dense"),  # K*(T) auto
     device=device,
 )
 y = hop(torch.randn(4, 128, 64, device=device))
 ```
 
-`scan_backend="auto"` picks Triton `scan_dense` on CUDA; fused cell+scan is
-parked. Eq. 2.6 VJP uses Autograd on `step` (`uses_packed_vjp` is false).
+Pin depth with `max_iters=int` or `newton_iters_by_t={64: 2, 1024: 3, …}`.
 
-### ParaRWKV7 (RWKV-7 Goose / linear matrix state)
-
-Matrix-state delta monoid (Peng et al. arXiv:2503.14456). Gates
-\(w,a,\hat\kappa,v,k,r\) come from \(x\) only; \(S\) updates with a
-factorized diagonal-plus-rank-1 map. Parallel path is an associative scan
-of affine \((G,U)\) pairs:
+### ParaRWKV7
 
 ```python
 from pararnn import ParaRWKV7, newton_apply, sequential_apply
 
 cell = ParaRWKV7(d_in=64, n_heads=4, d_head=16, device=device)
 x = torch.randn(4, 128, 64, device=device)
-s_seq = sequential_apply(cell, x)           # (B, T, H, D, D)
-s_par = newton_apply(cell, x)               # same; redirects to linear scan
-y = cell.scan_apply(x)                      # (B, T, n_heads*d_head) readout
+s = newton_apply(cell, x)       # redirects to linear (G,U) scan
+y = cell.scan_apply(x)          # (B, T, n_heads*d_head) readout
 ```
 
-Pitch: factorized matrix-state monoid (M²RNN class), Wind CUDA and
-wall-clock races with BlinkDL stay outside this package.
+On 12 GiB cards, wall-clock at \(T\gtrsim 64\mathrm{k}\) prefers slim
+`n_heads=1, d_head=16` (state is `(B,T,H,D,D)`).
 
-### ParaTitans (shallow Titans neural memory)
-
-Vector memory with one surprise-GD step on an elementwise associative loss
-plus a small diagonal nonlinear polish (Behrouz et al. arXiv:2501.00663
-flavor; L=1 shallow slot):
+### ParaTitans
 
 ```python
 from pararnn import ParaTitans, ParaRNN
@@ -268,104 +293,74 @@ titans = ParaRNN(ParaTitans(256, 256), device=device)
 y = titans(torch.randn(4, 128, 256, device=device))
 ```
 
-Fused Alg. 1 on CUDA (`pararnn::newton_titans_fused`, `W_x` is 5-wide).
-Deep MLP memory \(M\) stays parked.
-
-## Results
-
-Interactive API tour: [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb)
-([Open in Colab](https://colab.research.google.com/github/bugkira/pararnn-torch/blob/main/notebooks/paraslstm_demo.ipynb); private clones need a `GITHUB_TOKEN` secret — see [`notebooks/README.md`](notebooks/README.md)).
-\(\mathbb{Z}_2\) training lives in [`examples/parity.py`](examples/parity.py).
-
-Diag-sLSTM forward median latency (ms), \(B{=}8\), \(d_h{=}256\), float32,
-RTX 2080 Ti, 10 seeds (`scripts/slstm_vs_flashrnn.py` / paper Tier-A timing).
-Fused Newton is this library's Alg. 1 path; sequential is `torch.compile` of
-the same cell's `step` unroll. FlashRNN is a sequential head-mix kernel on the
-same GPU for context.
-
-| \(T\) | fused Newton | sequential compiled | FlashRNN |
-|------:|-------------:|--------------------:|---------:|
-| 256 | 6.4 | 112 | 1.2 |
-| 1024 | 15.3 | 429 | 3.1 |
-| 2048 | 29.1 | 840 | 5.8 |
-| 4096 | 69.1 | 1735 | 11.3 |
-
-Z₂ prefix tagging (`examples/parity.py`): last-token accuracy **1.0** at train
-length 16 and held-out length 32 for ParaSLSTM Newton; a matched-width linear
-SSM arm lands near chance (~0.53–0.56) on the same protocol.
-
-Reproduce:
-
-```bash
-uv run python examples/train_smoke.py
-uv run python examples/parity.py
-uv run python scripts/slstm_vs_flashrnn.py --config configs/bench/newton_slstm_flashrnn.yaml
-uv run python scripts/train_babylm.py --config configs/train/babylm.yaml   # needs --extra lm
-```
+Deep multi-layer MLP memory stays parked.
 
 ## Examples
 
-Standalone scripts: install `pararnn-torch`, copy a file, run it. Knobs live
-in the script; metrics go to stdout. Start with the CausalLM / block path in
-[`docs/adoption.md`](docs/adoption.md).
+| Script | What | Command |
+|---|---|---|
+| [`causal_lm_smoke.py`](examples/causal_lm_smoke.py) | CausalLM CE + generate + safetensors | `uv run python examples/causal_lm_smoke.py` |
+| [`continuous_batch.py`](examples/continuous_batch.py) | Packed prefill + T=1 via `BlockStackPool` | `uv run python examples/continuous_batch.py` |
+| [`rssm_recurrent.py`](examples/rssm_recurrent.py) | Dreamer `ParaGRU(mix='head')` | `uv run python examples/rssm_recurrent.py` |
+| [`parity.py`](examples/parity.py) | Z₂ vs linear SSM | `uv run python examples/parity.py` |
+| [`decode_step.py`](examples/decode_step.py) | T=1 Triton vs eager | `uv run python examples/decode_step.py` |
+| [`ddp_fsdp.py`](examples/ddp_fsdp.py) | DDP / FSDP2 wrap | `uv run torchrun --nproc_per_node=2 examples/ddp_fsdp.py` |
+| [`speculative_draft.py`](examples/speculative_draft.py) | Linear-draft verify | `uv run python examples/speculative_draft.py` |
+| [`xlstm_hybrid.py`](examples/xlstm_hybrid.py) | NX-AI `sLSTMBlock` + fused ParaSLSTM | `uv add xlstm && uv run python examples/xlstm_hybrid.py` |
 
-| Script | What it shows | Command | Extras |
-|---|---|---|---|
-| [`examples/causal_lm_smoke.py`](examples/causal_lm_smoke.py) | CausalLM: `labels` CE, `generate`, safetensors save/load | `uv run python examples/causal_lm_smoke.py` | — |
-| [`examples/continuous_batch.py`](examples/continuous_batch.py) | Packed prefill + T=1 decode via `BlockStackPool` | `uv run python examples/continuous_batch.py` | — |
-| [`examples/rssm_recurrent.py`](examples/rssm_recurrent.py) | Dreamer-style `ParaGRU(mix='head')` imagination slot | `uv run python examples/rssm_recurrent.py` | — |
-| [`examples/train_smoke.py`](examples/train_smoke.py) | Cell-level GRU + linear head CE smoke | `uv run python examples/train_smoke.py` | — |
-| [`examples/ddp_fsdp.py`](examples/ddp_fsdp.py) | DDP / FSDP2 one-step wrap of `ParaRNN` | `uv run torchrun --nproc_per_node=2 examples/ddp_fsdp.py` | two visible GPUs for NCCL |
-| [`examples/speculative_draft.py`](examples/speculative_draft.py) | Greedy linear-draft verify: one Newton scan vs sequential | `uv run python examples/speculative_draft.py` | — |
-| [`examples/decode_step.py`](examples/decode_step.py) | T=1 Triton decode vs eager `cell.step` | `uv run python examples/decode_step.py` | — |
-| [`examples/dyck_language.py`](examples/dyck_language.py) | ParaSLSTM Newton grads, fail-loud on divergence | `uv run python examples/dyck_language.py` | — |
-| [`examples/parity.py`](examples/parity.py) | Z₂ prefix tagging vs linear SSM | `uv run python examples/parity.py` | CUDA; writes `parity_curves.json` |
-| [`examples/xlstm_hybrid.py`](examples/xlstm_hybrid.py) | NX-AI `sLSTMBlock` around fused `ParaSLSTM` | `uv add xlstm && uv run python examples/xlstm_hybrid.py` | `xlstm` |
-
-FlashRNN train comparison and other benches live under `scripts/` (see
-[`scripts/README.md`](scripts/README.md)). Two-card TP / CP / paged-pool demos
-are on branch [`archive/distributed-demos`](https://github.com/bugkira/pararnn-torch/tree/archive/distributed-demos);
-API notes stay in [`docs/distributed.md`](docs/distributed.md).
+More: [`scripts/README.md`](scripts/README.md). Distributed demos:
+[`archive/distributed-demos`](https://github.com/bugkira/pararnn-torch/tree/archive/distributed-demos).
 
 ## API overview
 
-- **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM`, `ParaM2RNN`, `ParaNLRU`, `ParaCfC`, `ParaHopfield`, `ParaRWKV7`, `ParaTitans` — recurrent maps \(f(h_{t-1}, x_t)\). M²RNN state is `(B, T, K, V)`. ParaNLRU is the nonlinear RG-LRU-style diag cell. ParaCfC is the Liquid irregular-Δt diag cell (`x[..., -1]` = Δt). ParaHopfield is the dense Modern-Hopfield slot (`d_h≤32`). ParaRWKV7 is the linear RWKV-7 Goose matrix-state monoid (`(B, T, H, D, D)`). ParaTitans is the shallow L=1 Titans-inspired diag memory slot.
-- **Sequence module:** `ParaRNN(cell, config=NewtonConfig(max_iters=3))` — stacks one or more cells (`ParaM2RNN` / `ParaRWKV7` also work through `newton_apply` / `sequential_apply` directly).
-- **Trunk block:** `ParaSLSTMBlock(d_model, mlp_ratio=4)` — RMSNorm + ParaSLSTM + SwiGLU residuals for LM stacks ([`docs/adoption.md`](docs/adoption.md), [`docs/xlstm.md`](docs/xlstm.md)).
-- **CausalLM / vLLM:** `ParaSLSTMForCausalLM` (`labels` CE, `generate`, `model.safetensors`) + `BlockStackPool` continuous batch +
-  `vllm.general_plugins` registration ([`docs/adoption.md`](docs/adoption.md), [`docs/vllm.md`](docs/vllm.md), `examples/continuous_batch.py`).
-- **Solver config:** `NewtonConfig(scan_backend="auto")` picks fused Triton on CUDA when available, else Triton scan + `step`, else eager Blelloch. For `ParaM2RNN`, `picard_iters>=1` selects a frozen-\(W\) warm-start.
-- **Low-level solvers** (bypass `ParaRNN`):
+- **Cells** — table in [Models](#models); wrap with `ParaRNN` or call
+  `newton_apply` / `sequential_apply` directly (`ParaM2RNN`, `ParaRWKV7`).
+- **Trunk** — `ParaSLSTMBlock(d_model, mlp_ratio=4)` ([`docs/adoption.md`](docs/adoption.md)).
+- **CausalLM / serve** — `ParaSLSTMForCausalLM`, `BlockStackPool`,
+  `vllm.general_plugins` ([`docs/vllm.md`](docs/vllm.md)).
+- **Solver** — `NewtonConfig(scan_backend="auto", max_iters=None|int)`;
+  `picard_iters` for sLSTM / M²RNN warm-starts.
+- **Speculative** — `verify_linear_draft`.
+- **Paged** — `PagedStatePool` / `paged_apply`.
+- **Decode** — `decode_step`, `decode_wx`, `can_decode_step`.
 
 ```python
 from pararnn.solvers import newton_apply, sequential_apply
 
-h = newton_apply(cell, x)  # (B, T, hidden_size) or (B, T, K, V) for ParaM2RNN
+h = newton_apply(cell, x)
 h = sequential_apply(cell, x)
 ```
 
-- **Speculative verify:** `verify_linear_draft` — one Newton scan of a K-token draft, first mismatch \(k^\star\), state truncated to \(h_{k^\star}\).
-- **Paged state:** `PagedStatePool` / `paged_apply` — O(1) slot per request; sequential CUDA and fused Newton index the pool through `block_table`. `offload` / `reload` park a slot on pinned host RAM.
-- **Decode step:** `decode_step` — T=1 Triton recurrent step (gates + mix). `out=` reuses a buffer; `block_table` is slot ids into a pool. `decode_wx` fills `W_x(x)` for CUDA graphs. `can_decode_step` reports whether the kernel will run.
-
-**Details:** drop-in adoption — [`docs/adoption.md`](docs/adoption.md). Output shapes, `mix=`, LSTM layout, scan backends — [`docs/xlstm.md`](docs/xlstm.md#api-notes). Data / tensor parallel — [`docs/distributed.md`](docs/distributed.md). vLLM plugin — [`docs/vllm.md`](docs/vllm.md). Repo layout — [`docs/structure.md`](docs/structure.md).
+**Docs:** adoption · [`xlstm.md`](docs/xlstm.md) · [`distributed.md`](docs/distributed.md) ·
+[`vllm.md`](docs/vllm.md) · [`structure.md`](docs/structure.md).
 
 ## Compatibility
 
-- **`torch.compile`:** with the compile-safe preset (fixed K, no residual host sync), `newton_apply` traces as a single graph (`fullgraph=True`) on eager and fused paths (including `ParaM2RNN`). Fused Alg. 1 kernels are `pararnn::newton_*_fused` custom ops with `register_fake` (`tests/numerics/test_compile.py`, `kernels/custom_ops.py`). Eq. 2.6 stays on the module-level `Autograd.Function` (fused ops do not carry `W_x`).
-- **Precision / AMP:** put the module and `x` in fp16/bf16/fp32 explicitly. Under outer `torch.autocast`, Newton opts out and stays in the tensor dtype so the eq. 2.6 VJP keeps one dtype (`tests/numerics/test_autocast.py`).
-- **DDP / FSDP / checkpoint:** wrap `ParaRNN` with DDP or FSDP2 (`docs/distributed.md`, `examples/ddp_fsdp.py`). Non-reentrant `torch.utils.checkpoint` and `state_dict` round-trip: `tests/numerics/test_checkpoint.py`. For ultra-long train \(T\), `NewtonConfig(recompute=True)` rematerializes \(H^\star\) in the eq. 2.6 backward (`tests/numerics/test_recompute.py`).
-- **Deterministic algorithms:** packed eq. 2.6 VJP (diag GRU/LSTM/sLSTM, `ParaNLRU`, `ParaCfC`, and `ParaM2RNN`) reduces with tile `tl.sum` then `.sum` where applicable — no Triton atomics on the packed path; parameter grads bit-match across identical calls (`tests/numerics/test_vjp_determinism.py`). With `torch.use_deterministic_algorithms(True)`, set `CUBLAS_WORKSPACE_CONFIG=:4096:8` for cuBLAS GEMMs (`W_x` / `∇x`); the first packed `cell_vjp` under that flag re-checks param grads once and logs a single warning if they drift (`pararnn.determinism`).
+- **`torch.compile`:** compile-safe preset (fixed \(K\), no residual host sync)
+  → `fullgraph=True` on eager and fused (`tests/numerics/test_compile.py`).
+- **AMP:** module/`x` dtype explicit; under outer autocast Newton opts out so
+  eq. 2.6 stays one dtype (`tests/numerics/test_autocast.py`).
+- **DDP / FSDP / checkpoint:** [`docs/distributed.md`](docs/distributed.md);
+  `NewtonConfig(recompute=True)` for ultra-long train \(T\).
+- **Determinism:** packed VJP uses tile `tl.sum` then `.sum` (no `tl.atomic*`);
+  set `CUBLAS_WORKSPACE_CONFIG=:4096:8` under
+  `torch.use_deterministic_algorithms(True)`.
 
 ## Method
 
-Training imposes \(F(H)_t = h_t - f(h_{t-1}, x_t) = 0\) and Newton-solves it with a parallel scan (Alg. 1, \(K=3\)). Paper 1-based indices vs code 0-based slots: [`src/pararnn/layout.py`](src/pararnn/layout.py).
+Training solves \(F(H)_t = h_t - f(h_{t-1}, x_t) = 0\) with Newton + parallel
+scan (Alg. 1). Layout: [`src/pararnn/layout.py`](src/pararnn/layout.py).
+GRU/LSTM warm-start App. A (\(h_l^{(0)}=f(0,x_l)\)); sLSTM zero-hidden + Picard.
+Recurrent clip App. C.1. Backward: paper eq. 2.6. M²RNN uses the factorized
+map \(J[\Delta]=f\Delta+(1-f)(1-Z^{\odot2})\odot(\Delta W)\).
 
-GRU/LSTM warm-start follows App. A: \(h_l^{(0)} = f(0, x_l)\). sLSTM starts from the zero-hidden unroll (running \(m\) and \(n\)). Recurrent weights are clipped elementwise (App. C.1). Channels stay separate inside diagonal / 2×2 / 4×4 cells (eq. 3.3). Backward uses paper eq. 2.6 (one reverse scan). For `ParaM2RNN`, the Jacobian is the factorized map \(J[\Delta]=f\Delta+(1-f)(1-Z^{\odot2})\odot(\Delta W)\).
+Critical depth \(K^*(T)\): [`scripts/bench_k_star.py`](scripts/bench_k_star.py);
+auto schedules in `pararnn.solvers.newton.k_star`.
 
 ## Citation
 
-If you use this library, please cite the ParaSLSTM preprint and the ParaRNN framework.
+If you use this library, please cite the ParaSLSTM preprint and the ParaRNN
+framework.
 
 ```bibtex
 @misc{sereda2026paraslstm,
@@ -388,12 +383,10 @@ If you use this library, please cite the ParaSLSTM preprint and the ParaRNN fram
 }
 ```
 
-When an arXiv identifier is assigned, the Zenodo badge and `@misc` entry above will point to that preprint; the Zenodo DOI keeps the deposit timestamp.
-
 ## References
 
-- Danieli, Rodríguez, Sarabia, Suau, Zappella. *ParaRNN*. ICLR 2026 (Oral). [arXiv:2510.21450](https://arxiv.org/abs/2510.21450).
-- Mishra, Tan, Stoica, Gonzalez, Dao. *M²RNN*. [arXiv:2603.14360](https://arxiv.org/abs/2603.14360).
+- Danieli et al. *ParaRNN*. ICLR 2026 (Oral). [arXiv:2510.21450](https://arxiv.org/abs/2510.21450).
+- Mishra et al. *M²RNN*. [arXiv:2603.14360](https://arxiv.org/abs/2603.14360).
 - Sereda. *ParaSLSTM*. [doi:10.5281/zenodo.22302587](https://doi.org/10.5281/zenodo.22302587).
 - Beck et al. *xLSTM*. [arXiv:2405.04517](https://arxiv.org/abs/2405.04517).
 - Lim et al. *DEER*. ICLR 2024. [arXiv:2309.12252](https://arxiv.org/abs/2309.12252).
