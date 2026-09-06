@@ -3,10 +3,12 @@
 K=3 (App. A) for ParaGRU/ParaLSTM. Init is eq. A.1 except ParaSLSTM, which
 starts from the zero-hidden unroll. Backward is eq. 2.6 (one reverse scan).
 
-``scan_backend='fused'`` is a handwritten Triton kernel for ParaGRU, ParaLSTM,
-and ParaSLSTM ``mix='diag'``. ``'auto'`` picks fused on CUDA for those cells.
-Packed ``cu_seqlens``: fused ParaGRU stays in-kernel; LSTM/sLSTM fused falls
-back to Triton scan with ``J=0`` at segment heads.
+``scan_backend='fused'`` is a handwritten Triton kernel for ParaGRU,
+ParaLSTM, and ParaSLSTM ``mix='diag'``, and factorized Newton for
+``ParaGRU(mix='head')``. ``'auto'`` picks fused on CUDA for those cells.
+Packed ``cu_seqlens``: fused diag ParaGRU stays in-kernel; head ParaGRU
+raises on explicit ``fused`` and remaps ``auto`` → ``eager``; LSTM/sLSTM
+fused falls back to Triton scan with ``J=0`` at segment heads.
 """
 
 from __future__ import annotations
@@ -253,13 +255,14 @@ def newton_apply(
 
     Notes
     -----
-    Packed fused ParaGRU stays in-kernel; LSTM/sLSTM fused + ``cu_seqlens``
-    falls back to Triton scan. ``chunk_len`` windows forward and reverse.
-    ``recompute=True`` rematerializes ``H*`` in backward (Level 2).
+    Packed fused diag ParaGRU stays in-kernel; head + ``cu_seqlens`` needs
+    ``eager`` (``fused`` raises; ``auto`` remaps). LSTM/sLSTM fused +
+    ``cu_seqlens`` falls back to Triton scan. ``chunk_len`` windows forward
+    and reverse. ``recompute=True`` rematerializes ``H*`` in backward (Level 2).
     """
     config = config or NewtonConfig()
     _validate_config(config)
-    config = _resolve_backend(cell, x, config)
+    config = _resolve_backend(cell, x, config, cu_seqlens=cu_seqlens)
     if block_table is not None:
         if config.chunk_len is not None:
             raise ValueError("block_table cannot be combined with chunk_len")
@@ -753,6 +756,30 @@ def _eq26_vjp(
     is the h0 adjoint. Ragged: one adjoint per sequence start.
     """
     h_prev = _prepend(states, h0, cu_seqlens)
+    # Factorized reverse for ParaGRU head on CUDA (matches fused forward).
+    if (
+        isinstance(cell, ParaGRU)
+        and cell.mix == "head"
+        and backend in ("triton", "fused")
+        and cu_seqlens is None
+        and jacobian in ("auto", "analytic")
+    ):
+        wx = _input_affine(cell, x)
+        if wx is None:
+            raise TypeError("ParaGRU head factorized VJP needs cell.W_x")
+        from pararnn.kernels.newton_gru_head import (
+            gru_head_t0_vjp,
+            reverse_factor_scan_gru_head,
+        )
+
+        with torch.no_grad():
+            mu = reverse_factor_scan_gru_head(cell, h_prev, partial, wx=wx)
+            h0_vjp = gru_head_t0_vjp(cell, h_prev, mu, wx=wx)
+        packed = uses_packed_vjp(cell)
+        grad_x, param_grads = cell_vjp(cell, h_prev, x, mu, packed=packed)
+        grad_h0 = None if h0 is None else h0_vjp
+        return grad_x, param_grads, grad_h0
+
     wx = _wx_if_analytic(cell, x, jacobian)
     structure = jac_structure or getattr(cell, "jac_structure", None)
     with torch.no_grad():

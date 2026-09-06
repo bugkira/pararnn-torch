@@ -54,7 +54,7 @@ def test_pararnn_reset_parameters():
 
 def test_cell_extra_repr():
     gru = ParaGRU(4, 8)
-    assert gru.extra_repr() == "4, 8, max_recurrent_norm=0.5"
+    assert gru.extra_repr() == "4, 8, mix='diag', max_recurrent_norm=0.5"
     lstm = ParaLSTM(4, 8)
     assert lstm.extra_repr() == "4, 8, max_recurrent_norm=0.5"
     slstm = ParaSLSTM(8, 8, mix="diag")

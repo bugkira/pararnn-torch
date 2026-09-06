@@ -15,7 +15,7 @@ Package **`pararnn-torch`**, import **`pararnn`**. **Alpha** — fused kernels a
 
 `ParaRNN` wraps a recurrent cell as an `nn.Module`. In `.train()` mode it solves the fixed-point constraints with Newton iterations and an associative scan (span \(O(\log T)\)). In `.eval()` mode it runs the sequential `step` unroll. On CUDA, `.eval()` at `T=1` uses a Triton decode kernel (one SRAM trip for gates + mix; `W_x` stays a GEMM).
 
-`ParaSLSTM` with `mix='diag'` is the main fused path for exponentially gated sLSTM and xLSTM-style stacks. `ParaGRU` and `ParaLSTM` follow the same Newton wrapper.
+`ParaSLSTM` with `mix='diag'` is the main fused path for exponentially gated sLSTM and xLSTM-style stacks. `ParaGRU` and `ParaLSTM` follow the same Newton wrapper. For Dreamer-style block recurrence, use `ParaGRU(mix='head', n_heads=8)` (block-diagonal `A_*`, full `W_x`; CUDA factorized Newton; `scan_backend='eager'` for the dense-J oracle). Cho gates only — LayerNorm in Dreamer LN-GRU sits outside this cell.
 
 Implementation follows [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450).
 
@@ -74,6 +74,27 @@ y_eval = model(x)  # sequential cell.step
 slstm = ParaRNN(ParaSLSTM(64, 64, mix="diag"), device=device)
 y = slstm(torch.randn(4, 128, 64, device=device))
 ```
+
+### Dreamer-style block GRU
+
+```python
+# Block-diagonal recurrence (CUDA factorized Newton). Cho gates; LN stays outside.
+# n_heads sets block size: d_head = hidden // n_heads. Factorized path avoids
+# dense d×d; Dreamer-like 512/8 → d_head=64. Prefer more heads if latency-bound.
+rssm_h = ParaRNN(ParaGRU(512, 512, mix="head", n_heads=8), device=device)
+y = rssm_h(torch.randn(4, 64, 512, device=device))
+```
+
+Head fused Newton medians (ms), float32, RTX 2080 Ti, `K=3`
+(`scripts/bench_gru_head.py`). Paths: `d_head≤64` full SRAM, `≤128` streamed-`A`,
+larger hybrid tiled. Long-T train VRAM: `NewtonConfig(recompute=True)`.
+
+| setup | `d_head` | Newton | fwd+bwd |
+|------:|---------:|-------:|-------:|
+| `B=4`, `T=128` | 64 | 2.4 | — |
+| `B=4`, `T=128` | 96 / 128 | 9–10 | — |
+| `B=1`, `T=4096` | 64 | 51 | 83 |
+| `B=1`, `T=4096` | 96 | 220 | 293 |
 
 ## Results
 

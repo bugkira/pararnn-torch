@@ -15,8 +15,13 @@ import torch
 from torch import Tensor
 
 from pararnn.kernels.newton_gru import _newton_gru_fused_impl
+from pararnn.kernels.newton_gru_head import (
+    _newton_gru_head_fused_impl,
+    _reverse_gru_head_factor_impl,
+)
 from pararnn.kernels.newton_lstm import _newton_lstm_fused_impl
 from pararnn.kernels.newton_slstm import _newton_slstm_fused_impl
+from pararnn.kernels.scan_dense import _reverse_dense_triton_impl, _scan_dense_triton_impl
 from pararnn.kernels.scan_diag import _scan_diag_triton_impl
 from pararnn.kernels.scan_lstm_block import _scan_block2_triton_impl
 from pararnn.kernels.scan_slstm_block import _scan_block4_triton_impl
@@ -37,6 +42,38 @@ def scan_diag_triton(
 def _(jac: Tensor, residual: Tensor, cu_seqlens: Tensor | None = None) -> Tensor:
     del jac, cu_seqlens
     return torch.empty_like(residual)
+
+
+@torch.library.custom_op("pararnn::scan_dense", mutates_args=())
+def scan_dense_triton(
+    jac: Tensor,
+    residual: Tensor,
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
+    """CUDA dense ``d×d`` Newton scan (head GRU / head sLSTM)."""
+    return _scan_dense_triton_impl(jac, residual, cu_seqlens=cu_seqlens)
+
+
+@scan_dense_triton.register_fake
+def _(jac: Tensor, residual: Tensor, cu_seqlens: Tensor | None = None) -> Tensor:
+    del jac, cu_seqlens
+    return torch.empty_like(residual)
+
+
+@torch.library.custom_op("pararnn::reverse_scan_dense", mutates_args=())
+def reverse_scan_dense_triton(
+    jac: Tensor,
+    partial: Tensor,
+    cu_seqlens: Tensor | None = None,
+) -> Tensor:
+    """CUDA dense ``d×d`` reverse Newton scan (eq. 2.6)."""
+    return _reverse_dense_triton_impl(jac, partial, cu_seqlens=cu_seqlens)
+
+
+@reverse_scan_dense_triton.register_fake
+def _(jac: Tensor, partial: Tensor, cu_seqlens: Tensor | None = None) -> Tensor:
+    del jac, cu_seqlens
+    return torch.empty_like(partial)
 
 
 @torch.library.custom_op("pararnn::scan_block2", mutates_args=())
@@ -106,6 +143,79 @@ def _(
     del a_r, a_n, h0, cu_seqlens, block_table, max_iters, omega
     batch, time, _ = wx.shape
     return wx.new_empty(batch, time, int(a_z.numel()))
+
+
+@torch.library.custom_op("pararnn::newton_gru_head_fused", mutates_args=())
+def newton_gru_head_fused(
+    wx: Tensor,
+    a_z: Tensor,
+    a_r: Tensor,
+    a_n: Tensor,
+    h0: Tensor | None = None,
+    cu_seqlens: Tensor | None = None,
+    *,
+    max_iters: int,
+    omega: float,
+) -> Tensor:
+    """Fused / factorized Alg. 1 for ``ParaGRU(mix='head')``.
+
+    ``a_*`` are ``(n_heads, d_head, d_head)``. ``wx`` is ``W_x(x)``
+    ``(B, T, 3 d_h)``. No dense ``d×d`` Jacobian buffer.
+    """
+    return _newton_gru_head_fused_impl(
+        wx,
+        a_z,
+        a_r,
+        a_n,
+        max_iters=max_iters,
+        omega=omega,
+        h0=h0,
+        cu_seqlens=cu_seqlens,
+    )
+
+
+@newton_gru_head_fused.register_fake
+def _(
+    wx: Tensor,
+    a_z: Tensor,
+    a_r: Tensor,
+    a_n: Tensor,
+    h0: Tensor | None = None,
+    cu_seqlens: Tensor | None = None,
+    *,
+    max_iters: int,
+    omega: float,
+) -> Tensor:
+    del a_r, a_n, h0, cu_seqlens, max_iters, omega
+    batch, time, _ = wx.shape
+    d_h = int(a_z.shape[0] * a_z.shape[-1])
+    return wx.new_empty(batch, time, d_h)
+
+
+@torch.library.custom_op("pararnn::reverse_gru_head_factor", mutates_args=())
+def reverse_gru_head_factor(
+    h_prev: Tensor,
+    wx: Tensor,
+    partial: Tensor,
+    a_z: Tensor,
+    a_r: Tensor,
+    a_n: Tensor,
+) -> Tensor:
+    """Eq. 2.6 factorized reverse for head ParaGRU (opaque to Dynamo)."""
+    return _reverse_gru_head_factor_impl(h_prev, wx, partial, a_z, a_r, a_n)
+
+
+@reverse_gru_head_factor.register_fake
+def _(
+    h_prev: Tensor,
+    wx: Tensor,
+    partial: Tensor,
+    a_z: Tensor,
+    a_r: Tensor,
+    a_n: Tensor,
+) -> Tensor:
+    del h_prev, wx, a_z, a_r, a_n
+    return torch.empty_like(partial)
 
 
 @torch.library.custom_op("pararnn::newton_lstm_fused", mutates_args=())

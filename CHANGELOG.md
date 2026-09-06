@@ -4,6 +4,48 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- `ParaGRU(mix='head', n_heads=…)`: block-diagonal recurrent `A_z,A_r,A_n`
+  (Dreamer-style block recurrence) with full `W_x` input mix. Cho gates only —
+  Dreamer LN-GRU keeps LayerNorm outside the cell. Default remains `mix='diag'`.
+  Head default `max_recurrent_norm=None` (no silent clamp on dense `A_*`).
+- Factorized head Jacobian matvecs (`gru_head_jvp` / `gru_head_jt_mvp`) and
+  CUDA fused Newton for `ParaGRU(mix='head')` via
+  `pararnn::newton_gru_head_fused` / `pararnn::reverse_gru_head_factor`
+  custom ops (Dynamo-opaque; `register_fake`): one Triton program per
+  `(batch, head)` does gates + residual + factorized `J δ`; `d_head ≤ 64`
+  full SRAM, `64 < d_head ≤ 128` streamed-`A` SRAM, larger heads PyTorch
+  gates + tiled Triton factor scan. `scan_backend` in
+  `{auto,triton,fused}` on CUDA; `eager` keeps the dense-J oracle.
+- Packed closed-form VJP for `ParaGRU(mix='head')`: CUDA Triton
+  (`gru_head_recurrence_vjp`; SRAM for `d_head≤64`, T-parallel tiled pre +
+  outer kernels for larger) with eager oracle (`gru_head_recurrence_vjp_eager`).
+  Deterministic `∇A` via per-batch fp32 tiles + `.sum` (outer: one write per
+  `(B,head,i_tile,o_tile)`, no atomics).
+- Factorized reverse for `d_head>64`: streamed-`A` SRAM path through
+  `d_head≤128` (gates+`J^T` in one kernel); above that, tiled Triton `J^T`
+  with fused `A_z`/`A_n` tile pass.
+- CUDA `scan_dense` / `reverse_scan_dense` (`backend='triton'`): tiled row-wise
+  Triton inclusive / reverse scans (any `d_head`; fp32 algebra). Bench
+  [`scripts/bench_gru_head.py`](scripts/bench_gru_head.py) (`--scan-backend compare`,
+  `--d-head-grid`).
+- Head long-T (checked through `T=4096`): no hard pad on fused/stream/hybrid.
+  RTX 2080 Ti float32 medians — `B=4 T=128 K=3`: Newton `d_head=64` ~2.4 ms,
+  `96/128` ~9–10 ms, `192` ~30 ms; `B=1 T=4096`: Newton `64` ~51 ms / `96`
+  ~220 ms, reverse ~63–86 ms, VJP ~4–14 ms, fwd+bwd ~83 / ~293 ms. Reproduce:
+  `uv run python scripts/bench_gru_head.py --device cuda`.
+- `NewtonConfig(recompute=True)` covered for `ParaGRU(mix='head')` fused
+  (Level-2 rematerialize for long-T VRAM; same knob as diag).
+
+### Changed
+
+- Head-cell honesty: `UserWarning` on `ParaGRU(mix='head')`; docs state
+  factorized CUDA path, eager dense oracle, and LN mismatch.
+- Head + `cu_seqlens`: explicit `scan_backend='fused'` raises `TypeError`
+  (no silent fused→eager); `auto` remaps to `eager` with `UserWarning`.
+  Ragged packs use `scan_backend='eager'`.
+
 ## [0.9.0] - 2026-09-06
 
 LM trunk, continuous-batch serve, vLLM plugin, and public API docs.

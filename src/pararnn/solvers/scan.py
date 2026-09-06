@@ -111,10 +111,15 @@ def scan_dense(
 
     ``jac``: (batch, time, d, d) with ``[..., out, in]``. ``residual``: (batch, time, d).
     Compose is ``bmm`` — ``O(T d^3)`` after the log-depth scan.
-    ``backend='triton'`` still runs the eager Blelloch.
+    ``backend='triton'``: CUDA tiled row-wise Triton inclusive scan (any
+    ``d``; fp32 algebra); ragged ``cu_seqlens`` stays on the eager segmented path.
     """
     if backend not in ("eager", "triton"):
         raise ValueError(f"unknown scan backend {backend!r}")
+    if backend == "triton":
+        from pararnn.kernels import scan_dense_triton
+
+        return scan_dense_triton(jac, residual, cu_seqlens=cu_seqlens)
     return _scan_acc(jac, residual, _compose_dense, _fill_ident_dense, cu_seqlens=cu_seqlens)
 
 
@@ -180,7 +185,17 @@ def reverse_scan_dense(
     backend: str = "eager",
     cu_seqlens: Tensor | None = None,
 ) -> Tensor:
-    """Eq. 2.6 with a full matrix: uses ``J^T``."""
+    """Eq. 2.6 with a full matrix: uses ``J^T``.
+
+    ``backend='triton'``: tiled reverse walk on CUDA (no flip + forward scan).
+    Ragged ``cu_seqlens`` stays on the eager flip path.
+    """
+    if backend not in ("eager", "triton"):
+        raise ValueError(f"unknown scan backend {backend!r}")
+    if backend == "triton" and cu_seqlens is None:
+        from pararnn.kernels import reverse_scan_dense_triton
+
+        return reverse_scan_dense_triton(jac, partial, cu_seqlens=None)
     j_t = jac.transpose(-1, -2)
     j_rev = j_t.new_zeros(j_t.shape)
     j_rev[:, 1:] = j_t.flip(1)[:, :-1]

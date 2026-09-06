@@ -138,10 +138,51 @@ def test_newton_under_use_deterministic_algorithms(
     torch.use_deterministic_algorithms(True)
     try:
         with caplog.at_level(logging.WARNING, logger="pararnn.determinism"):
-            h, _stats = newton_apply(cell, x, cfg)
+            h = newton_apply(cell, x, cfg)
             h.sum().backward()
         drift = [r for r in caplog.records if "differed across two" in r.getMessage()]
         assert not drift, "packed VJP should bit-match; no one-shot drift warning"
+    finally:
+        torch.use_deterministic_algorithms(prev)
+        reset_determinism_warnings()
+
+
+@pytest.mark.cuda
+@pytest.mark.filterwarnings("ignore:mix='head' is block-diagonal ParaGRU:UserWarning")
+def test_head_gru_fused_deterministic_bitmatch(cuda_device: torch.device) -> None:
+    """Two identical fused head Newton + bwd calls bit-match under deterministic algos."""
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    reset_determinism_warnings()
+    torch.manual_seed(17)
+    cell = ParaGRU(16, 32, mix="head", n_heads=4, device=cuda_device)
+    x = torch.randn(2, 16, 16, device=cuda_device)
+    cfg = NewtonConfig(max_iters=3, scan_backend="fused", residual_atol=None)
+    prev = torch.are_deterministic_algorithms_enabled()
+    torch.use_deterministic_algorithms(True)
+    try:
+        outs = []
+        grads = []
+        for _ in range(2):
+            cell.zero_grad(set_to_none=True)
+            xx = x.detach().clone().requires_grad_(True)
+            y = newton_apply(cell, xx, cfg)
+            y.sum().backward()
+            outs.append(y.detach().clone())
+            grads.append(
+                (
+                    xx.grad.detach().clone() if xx.grad is not None else None,
+                    tuple(
+                        p.grad.detach().clone() if p.grad is not None else None
+                        for p in cell.parameters()
+                    ),
+                )
+            )
+        torch.testing.assert_close(outs[0], outs[1], atol=0.0, rtol=0.0)
+        assert grads[0][0] is not None and grads[1][0] is not None
+        assert int((grads[0][0] != grads[1][0]).sum().item()) == 0
+        for g1, g2 in zip(grads[0][1], grads[1][1], strict=True):
+            assert g1 is not None and g2 is not None
+            assert int((g1 != g2).sum().item()) == 0
     finally:
         torch.use_deterministic_algorithms(prev)
         reset_determinism_warnings()

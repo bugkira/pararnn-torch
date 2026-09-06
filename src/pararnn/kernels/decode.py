@@ -56,8 +56,8 @@ def can_decode_step(cell: nn.Module, ref: Tensor) -> bool:
     """Whether ``decode_step`` can run the T=1 Triton kernel on ``ref``.
 
     Supports ParaGRU / ParaLSTM and ParaSLSTM with ``mix='diag'`` on CUDA
-    with fp32/fp16 (bf16 needs SM ≥ 8.0). Head/dense mix and CPU keep
-    the eager ``cell.step`` path inside ``decode_step``.
+    with fp32/fp16 (bf16 needs SM ≥ 8.0). Head mix and CPU keep the eager
+    ``cell.step`` path inside ``decode_step``.
 
     Parameters
     ----------
@@ -75,7 +75,9 @@ def can_decode_step(cell: nn.Module, ref: Tensor) -> bool:
         return False
     if not is_fused_dtype_supported(ref.dtype, ref.device):
         return False
-    if isinstance(cell, (ParaGRU, ParaLSTM)):
+    if isinstance(cell, ParaGRU):
+        return cell.mix == "diag"
+    if isinstance(cell, ParaLSTM):
         return True
     return isinstance(cell, ParaSLSTM) and cell.mix == "diag"
 

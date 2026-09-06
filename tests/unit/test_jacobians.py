@@ -23,6 +23,27 @@ def test_gru_jacobian_matches_autograd():
             torch.testing.assert_close(g, expect, atol=1e-5, rtol=1e-5)
 
 
+def test_gru_head_jacobian_matches_autograd():
+    torch.manual_seed(0)
+    with pytest.warns(UserWarning, match="block-diagonal ParaGRU"):
+        cell = ParaGRU(d_in=4, d_h=8, mix="head", n_heads=4)
+    h_prev = torch.randn(2, 8, requires_grad=True)
+    x = torch.randn(2, 4)
+    h_new, jac = cell.step_with_jacobian(h_prev, x)
+    assert jac.shape == (2, 4, 2, 2)
+    for b in range(2):
+        for out_h in range(4):
+            for out_d in range(2):
+                i = out_h * 2 + out_d
+                g = torch.autograd.grad(h_new[b, i], h_prev, retain_graph=True)[0][b]
+                expect = torch.zeros_like(g)
+                for in_h in range(4):
+                    for in_d in range(2):
+                        if in_h == out_h:
+                            expect[in_h * 2 + in_d] = jac[b, out_h, out_d, in_d]
+                torch.testing.assert_close(g, expect, atol=1e-5, rtol=1e-5)
+
+
 def test_gru_step_wx_without_x():
     torch.manual_seed(2)
     cell = ParaGRU(d_in=5, d_h=7)

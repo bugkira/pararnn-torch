@@ -209,14 +209,31 @@ def test_compile_safe_fused_fullgraph_inference(cuda_device: torch.device) -> No
 
 
 @pytest.mark.cuda
-def test_compile_safe_fused_fullgraph_training(cuda_device: torch.device) -> None:
+@pytest.mark.filterwarnings("ignore:mix='head' is block-diagonal ParaGRU:UserWarning")
+@torch.no_grad()
+def test_compile_safe_head_gru_fullgraph_inference(cuda_device: torch.device) -> None:
+    """Head fused Newton is ``pararnn::newton_gru_head_fused``: fullgraph OK."""
     torch.compiler.reset()
-    torch.manual_seed(7)
-    cell_e = ParaGRU(4, 8, device=cuda_device)
-    cell_c = ParaGRU(4, 8, device=cuda_device)
+    torch.manual_seed(8)
+    cell = ParaGRU(16, 32, mix="head", n_heads=4, device=cuda_device).eval()
+    x = torch.randn(2, 16, 16, device=cuda_device)
+    fn = _fwd(cell, compile_safe_config(scan_backend="fused"))
+    explanation = torch._dynamo.explain(fn)(x)
+    assert explanation.graph_break_count == 0, explanation.break_reasons
+    compiled = torch.compile(fn, fullgraph=True)
+    _assert_close(compiled(x), fn(x))
+
+
+@pytest.mark.cuda
+@pytest.mark.filterwarnings("ignore:mix='head' is block-diagonal ParaGRU:UserWarning")
+def test_compile_safe_head_gru_fullgraph_training(cuda_device: torch.device) -> None:
+    torch.compiler.reset()
+    torch.manual_seed(9)
+    cell_e = ParaGRU(16, 32, mix="head", n_heads=4, device=cuda_device)
+    cell_c = ParaGRU(16, 32, mix="head", n_heads=4, device=cuda_device)
     cell_c.load_state_dict(cell_e.state_dict())
-    cfg = compile_safe_config(scan_backend="auto")
-    x_e = torch.randn(2, 16, 4, device=cuda_device, requires_grad=True)
+    cfg = compile_safe_config(scan_backend="fused")
+    x_e = torch.randn(2, 16, 16, device=cuda_device, requires_grad=True)
     x_c = x_e.detach().clone().requires_grad_(True)
     y_e = newton_apply(cell_e, x_e, cfg)
     w = torch.randn_like(y_e)
@@ -225,10 +242,9 @@ def test_compile_safe_fused_fullgraph_training(cuda_device: torch.device) -> Non
     y_c = compiled(x_c)
     (y_c * w).sum().backward()
     _assert_close(y_c, y_e.detach())
-    assert x_e.grad is not None
-    assert x_c.grad is not None
+    assert x_e.grad is not None and x_c.grad is not None
     _assert_close(x_c.grad, x_e.grad)
     for p_e, p_c in zip(cell_e.parameters(), cell_c.parameters(), strict=True):
-        assert p_e.grad is not None
-        assert p_c.grad is not None
+        assert p_e.grad is not None and p_c.grad is not None
         _assert_close(p_c.grad, p_e.grad)
+

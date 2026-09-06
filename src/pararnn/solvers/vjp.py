@@ -4,11 +4,10 @@ The reverse scan already applied ``J^T``. This is ``∂L/∂(x, θ)`` from
 ``μ = ∇_H L`` through one batched ``f`` (eq. 2.6).
 
 ParaGRU / ParaLSTM / ParaSLSTM ``mix='diag'``: closed-form elementwise VJP +
-one ``W_x`` GEMM (same split as the fused forward). Formulas live in
-``pararnn.kernels.vjp_*`` (``*_recurrence_vjp_eager``); CUDA uses the
-matching Triton kernel. Reduction is tile-sum then PyTorch ``.sum``
-(deterministic; no atomics). Head/dense sLSTM and custom cells use
-Autograd on ``step`` — that is the generic path.
+one ``W_x`` GEMM (same split as the fused forward). ``ParaGRU(mix='head')``:
+closed-form matrix VJP over blocks. Formulas live in ``pararnn.kernels.vjp_*``
+(``*_recurrence_vjp_eager``); CUDA diag uses the matching Triton kernel.
+Head/dense sLSTM and custom cells use Autograd on ``step``.
 """
 
 from __future__ import annotations
@@ -45,8 +44,10 @@ def _cell_vjp_body(
     *,
     packed: bool,
 ) -> tuple[Tensor | None, tuple[Tensor | None, ...]]:
-    if packed and isinstance(cell, ParaGRU):
+    if packed and isinstance(cell, ParaGRU) and cell.mix == "diag":
         return _gru_vjp(cell, h_prev, x, mu)
+    if packed and isinstance(cell, ParaGRU) and cell.mix == "head":
+        return _gru_head_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaLSTM):
         return _lstm_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaSLSTM) and cell.mix == "diag":
@@ -56,7 +57,9 @@ def _cell_vjp_body(
 
 def uses_packed_vjp(cell: nn.Module) -> bool:
     """True when eq. 2.6 can skip Autograd on ``step``."""
-    if isinstance(cell, (ParaGRU, ParaLSTM)):
+    if isinstance(cell, ParaGRU):
+        return cell.mix in ("diag", "head")
+    if isinstance(cell, ParaLSTM):
         return True
     return isinstance(cell, ParaSLSTM) and cell.mix == "diag"
 
@@ -134,6 +137,42 @@ def _gru_vjp(
             "a_z": g_az,
             "a_r": g_ar,
             "a_n": g_an,
+            "W_x.weight": grad_w,
+            "W_x.bias": grad_b,
+        },
+    )
+
+
+def _gru_head_vjp(
+    cell: ParaGRU, h_prev: Tensor, x: Tensor, mu: Tensor
+) -> tuple[Tensor, tuple[Tensor | None, ...]]:
+    from pararnn.kernels.vjp_gru import gru_head_recurrence_vjp
+
+    assert cell.n_heads is not None and cell.d_head is not None
+    a_z, a_r, a_n = cell.clipped_a_head()
+    wx = cell.W_x(x)
+    g_wx, g_az, g_ar, g_an = gru_head_recurrence_vjp(
+        h_prev,
+        wx,
+        a_z,
+        a_r,
+        a_n,
+        mu,
+        n_heads=cell.n_heads,
+        d_head=cell.d_head,
+    )
+    cap = cell.max_recurrent_norm
+    g_az = g_az * _clip_mask(cell.A_z, cap)
+    g_ar = g_ar * _clip_mask(cell.A_r, cap)
+    g_an = g_an * _clip_mask(cell.A_n, cap)
+    grad_x, grad_w, grad_b = _linear_vjp(cell.W_x, x, g_wx)
+    return _align_grads(
+        cell,
+        grad_x,
+        {
+            "A_z": g_az,
+            "A_r": g_ar,
+            "A_n": g_an,
             "W_x.weight": grad_w,
             "W_x.bias": grad_b,
         },

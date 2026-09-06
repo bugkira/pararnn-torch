@@ -8,6 +8,10 @@ import torch
 from pararnn.cells import ParaGRU, ParaLSTM, ParaSLSTM
 from pararnn.solvers import NewtonConfig, newton_apply
 
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:mix='head' is block-diagonal ParaGRU:UserWarning"
+)
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _ATOL = 2e-4
 _RTOL = 2e-4
@@ -15,7 +19,13 @@ _RTOL = 2e-4
 
 def _clone_cell(src: torch.nn.Module) -> torch.nn.Module:
     if isinstance(src, ParaSLSTM):
-        dst = ParaSLSTM(d_in=src.d_in, d_h=src.d_h, mix=src.mix).to(device)
+        dst = ParaSLSTM(
+            d_in=src.d_in, d_h=src.d_h, mix=src.mix, n_heads=src.n_heads
+        ).to(device)
+    elif isinstance(src, ParaGRU) and src.mix == "head":
+        dst = ParaGRU(
+            d_in=src.d_in, d_h=src.d_h, mix="head", n_heads=src.n_heads
+        ).to(device)
     else:
         dst = type(src)(d_in=src.d_in, d_h=src.d_h).to(device)
     dst.load_state_dict(src.state_dict())
@@ -35,10 +45,11 @@ def _grad_bundle(cell: torch.nn.Module, x: torch.Tensor, cfg: NewtonConfig, w: t
     ("cell_ctor", "kwargs", "cfg_extra"),
     [
         (ParaGRU, {"d_in": 5, "d_h": 7}, {}),
+        (ParaGRU, {"d_in": 4, "d_h": 8, "mix": "head", "n_heads": 4}, {}),
         (ParaLSTM, {"d_in": 5, "d_h": 6}, {}),
         (ParaSLSTM, {"d_in": 4, "d_h": 4, "mix": "diag"}, {"picard_iters": 1}),
     ],
-    ids=["gru", "lstm", "slstm"],
+    ids=["gru", "gru_head", "lstm", "slstm"],
 )
 def test_recompute_grads_match_level1(cell_ctor, kwargs, cfg_extra) -> None:
     torch.manual_seed(11)
@@ -71,6 +82,24 @@ def test_recompute_fused_gru_grads_match_level1(cuda_device: torch.device) -> No
     y0 = newton_apply(cell_a, x, cfg0)
     w = torch.randn_like(y0)
     base = {"max_iters": 3, "scan_backend": "fused", "residual_fail": None}
+    y_l1, gx_l1, gp_l1 = _grad_bundle(cell_a, x, NewtonConfig(**base, recompute=False), w)
+    y_l2, gx_l2, gp_l2 = _grad_bundle(cell_b, x, NewtonConfig(**base, recompute=True), w)
+    torch.testing.assert_close(y_l2, y_l1, atol=_ATOL, rtol=_RTOL)
+    torch.testing.assert_close(gx_l2, gx_l1, atol=_ATOL, rtol=_RTOL)
+    for a, b in zip(gp_l1, gp_l2, strict=True):
+        torch.testing.assert_close(b, a, atol=_ATOL, rtol=_RTOL)
+
+
+@pytest.mark.cuda
+def test_recompute_fused_gru_head_grads_match_level1(cuda_device: torch.device) -> None:
+    """Level-2 rematerialize for Dreamer-style head GRU (long-T VRAM knob)."""
+    torch.manual_seed(14)
+    cell_a = ParaGRU(d_in=16, d_h=32, mix="head", n_heads=4).to(cuda_device)
+    cell_b = _clone_cell(cell_a).to(cuda_device)
+    x = torch.randn(2, 64, 16, device=cuda_device)
+    base = {"max_iters": 3, "scan_backend": "fused", "residual_fail": None}
+    y0 = newton_apply(cell_a, x, NewtonConfig(**base))
+    w = torch.randn_like(y0)
     y_l1, gx_l1, gp_l1 = _grad_bundle(cell_a, x, NewtonConfig(**base, recompute=False), w)
     y_l2, gx_l2, gp_l2 = _grad_bundle(cell_b, x, NewtonConfig(**base, recompute=True), w)
     torch.testing.assert_close(y_l2, y_l1, atol=_ATOL, rtol=_RTOL)

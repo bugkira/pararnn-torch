@@ -1,8 +1,10 @@
-"""Dispatch fused Newton for ParaGRU, ParaLSTM, and ParaSLSTM ``mix='diag'``.
+"""Dispatch fused Newton for ParaGRU, ParaLSTM, and ParaSLSTM.
 
-Head/dense sLSTM stay on the PyTorch cell + scan path. ``log_coords`` uses
-the LSE cell in the same kernel; ``picard_iters`` is the frozen-gate scan
-before 4×4 Newton. ``chunk_len`` stays a Python loop.
+``mix='diag'`` cells use handwritten Triton Alg. 1 custom ops.
+``ParaGRU(mix='head')`` uses ``pararnn::newton_gru_head_fused`` (factorized
+``J``, no dense ``d×d``). Head/dense sLSTM stay on the PyTorch cell +
+scan path. ``log_coords`` / Picard are ParaSLSTM. ``chunk_len`` stays a
+Python loop.
 
 Default path is ``pararnn::newton_*_fused`` custom ops (fixed ``max_iters``).
 ``residual_fn`` + ``early_exit_atol`` bypass the custom op and call the impl
@@ -40,6 +42,41 @@ def fused_newton(
 ) -> Tensor:
     early = residual_fn is not None and early_exit_atol is not None
     if isinstance(cell, ParaGRU):
+        if cell.mix == "head":
+            if log_coords:
+                raise TypeError("fused log coords is ParaSLSTM only")
+            if picard_iters:
+                raise TypeError("fused Picard is ParaSLSTM only")
+            if scan_tile != "assoc":
+                raise TypeError("fused scan_tile is ParaSLSTM only")
+            if fused_time_loop:
+                raise TypeError("fused_time_loop is ParaSLSTM only")
+            if block_table is not None:
+                raise TypeError("block_table fused Newton is mix='diag' ParaGRU only")
+            if cu_seqlens is not None:
+                raise TypeError(
+                    "ParaGRU(mix='head') fused Newton does not support cu_seqlens yet; "
+                    "use scan_backend='eager' for ragged packs, or pad to a rectangular batch"
+                )
+            if early:
+                raise TypeError(
+                    "fused_early_exit is mix='diag' only; ParaGRU(mix='head') uses fixed K"
+                )
+            a_z, a_r, a_n = cell.clipped_a_head()
+            from pararnn.kernels.custom_ops import newton_gru_head_fused
+
+            return newton_gru_head_fused(
+                wx,
+                a_z,
+                a_r,
+                a_n,
+                h0,
+                None,
+                max_iters=max_iters,
+                omega=omega,
+            )
+        if cell.mix != "diag":
+            raise TypeError(f"fused Newton is mix='diag'|'head' only; got mix={cell.mix!r}")
         if log_coords:
             raise TypeError("fused log coords is ParaSLSTM only")
         if picard_iters:

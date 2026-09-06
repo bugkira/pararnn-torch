@@ -7,8 +7,8 @@ fast path for ParaGRU/ParaLSTM (paper §3).
 in ``h``; otherwise this is the diagonal quasi-Newton (Gonzalez et al. 2024).
 ``block2``: two JVPs for a 2-slot channelwise state (CIFG-like).
 ``block4``: four JVPs for a 4-slot channelwise state (sLSTM, diag mix).
-``head``: ``jacrev`` per sLSTM head (``4 d_head × 4 d_head``). Exact for
-xLSTM-style block-diagonal mixing.
+``head``: ``jacrev`` per head. sLSTM: ``4 d_head × 4 d_head`` (xLSTM-style
+block-diagonal mixing). GRU: ``d_head × d_head`` (Dreamer-style blocks).
 ``dense``: ``jacrev`` per ``(batch, time)`` — exact for any ``f``, ``O(d_h^3)``
 scan. Use it when the cell mixes all channels.
 """
@@ -113,6 +113,34 @@ def _jac_head(cell: nn.Module, h0: Tensor, x0: Tensor) -> tuple[Tensor, Tensor]:
     d_head = getattr(cell, "d_head", None)
     if n_heads is None or d_head is None:
         raise ValueError("jac_structure='head' needs cell.n_heads and cell.d_head")
+    if h0.dim() == 3:
+        return _jac_head_gru(cell, h0, x0, n_heads=n_heads, d_head=d_head)
+    return _jac_head_slstm(cell, h0, x0, n_heads=n_heads, d_head=d_head)
+
+
+def _jac_head_gru(
+    cell: nn.Module, h0: Tensor, x0: Tensor, *, n_heads: int, d_head: int
+) -> tuple[Tensor, Tensor]:
+    packed = h0.reshape(*h0.shape[:2], n_heads, d_head)
+    # (B, T, H, 3, d) so the head axis aligns with ``packed``.
+    wx_p = cell.W_x(x0).reshape(*x0.shape[:2], 3, n_heads, d_head).permute(0, 1, 3, 2, 4)
+    a_z, a_r, a_n = cell.clipped_a_head()
+
+    def f_one(h: Tensor, wxh: Tensor, az: Tensor, ar: Tensor, an: Tensor) -> Tensor:
+        return cell.step_head(h, wxh, az, ar, an)
+
+    inner = jacrev(f_one, argnums=0)
+    per_head = vmap(inner, in_dims=(0, 0, 0, 0, 0))
+    jac = vmap(vmap(per_head, in_dims=(0, 0, None, None, None)), in_dims=(0, 0, None, None, None))(
+        packed, wx_p, a_z, a_r, a_n
+    )
+    pred = cell.step(h0, x0)
+    return pred, jac
+
+
+def _jac_head_slstm(
+    cell: nn.Module, h0: Tensor, x0: Tensor, *, n_heads: int, d_head: int
+) -> tuple[Tensor, Tensor]:
     packed = slstm_pack_heads(h0, n_heads, d_head)
     wx_slots = cell.W_x(x0).reshape(*x0.shape[:2], 4, n_heads * d_head)
     wx_p = slstm_pack_heads(wx_slots, n_heads, d_head)

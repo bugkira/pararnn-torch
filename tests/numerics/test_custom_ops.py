@@ -66,3 +66,32 @@ def test_scan_diag_opcheck(cuda_device: torch.device) -> None:
     jac = torch.randn(2, 16, 4, device=cuda_device) * 0.3
     residual = torch.randn(2, 16, 4, device=cuda_device)
     torch.library.opcheck(scan_diag_triton, (jac, residual), test_utils="test_schema")
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_newton_gru_head_fused_custom_op(cuda_device: torch.device) -> None:
+    """``register_fake`` + opcheck for head fused Newton."""
+    from pararnn.kernels.custom_ops import newton_gru_head_fused
+    from pararnn.kernels.newton_gru_head import _newton_gru_head_fused_impl
+
+    torch.manual_seed(3)
+    torch.compiler.reset()
+    d_h, n_heads, d_head = 32, 4, 8
+    wx = torch.randn(2, 16, 3 * d_h, device=cuda_device)
+    a = torch.randn(n_heads, d_head, d_head, device=cuda_device) * 0.1
+    ref = _newton_gru_head_fused_impl(wx, a, a, a, max_iters=3, omega=1.0)
+    got = newton_gru_head_fused(wx, a, a, a, None, None, max_iters=3, omega=1.0)
+    torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-5)
+    torch.library.opcheck(
+        newton_gru_head_fused,
+        (wx, a, a, a, None, None),
+        kwargs={"max_iters": 2, "omega": 1.0},
+        test_utils="test_schema",
+    )
+
+    def fn(w: torch.Tensor) -> torch.Tensor:
+        return newton_gru_head_fused(w, a, a, a, None, None, max_iters=2, omega=1.0)
+
+    compiled = torch.compile(fn, fullgraph=True)
+    torch.testing.assert_close(compiled(wx), fn(wx), atol=1e-5, rtol=1e-5)
