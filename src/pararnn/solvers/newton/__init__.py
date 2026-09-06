@@ -39,7 +39,9 @@ from pararnn.solvers.newton.config import (
     NewtonDivergenceError,
     NewtonStats,
     _validate_config,
-    compile_safe_config,
+)
+from pararnn.solvers.newton.config import (
+    compile_safe_config as compile_safe_config,
 )
 from pararnn.solvers.newton.dispatch import (
     _resolve_backend,

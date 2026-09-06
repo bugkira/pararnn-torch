@@ -23,11 +23,11 @@ from pararnn.kernels.newton_gru_head import (
 from pararnn.kernels.newton_lstm import _newton_lstm_fused_impl
 from pararnn.kernels.newton_nlru import _newton_nlru_fused_impl
 from pararnn.kernels.newton_slstm import _newton_slstm_fused_impl
-from pararnn.kernels.newton_titans import _newton_titans_fused_impl
 from pararnn.kernels.newton_slstm_head import (
     _newton_slstm_head_fused_impl,
     _reverse_slstm_head_factor_impl,
 )
+from pararnn.kernels.newton_titans import _newton_titans_fused_impl
 from pararnn.kernels.scan_dense import _reverse_dense_triton_impl, _scan_dense_triton_impl
 from pararnn.kernels.scan_diag import _scan_diag_triton_impl
 from pararnn.kernels.scan_lstm_block import _scan_block2_triton_impl
