@@ -85,7 +85,7 @@ core = ParaRNN(ParaNLRU(d_model, d_model))
 ```
 
 This is the same diag-Jacobian class as fused ParaGRU; it is not a
-weight-compatible drop-in for Griffin's \(a^{c r_t}\) parameterization.
+weight-compatible drop-in for Griffin's $`a^{c r_t}`$ parameterization.
 
 ## Liquid / irregular-Δt slot
 
@@ -102,14 +102,14 @@ dt = ...    # (B, T, 1), positive
 y = core(torch.cat((feat, dt), dim=-1))
 ```
 
-Gate \(a=\sigma(-\mathrm{softplus}(f)\,\Delta t)\) and diagonal mix \(u\) keep
+Gate $`a=\sigma(-\mathrm{softplus}(f)\,\Delta t)`$ and diagonal mix $u$ keep
 the Newton Jacobian channelwise diagonal (fused Alg. 1 on CUDA).
 
 ## Modern Hopfield / attractor slot
 
 For a recurrent one-step Modern-Hopfield update with input-conditioned
 pattern matrices, use `ParaHopfield`. Softmax couples channels, so Newton
-uses a dense Jacobian and `scan_dense` (keep \(d_h\le 32\); tests use 8):
+uses a dense Jacobian and `scan_dense` (keep d_h ≤ 32; tests use 8):
 
 ```python
 from pararnn import NewtonConfig, ParaHopfield, ParaRNN
@@ -121,7 +121,7 @@ core = ParaRNN(
 y = core(x)  # (B, T, d_model) → (B, T, 8)
 ```
 
-Default \(\beta=1/\sqrt{d_h}\). `max_iters=None` selects the measured
+Default $`\beta=1/\sqrt{d_h}`$. `max_iters=None` selects the measured
 `K*(T)` envelope (`hopfield_auto_newton_iters`); pin an `int` or pass
 `newton_iters_by_t={64: 2, 1024: 3, …}` to override. Fused cell+scan and
 packed VJP are parked; eq. 2.6 uses Autograd on `step`.
@@ -129,8 +129,8 @@ packed VJP are parked; eq. 2.6 uses Autograd on `step`.
 ## RWKV-7 Goose / matrix-state delta slot
 
 For the linear RWKV-7 Goose transition (Peng et al. arXiv:2503.14456), use
-`ParaRWKV7`. State is per-head \(S\in\mathbb{R}^{d_{\mathrm{head}}\times d_{\mathrm{head}}}\);
-gates are input-only, so the map is an affine monoid in \(S\):
+`ParaRWKV7`. State is per-head $`S\in\mathbb{R}^{d_{\mathrm{head}}\times d_{\mathrm{head}}}`$;
+gates are input-only, so the map is an affine monoid in $S$:
 
 ```python
 from pararnn import ParaRWKV7, newton_apply, sequential_apply

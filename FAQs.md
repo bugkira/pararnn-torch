@@ -17,17 +17,17 @@ Alg. 1 surface.
 
 - Pin with `NewtonConfig(max_iters=3)` for ParaGRU / ParaLSTM-style cells
   (Danieli et al. 2025 §2.1 / App. A empirical agreement).
-- Use `max_iters=None` for measured \(K^*(T)\) auto schedules
-  (`pararnn.solvers.newton.k_star`); campaign through \(T{=}131072\) via
+- Use `max_iters=None` for measured K*(T) auto schedules
+  (`pararnn.solvers.newton.k_star`); campaign through T=131072 via
   `scripts/bench_k_star.py`.
 - Override with `newton_iters_by_t={64: 2, 1024: 3, …}` when you have a table.
 
 If residual stays high, try Picard warm-start (`picard_iters`) before raising
-\(K\).
+K.
 
 ## Does `torch.compile` work?
 
-Yes with the compile-safe preset (fixed \(K\), no residual host sync) →
+Yes with the compile-safe preset (fixed K, no residual host sync) →
 `fullgraph=True` on eager and fused. See
 `tests/numerics/test_compile.py` and [README Compatibility](README.md#compatibility).
 

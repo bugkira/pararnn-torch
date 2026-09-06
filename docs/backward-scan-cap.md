@@ -27,7 +27,7 @@ or pad to a rectangular batch.
 ## Remaining
 
 VRAM of the stored trajectory still bounds train T. Opt-in Level 2:
-``NewtonConfig(recompute=True)`` rematerializes \(H^\star\) in backward (eq. 2.6
+``NewtonConfig(recompute=True)`` rematerializes $`H^\star`$ in backward (eq. 2.6
 unchanged; extra Newton forward FLOPs) for diag and head GRU alike
 (``tests/numerics/test_recompute.py``). Outer ``torch.utils.checkpoint`` and
 sequence-parallel remain complementary. Windowed fused sLSTM

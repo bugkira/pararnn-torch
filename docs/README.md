@@ -6,7 +6,7 @@ Triton ``@jit`` kernels stay module-level one-liners.
 | File | What |
 |---|---|
 | [`../INSTALL.md`](../INSTALL.md) | User / contributor install, hardware, Triton |
-| [`../FAQs.md`](../FAQs.md) | CC below 8.0, \(K^*\), compile, train/eval |
+| [`../FAQs.md`](../FAQs.md) | CC below 8.0, K*, compile, train/eval |
 | [`cells.md`](cells.md) | Cell zoo snippets (Models table links here) |
 | [`adoption.md`](adoption.md) | Attention / RSSM / Liquid swap paths |
 | [`xlstm.md`](xlstm.md) | `ParaSLSTM` cell, stacking, API notes |

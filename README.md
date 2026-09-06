@@ -10,7 +10,7 @@
 [![M²RNN](https://img.shields.io/static/v1?label=M%C2%B2RNN&message=arXiv%3A2603.14360&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2603.14360)
 
 **Hardware-efficient building blocks for nonlinear recurrence:** parallel
-Newton+scan training (span \(O(\log T)\)) and \(O(1)\) sequential decode —
+Newton+scan training (span O(log T)) and O(1) sequential decode —
 GRU, LSTM, sLSTM, matrix-state, Liquid, Hopfield, RWKV-7, Titans-style memory,
 and more.
 
@@ -35,15 +35,15 @@ Triton on CUDA (compute capability ≥ 8.0).
 
 ## News
 
-- **[2026-09]** \(K^*(T)\) campaign through **\(T{=}131072\)**: CfC / Hopfield /
-  Titans stay \(K^*\!=\!2\) (H1); RWKV-7 linear monoid \(K^*\!=\!0\). Auto
+- **[2026-09]** K*(T) campaign through **T=131072**: CfC / Hopfield /
+  Titans stay K*=2 (H1); RWKV-7 linear monoid K*=0. Auto
   schedules via `NewtonConfig(max_iters=None)`.
 - **[2026-09]** Cell zoo: `ParaTitans`, `ParaRWKV7`, `ParaHopfield`, `ParaCfC`,
   `ParaNLRU` (v0.13–0.17).
 - **[2026-09]** Product entry: `ParaSLSTMBlock`, `ParaSLSTMForCausalLM`
   (`labels` CE, safetensors), continuous batch + vLLM plugin hooks.
 - **[2026-09]** Factorized Newton for `ParaGRU(mix='head')` / Dreamer slots;
-  M²RNN factorized Jacobian + \(K^*(T)\) asymptotics.
+  M²RNN factorized Jacobian + K*(T) asymptotics.
 
 ## What you get
 
@@ -52,14 +52,14 @@ FlashAttention role for cells whose Jacobian is structured enough for Newton +
 associative scan.
 
 - **Parallel train** — Alg. 1 Newton + PCR / fused Triton; measured speedups
-  of \(10^{2}\)–\(10^{3}\times\) vs same-cell sequential on long \(T\)
+  of 100–1000× vs same-cell sequential on long T
 - **O(1) decode** — sequential `step`; CUDA `T=1` Triton `decode_step` (+ CUDA
   graphs via `decode_wx`)
 - **Growing cell catalog** — diagonal, head-block, dense, and matrix-state
   Jacobians under one `ParaRNN` / `newton_apply` surface
 - **Stack-ready entrypoints** — trunk block, CausalLM, paged state,
   continuous batch, speculative verify, optional vLLM registration
-- **Honest depth** — measured \(K^*(T)\) envelopes (`max_iters=None` or pin);
+- **Honest depth** — measured K*(T) envelopes (`max_iters=None` or pin);
   lab grid through 131k tokens
 - **Train hygiene** — packed eq. 2.6 VJP (no Triton atomics),
   `torch.compile` fullgraph presets, DDP / FSDP2, deterministic-path checks
@@ -76,11 +76,11 @@ associative scan.
 |---|---|---|---|
 | [`ParaSLSTM`](docs/cells.md#paraslstm-xlstm-style) | diag / head | fused Alg. 1 | main xLSTM-style fused path (`mix='diag'`) |
 | [`ParaGRU`](docs/cells.md#paragru--paralstm-dreamer-style-block-gru) / `ParaLSTM` | diag / head | fused / factorized | Dreamer: `mix='head', n_heads=8` |
-| [`ParaM2RNN`](docs/cells.md#param2rnn-research) | factor \(K{\times}V\) | factorized Newton | matrix state; \(K^*(T)\!\sim\!\Theta(\log T)\) |
+| [`ParaM2RNN`](docs/cells.md#param2rnn-research) | factor K×V | factorized Newton | matrix state; K*(T) ~ Θ(log T) |
 | [`ParaNLRU`](docs/cells.md#paranlru) | diag | fused | Griffin / RG-LRU-style nonlinear slot |
 | [`ParaCfC`](docs/cells.md#paracfc) | diag | fused | Liquid CfC; Δt = last channel of `x` |
-| [`ParaHopfield`](docs/cells.md#parahopfield) | dense | `scan_dense` | Modern Hopfield; keep \(d_h\le 32\) |
-| [`ParaRWKV7`](docs/cells.md#pararwkv7) | linear monoid | associative `(G,U)` scan | RWKV-7 Goose; \(K^*\!=\!0\) |
+| [`ParaHopfield`](docs/cells.md#parahopfield) | dense | `scan_dense` | Modern Hopfield; keep d_h ≤ 32 |
+| [`ParaRWKV7`](docs/cells.md#pararwkv7) | linear monoid | associative `(G,U)` scan | RWKV-7 Goose; K*=0 |
 | [`ParaTitans`](docs/cells.md#paratitans) | diag | fused | shallow L=1 surprise-GD memory |
 
 Full snippets: [`docs/cells.md`](docs/cells.md). Newton+scan core follows
@@ -188,11 +188,11 @@ Lab GPUs (RTX 2080 Ti / 3060) — honest consumer cards; regenerate plots with
 
 ![ParaSLSTM fused Newton vs sequential](assets/slstm_fused_vs_sequential.png)
 
-Diag-sLSTM forward median (ms), \(B{=}8\), \(d_h{=}256\), float32, RTX 2080 Ti
+Diag-sLSTM forward median (ms), B=8, d_h=256, float32, RTX 2080 Ti
 (`scripts/slstm_vs_flashrnn.py`). Fused Newton = this library’s Alg. 1;
 sequential = `torch.compile` of the same cell.
 
-| \(T\) | fused Newton | sequential compiled |
+| T | fused Newton | sequential compiled |
 |------:|-------------:|--------------------:|
 | 256 | 6.4 | 112 |
 | 1024 | 15.3 | 429 |
@@ -201,17 +201,17 @@ sequential = `torch.compile` of the same cell.
 
 ![K*(T) wall time at T=131072](assets/k_star_wall_131k.png)
 
-Long-context \(K^*(T)\) + wall time (`scripts/bench_k_star.py`, RTX 3060,
+Long-context K*(T) + wall time (`scripts/bench_k_star.py`, RTX 3060,
 τ=1e-4, B=1):
 
-| Cell | \(K^*\) through \(T{=}131072\) | @131k fused/scan vs seq |
+| Cell | K* through T=131072 | @131k fused/scan vs seq |
 |---|---|---|
 | ParaCfC | 2 (H1) | ~11 ms vs ~52 s (~4600×) |
 | ParaTitans | 2 (H1) | ~13 ms vs ~62 s (~5000×) |
 | ParaHopfield | 2 (H1) | ~250 ms vs ~38 s (~150×) |
-| ParaRWKV7 | 0 (linear) | ~237 ms vs ~81 s (~340×, slim \(1{\times}16\)) |
+| ParaRWKV7 | 0 (linear) | ~237 ms vs ~81 s (~340×, slim 1×16) |
 
-ParaNLRU smoke (3060, \(B{=}8\), \(T{=}2048\), \(d_h{=}256\), \(K{=}3\)): fused
+ParaNLRU smoke (3060, B=8, T=2048, d_h=256, K=3): fused
 **~2.7 ms** vs sequential **~549 ms**.
 
 ```bash
@@ -249,7 +249,7 @@ Smoke: [`examples/rssm_recurrent.py`](examples/rssm_recurrent.py).
 
 `ParaM2RNN`, `ParaNLRU`, `ParaCfC`, `ParaHopfield`, `ParaRWKV7`, `ParaTitans` —
 see [`docs/cells.md`](docs/cells.md). Pin Newton depth with `max_iters=int`,
-`max_iters=None` (auto \(K^*(T)\)), or `newton_iters_by_t={…}`.
+`max_iters=None` (auto K*(T)), or `newton_iters_by_t={…}`.
 
 ## Training
 
@@ -311,25 +311,27 @@ h = sequential_apply(cell, x)
 
 ## Compatibility
 
-- **`torch.compile`:** compile-safe preset (fixed \(K\), no residual host sync)
+- **`torch.compile`:** compile-safe preset (fixed K, no residual host sync)
   → `fullgraph=True` on eager and fused (`tests/numerics/test_compile.py`).
 - **AMP:** module/`x` dtype explicit; under outer autocast Newton opts out so
   eq. 2.6 stays one dtype (`tests/numerics/test_autocast.py`).
 - **DDP / FSDP / checkpoint:** [`docs/distributed.md`](docs/distributed.md);
-  `NewtonConfig(recompute=True)` for ultra-long train \(T\).
+  `NewtonConfig(recompute=True)` for ultra-long train T.
 - **Determinism:** packed VJP uses tile `tl.sum` then `.sum` (no `tl.atomic*`);
   set `CUBLAS_WORKSPACE_CONFIG=:4096:8` under
   `torch.use_deterministic_algorithms(True)`.
 
 ## Method
 
-Training solves \(F(H)_t = h_t - f(h_{t-1}, x_t) = 0\) with Newton + parallel
-scan (Alg. 1). Layout: [`src/pararnn/layout.py`](src/pararnn/layout.py).
-GRU/LSTM warm-start App. A (\(h_l^{(0)}=f(0,x_l)\)); sLSTM zero-hidden + Picard.
-Recurrent clip App. C.1. Backward: paper eq. 2.6. M²RNN uses the factorized
-map \(J[\Delta]=f\Delta+(1-f)(1-Z^{\odot2})\odot(\Delta W)\).
+Training solves
+$`F(H)_t = h_t - f(h_{t-1}, x_t) = 0`$
+with Newton + parallel scan (Alg. 1). Layout:
+[`src/pararnn/layout.py`](src/pararnn/layout.py).
+GRU/LSTM warm-start App. A ($`h_l^{(0)}=f(0,x_l)`$); sLSTM zero-hidden + Picard.
+Recurrent clip App. C.1. Backward: paper eq. 2.6. M²RNN uses the factorized map
+$`J[\Delta]=f\Delta+(1-f)(1-Z^{\odot 2})\odot(\Delta W)`$.
 
-Critical depth \(K^*(T)\): [`scripts/bench_k_star.py`](scripts/bench_k_star.py);
+Critical depth K*(T): [`scripts/bench_k_star.py`](scripts/bench_k_star.py);
 auto schedules in `pararnn.solvers.newton.k_star`.
 
 ## Citation

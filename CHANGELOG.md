@@ -15,7 +15,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
   (cell tables: CfC / Hopfield / Titans; RWKV-7 returns 0; M²RNN log-ramp).
   Pin `max_iters=int` or pass `newton_iters_by_t={T: K, …}` (left-step).
   Envelopes: CfC/Titans ceiling 3; Hopfield `{1: 2, 64: 3}`; τ≈1e-4 through
-  \(T=131072\).
+  T=131072.
 
 ### Changed
 
@@ -37,27 +37,27 @@ channelwise-diagonal Newton Jacobian). Deep multi-layer MLP memory is parked.
 ### Added
 
 - `ParaTitans`: surprise GD on elementwise associative loss
-  \(\ell=\tfrac12\|h\odot k-v\|^2\) plus diagonal tanh polish
-  \(u\odot\tanh(W_n x+r\odot h)\); gates from `Linear(d_in → 5 d_h)`;
+  $`\ell=\tfrac12\|h\odot k-v\|^2`$ plus diagonal tanh polish
+  $`u\odot\tanh(W_n x+r\odot h)`$; gates from `Linear(d_in → 5 d_h)`;
   analytic diag `step_with_jacobian`; eager / Triton diag scan; fused Alg. 1
   (`pararnn::newton_titans_fused`); Autograd eq. 2.6 VJP. Adoption slot in
   [`docs/adoption.md`](docs/adoption.md).
 
 ## [0.16.0] - 2026-09-06
 
-`ParaRWKV7`: RWKV-7 Goose matrix-state delta monoid (linear in \(S\);
+`ParaRWKV7`: RWKV-7 Goose matrix-state delta monoid (linear in $S$;
 factorized apply + associative scan; Newton redirects).
 
 ### Added
 
-- `ParaRWKV7`: per-head state \(S\in\mathbb{R}^{d_{\mathrm{head}}\times d_{\mathrm{head}}}\)
+- `ParaRWKV7`: per-head state $`S\in\mathbb{R}^{d_{\mathrm{head}}\times d_{\mathrm{head}}}`$
   with Goose transition
-  \(S_t = S_{t-1}G_t + v_t^\top k_t\),
-  \(G_t=\mathrm{diag}(w_t)-\hat\kappa_t^\top(a_t\odot\hat\kappa_t)\)
+  $`S_t = S_{t-1}G_t + v_t^\top k_t`$,
+  $`G_t=\mathrm{diag}(w_t)-\hat\kappa_t^\top(a_t\odot\hat\kappa_t)`$
   (Peng et al., arXiv:2503.14456). Gates from `Linear(d_in → 6 n_heads d_head)`;
-  factorized `step` (no dense \(G\)); receptance readout
-  \(y=\mathrm{flatten}(S@r)\); Hillis–Steele associative scan of the
-  \((G,U)\) monoid (`scan_apply` / `newton_apply` default).
+  factorized `step` (no dense $G$); receptance readout
+  $`y=\mathrm{flatten}(S@r)`$; Hillis–Steele associative scan of the
+  $(G,U)$ monoid (`scan_apply` / `newton_apply` default).
   `newton_apply` redirects to the linear scan (or `sequential_apply` when
   `scan_backend='eager'`). Adoption slot in
   [`docs/adoption.md`](docs/adoption.md).
@@ -65,23 +65,23 @@ factorized apply + associative scan; Newton redirects).
 ## [0.15.0] - 2026-09-06
 
 `ParaHopfield`: recurrent Modern-Hopfield slot
-\(h_t = V_t\,\mathrm{softmax}(\beta K_t h_{t-1})\) with dense Newton Jacobian
-and `scan_dense` (small \(d_h\)).
+$`h_t = V_t\,\mathrm{softmax}(\beta K_t h_{t-1})`$ with dense Newton Jacobian
+and `scan_dense` (small $`d_h`$).
 
 ### Added
 
-- `ParaHopfield`: \(K_t,V_t\in\mathbb{R}^{d_h\times d_h}\) from
-  `Linear(d_in → 2 d_h²)`; default \(\beta=1/\sqrt{d_h}\); analytic dense
+- `ParaHopfield`: $`K_t,V_t\in\mathbb{R}^{d_h\times d_h}`$ from
+  `Linear(d_in → 2 d_h²)`; default $`\beta=1/\sqrt{d_h}`$; analytic dense
   `step_with_jacobian`; eager / Triton `scan_dense` (no fused cell+scan yet);
-  Autograd eq. 2.6 VJP (`uses_packed_vjp` false). Docs/tests cap \(d_h\le 32\)
+  Autograd eq. 2.6 VJP (`uses_packed_vjp` false). Docs/tests cap d_h ≤ 32
   (warn above). Adoption slot in [`docs/adoption.md`](docs/adoption.md).
-  Honest smoke (`scripts/bench_hopfield.py`, CUDA events min, \(B{=}8\),
-  \(T{=}2048\), \(d_h{=}16\)): measured \(K^*=2\) (~1e-7 vs sequential);
+  Honest smoke (`scripts/bench_hopfield.py`, CUDA events min, B=8,
+  T=2048, d_h=16): measured K*=2 (~1e-7 vs sequential);
   recipe `max_iters=3`. RTX 3060 Triton `scan_dense` ~12.5 ms vs sequential
-  ~504 ms (~40×) at \(K{=}3\); RTX 2080 Ti at \(K{=}6\) was ~16.1 ms vs ~525 ms
-  (~33×). Eager Newton loses to sequential at short \(T\) (`T≲64`); `auto`
+  ~504 ms (~40×) at K=3; RTX 2080 Ti at K=6 was ~16.1 ms vs ~525 ms
+  (~33×). Eager Newton loses to sequential at short T (`T≲64`); `auto`
   picks Triton. Fused cell+scan / packed VJP parked. Peak mem at
-  \(d_h{=}32,T{=}2048\) ~617 MiB (dense \(J\)).
+  $`d_h=32,T=2048`$ ~617 MiB (dense $J$).
 - Lab: [`scripts/bench_hopfield.py`](scripts/bench_hopfield.py).
 
 ## [0.14.0] - 2026-09-06
@@ -96,15 +96,15 @@ and diagonal nonlinear mix (Newton Jacobian stays channelwise diagonal).
   clip on `u`. Eager Newton, fused Triton Alg. 1 (`pararnn::newton_cfc_fused`,
   3-wide `project_wx`), packed VJP (softplus·Δt chain; tile `tl.sum`, no
   atomics), compile-safe fullgraph path. `scan_backend='auto'` picks fused on
-  CUDA. Honest smoke (`scripts/bench_cfc.py`, CUDA events min, \(K{=}3\),
-  \(B{=}8\), \(T{=}2048\), \(d_h{=}256\)): RTX 3060 fused ~2.79 ms vs sequential
+  CUDA. Honest smoke (`scripts/bench_cfc.py`, CUDA events min, K=3,
+  B=8, T=2048, d_h=256): RTX 3060 fused ~2.79 ms vs sequential
   ~643 ms (~230×), max \|err\| ~2e-7; RTX 2080 Ti fused ~2.86 ms vs ~656 ms.
-  \(K{=}2\) already reaches ~1e-7 agreement; packed VJP ~8× vs eager formula on
-  3060. At short \(T\) (`T≤8`) fused still beats sequential; eager Newton loses
-  to sequential below ~\(T{=}32\).
+  K=2 already reaches ~1e-7 agreement; packed VJP ~8× vs eager formula on
+  3060. At short T (`T≤8`) fused still beats sequential; eager Newton loses
+  to sequential below ~T=32.
 - Adoption: Liquid / irregular-Δt slot in [`docs/adoption.md`](docs/adoption.md).
 - Lab: [`scripts/bench_cfc.py`](scripts/bench_cfc.py) (seq / eager / triton /
-  fused + residual-vs-\(K\) + optional fwd+bwd / packed VJP).
+  fused + residual-vs-K + optional fwd+bwd / packed VJP).
 
 ## [0.13.0] - 2026-09-06
 
@@ -116,8 +116,8 @@ diag cell for Griffin / RecurrentGemma slots.
 - `ParaNLRU`: nonlinear RG-LRU-style cell (input-only gate + diagonal `u` +
   `tanh` in the step) with eager Newton, fused Triton Alg. 1
   (`pararnn::newton_nlru_fused`), packed VJP (no atomics), compile-safe
-  fullgraph path. Smoke (RTX 3060, \(B{=}8\), \(T{=}2048\), \(d_h{=}256\),
-  \(K{=}3\)): fused ~2.7 ms vs sequential ~549 ms.
+  fullgraph path. Smoke (RTX 3060, B=8, T=2048, d_h=256,
+  K=3): fused ~2.7 ms vs sequential ~549 ms.
 - Product entry path: README Quickstart leads with `ParaSLSTMBlock` /
   `ParaSLSTMForCausalLM`; [`docs/adoption.md`](docs/adoption.md) covers
   Attention swap, CausalLM, Dreamer RSSM slot, and the Griffin / NLRU slot.
@@ -137,8 +137,8 @@ diag cell for Griffin / RecurrentGemma slots.
 
 Research cell `ParaM2RNN`: factorized parallel Newton for matrix-state
 M²RNN (Mishra et al. arXiv:2603.14360), answering the dense-Jacobian /
-unknown-\(K\) objections in their §2.5.3 with structured \(J\) and measured
-\(K^{*}(T)=\Theta(\log T)\).
+unknown-K objections in their §2.5.3 with structured $J$ and measured
+$`K^{*}(T)=\Theta(\log T)`$.
 
 ### Added
 
@@ -149,8 +149,8 @@ unknown-\(K\) objections in their §2.5.3 with structured \(J\) and measured
   larger `K,V` with `residual_atol` early-stop (avoids losing to sequential when
   fixed `K` overshoots `K*`); packed VJP (`m2rnn_recurrence_vjp`). `auto` picks
   fused on CUDA. Optional frozen-`W` warm-start via `picard_iters=1`
-  (`m2rnn_frozen_w_scan`); under default `W=I` measured \(\Delta K^*\approx 0\),
-  class still \(\Theta(\log T)\). Compile-safe + fullgraph CUDA fused and
+  (`m2rnn_frozen_w_scan`); under default `W=I` measured $`\Delta K^*\approx 0`$,
+  class still $`\Theta(\log T)`$. Compile-safe + fullgraph CUDA fused and
   deterministic bitmatch covered in `tests/numerics/test_compile.py` /
   `test_vjp_determinism.py`. Recipe: `scripts/bench_m2rnn_k_scale.py --init both`.
 
@@ -271,11 +271,11 @@ Solver coverage, long-T memory knobs, and the Colab API demo.
 - Colab / Jupyter demo [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb):
   short API tour (forward, trust, latency, decode) plus citation links
   ([`notebooks/README.md`](notebooks/README.md)).
-- Fused CUDA numerics for odd \(d_h\) / odd \(T\) (GRU/LSTM/sLSTM, incl. \(T{=}127\)).
+- Fused CUDA numerics for odd $`d_h`$ / odd T (GRU/LSTM/sLSTM, incl. T=127).
 - Overflow-stress tests: NaN / exploded sLSTM → `NewtonDivergenceError`;
-  log-decode huge \(n\) stays finite (`tests/numerics/test_overflow_stress.py`).
+  log-decode huge $n$ stays finite (`tests/numerics/test_overflow_stress.py`).
 - `NewtonConfig(recompute=True)`: Level-2 selective activation checkpointing —
-  rematerialize \(H^\star\) in eq. 2.6 backward for ultra-long train T
+  rematerialize $`H^\star`$ in eq. 2.6 backward for ultra-long train T
   (`tests/numerics/test_recompute.py`).
 - Experimental `NewtonConfig(fused_early_exit=True)`: host ``max|F|`` stop
   between fused Newton steps (fixed K remains the train default).
@@ -284,9 +284,9 @@ Solver coverage, long-T memory knobs, and the Colab API demo.
 
 - Direct Triton pin on Linux: `triton>=3.6.0,<3.7` (matches torch 2.11 cu128).
 - Parity demo / [`examples/parity.py`](examples/parity.py): explicit `picard_iters=3`
-  at \(T{=}16\) (library auto is P=1) and quiet `pararnn.solvers.newton` WARNING
+  at T=16 (library auto is P=1) and quiet `pararnn.solvers.newton` WARNING
   so `newton_residual_high` does not flood Colab / stdout; divergence still raises.
-- Demo notebook is an API poke only; \(\mathbb{Z}_2\) training stays in
+- Demo notebook is an API poke only; $`\mathbb{Z}_2`$ training stays in
   [`examples/parity.py`](examples/parity.py).
 
 ## [0.7.0] - 2026-09-05
@@ -358,23 +358,23 @@ sits here too.
 ### Added
 
 - Packed ragged sequences: `cu_seqlens` on `ParaRNN` / Newton / sequential,
-  `h0` length \(S\). Segmented scan (eager Hillis–Steele; Triton `scan_diag`
+  `h0` length $S$. Segmented scan (eager Hillis–Steele; Triton `scan_diag`
   vs `offs_t`; block2/4 `J=0` at heads). Fused in-kernel packing is ParaGRU.
 - `pararnn.distributed`: `warmup_scan_kernels` and `last_newton_residuals`.
   `ParaRNN` wraps with DDP or FSDP2 `fully_shard` (`examples/ddp_fsdp.py`).
-- Tensor parallel along \(d_h\) for channelwise-diagonal cells:
+- Tensor parallel along $`d_h`$ for channelwise-diagonal cells:
   `tensor_parallel_diag_block`, one AllReduce on the output projection.
   Torchrun demo: `examples/tensor_parallel.py` on `archive/distributed-demos`.
 - Context-parallel diag scan: `scan_diag_context_parallel` AllGathers the
-  tile monoid \((P_{\mathrm{end}}, \delta_{\mathrm{end}})\). Rank 1 applying
+  tile monoid $`(P_{\mathrm{end}}, \delta_{\mathrm{end}})`$. Rank 1 applying
   that carry is the numeric check. `NewtonConfig(scan_backend="context_parallel")`
-  shards scan work \(T/N\) on a replicated Newton trajectory. Torchrun demo:
+  shards scan work $T/N$ on a replicated Newton trajectory. Torchrun demo:
   `examples/context_parallel.py` on `archive/distributed-demos`.
 - `verify_linear_draft`: greedy speculative verify of a K-token chain. One
-  Newton (or sequential) unroll from `h0`, first mismatch \(k^\star\), state
-  truncated to \(h_{k^\star}\), bonus token from the leftover logit
+  Newton (or sequential) unroll from `h0`, first mismatch $`k^\star`$, state
+  truncated to $`h_{k^\star}`$, bonus token from the leftover logit
   (`examples/speculative_draft.py`).
-- Long-\(T\) scan past SRAM pads: chunked adjoint; hierarchical / eager-aggregate
+- Long-T scan past SRAM pads: chunked adjoint; hierarchical / eager-aggregate
   tile scan (`docs/backward-scan-cap.md`).
 - CUDA tests that fused Newton and eq. 2.6 agree with sequential BPTT on
   time-strided, feature-strided, and permute-roundtrip `x`

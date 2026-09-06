@@ -29,7 +29,7 @@ Stacking / API notes: [`xlstm.md`](xlstm.md).
 
 ## ParaGRU / ParaLSTM (Dreamer-style block GRU)
 
-Block-diagonal \(A_*\); CUDA factorized Newton. LayerNorm stays outside the cell.
+Block-diagonal A_*; CUDA factorized Newton. LayerNorm stays outside the cell.
 
 ```python
 from pararnn import ParaGRU
@@ -39,7 +39,7 @@ y = rssm_h(torch.randn(4, 64, 512, device=device))
 ```
 
 Smoke: [`examples/rssm_recurrent.py`](../examples/rssm_recurrent.py). Head fused
-medians (`scripts/bench_gru_head.py`, 2080 Ti, \(K{=}3\)):
+medians (`scripts/bench_gru_head.py`, 2080 Ti, K=3):
 
 | setup | `d_head` | Newton | fwd+bwd |
 |------:|---------:|-------:|-------:|
@@ -85,7 +85,7 @@ y = cfc(torch.cat((feat, dt), dim=-1))
 
 ## ParaHopfield
 
-Modern Hopfield; keep \(d_h \le 32\) for the dense Jacobian path.
+Modern Hopfield; keep d_h ≤ 32 for the dense Jacobian path.
 
 ```python
 from pararnn import ParaHopfield
@@ -102,7 +102,7 @@ Pin depth with `max_iters=int` or `newton_iters_by_t={64: 2, 1024: 3, …}`.
 
 ## ParaRWKV7
 
-RWKV-7 Goose; linear monoid, \(K^*\!=\!0\).
+RWKV-7 Goose; linear monoid, K*=0.
 
 ```python
 from pararnn import ParaRWKV7, newton_apply
@@ -113,7 +113,7 @@ s = newton_apply(cell, x)       # redirects to linear (G,U) scan
 y = cell.scan_apply(x)          # (B, T, n_heads*d_head) readout
 ```
 
-On 12 GiB cards, wall-clock at \(T\gtrsim 64\mathrm{k}\) prefers slim
+On 12 GiB cards, wall-clock at T ≳ 64k prefers slim
 `n_heads=1, d_head=16` (state is `(B,T,H,D,D)`).
 
 ## ParaTitans

@@ -61,13 +61,13 @@ to fp32.
   across ranks. FSDP2 runs one backward. Skip when `device_count() < 2`
   (a shell with `CUDA_VISIBLE_DEVICES=1` hides the 3060).
 
-## Tensor parallel along \(d_h\)
+## Tensor parallel along $`d_h`$
 
 Channelwise-diagonal cells (ParaGRU, ParaLSTM, `ParaSLSTM mix='diag'`) keep
-features independent through Newton+scan. Rank \(r\) owns \(d_h/N\)
+features independent through Newton+scan. Rank $r$ owns $`d_h/N`$
 channels. The cell's `W_x` is already column-parallel (replicated `x`,
 sharded gate rows). The fused kernel runs on that slice with zero NCCL.
-`RowParallelLinear` maps \(d_h/N \to d_{\mathrm{out}}\) and AllReduces once
+`RowParallelLinear` maps $`d_h/N \to d_{\mathrm{out}}`$ and AllReduces once
 per layer. Backward of that AllReduce is identity (replicated loss on the
 shared output).
 
