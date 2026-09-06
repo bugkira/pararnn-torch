@@ -13,7 +13,7 @@ import torch
 from torch import Tensor, nn
 from torch.func import functional_call
 
-from pararnn.cells import ParaGRU, ParaLSTM, ParaNLRU, ParaSLSTM
+from pararnn.cells import ParaCfC, ParaGRU, ParaLSTM, ParaNLRU, ParaSLSTM
 from pararnn.solvers import NewtonConfig, newton_apply
 
 # Tiny shapes: gradcheck is O(n_inputs) forwards. B=2, T=3, d_in=2, d_h=3
@@ -36,7 +36,7 @@ _GRADCHECK_ATOL = 1e-5
 # do not loosen.
 _GRADCHECK_RTOL = 1e-4
 
-_KINDS = ("gru", "lstm", "slstm", "nlru")
+_KINDS = ("gru", "lstm", "slstm", "nlru", "cfc")
 
 
 def _make_cell(kind: str) -> nn.Module:
@@ -55,7 +55,19 @@ def _make_cell(kind: str) -> nn.Module:
         return ParaLSTM(**kwargs)
     if kind == "nlru":
         return ParaNLRU(**kwargs)
+    if kind == "cfc":
+        return ParaCfC(**kwargs)
     return ParaSLSTM(**kwargs, mix="diag")
+
+
+def _x_randn(*, requires_grad: bool = False) -> Tensor:
+    """Random ``(B,T,d_in)``; CfC last channel is positive Δt (above clamp floor)."""
+    x = torch.randn(_B, _T, _D_IN, dtype=torch.float64)
+    # Soft floor so clamp_min(_DT_EPS) is inactive and gradcheck stays C¹.
+    x[..., -1] = 0.05 + torch.rand(_B, _T, dtype=torch.float64)
+    if requires_grad:
+        x.requires_grad_(True)
+    return x
 
 
 def _gradcheck_config(cell: nn.Module) -> NewtonConfig:
@@ -124,7 +136,7 @@ def test_gradcheck_input(kind: str) -> None:
     _seed(kind, "x")
     cell = _make_cell(kind)
     cfg = _gradcheck_config(cell)
-    x = torch.randn(_B, _T, _D_IN, dtype=torch.float64, requires_grad=True)
+    x = _x_randn(requires_grad=True)
 
     def fn(xx: Tensor) -> Tensor:
         return newton_apply(cell, xx, cfg)
@@ -137,7 +149,7 @@ def test_gradcheck_h0(kind: str) -> None:
     _seed(kind, "h0")
     cell = _make_cell(kind)
     cfg = _gradcheck_config(cell)
-    x = torch.randn(_B, _T, _D_IN, dtype=torch.float64)
+    x = _x_randn()
     h0 = _h0_like(cell).requires_grad_(True)
 
     def fn(hh: Tensor) -> Tensor:
@@ -151,7 +163,7 @@ def test_gradcheck_parameters(kind: str) -> None:
     _seed(kind, "theta")
     cell = _make_cell(kind)
     cfg = _gradcheck_config(cell)
-    x = torch.randn(_B, _T, _D_IN, dtype=torch.float64)
+    x = _x_randn()
     wrap = _NewtonModule(cell, cfg)
     names = [n for n, _ in wrap.named_parameters()]
     params = tuple(p.detach().clone().requires_grad_(True) for p in wrap.parameters())

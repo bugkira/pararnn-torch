@@ -12,7 +12,7 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from pararnn.cells import ParaGRU, ParaLSTM, ParaM2RNN, ParaNLRU, ParaSLSTM
+from pararnn.cells import ParaCfC, ParaGRU, ParaLSTM, ParaM2RNN, ParaNLRU, ParaSLSTM
 from pararnn.solvers import NewtonConfig, newton_apply
 
 # Dynamo eager: same semantics as inductor without a 10 s+ CPU compile
@@ -27,7 +27,7 @@ _CPU_BACKEND = "eager"
 _COMPILE_ATOL = 1e-5
 _COMPILE_RTOL = 1e-5
 
-_KINDS = ("gru", "lstm", "slstm", "m2rnn", "nlru")
+_KINDS = ("gru", "lstm", "slstm", "m2rnn", "nlru", "cfc")
 
 
 def compile_safe_config(*, scan_backend: str = "eager") -> NewtonConfig:
@@ -63,6 +63,8 @@ def _make_cell(kind: str, device: torch.device | None = None) -> nn.Module:
         return ParaLSTM(**kwargs)
     if kind == "nlru":
         return ParaNLRU(**kwargs)
+    if kind == "cfc":
+        return ParaCfC(**kwargs)
     return ParaSLSTM(**kwargs, mix="diag")
 
 
@@ -70,7 +72,11 @@ def _x_for(kind: str, batch: int, time: int, device: torch.device | None = None)
     d_in = 4
     scale = 0.15 if kind == "m2rnn" else 1.0
     kw = {"device": device} if device is not None else {}
-    return scale * torch.randn(batch, time, d_in, **kw)
+    x = scale * torch.randn(batch, time, d_in, **kw)
+    if kind == "cfc":
+        x = x.clone()
+        x[..., -1] = 0.05 + torch.rand(batch, time, **kw)
+    return x
 
 
 def _fwd(cell: nn.Module, config: NewtonConfig):
@@ -173,7 +179,7 @@ def test_compile_safe_fullgraph_training_matches_eager() -> None:
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("kind", ["gru", "lstm", "slstm", "m2rnn"])
+@pytest.mark.parametrize("kind", ["gru", "lstm", "slstm", "m2rnn", "cfc"])
 @torch.no_grad()
 def test_compile_safe_fused_inference_matches_eager(kind: str, cuda_device: torch.device) -> None:
     torch.manual_seed(4)

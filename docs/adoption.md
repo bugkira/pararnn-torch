@@ -88,6 +88,24 @@ core = ParaRNN(ParaNLRU(d_model, d_model))
 This is the same diag-Jacobian class as fused ParaGRU; it is not a
 weight-compatible drop-in for Griffin's \(a^{c r_t}\) parameterization.
 
+## Liquid / irregular-Δt slot
+
+For closed-form continuous-time recurrence with irregular sampling intervals,
+use `ParaCfC`. Features live in `x[..., :-1]`; Δt is `x[..., -1]` (`d_in >= 2`):
+
+```python
+from pararnn import ParaCfC, ParaRNN
+
+# d_in = feature_dim + 1
+core = ParaRNN(ParaCfC(d_model + 1, d_model))
+feat = ...  # (B, T, d_model)
+dt = ...    # (B, T, 1), positive
+y = core(torch.cat((feat, dt), dim=-1))
+```
+
+Gate \(a=\sigma(-\mathrm{softplus}(f)\,\Delta t)\) and diagonal mix \(u\) keep
+the Newton Jacobian channelwise diagonal (fused Alg. 1 on CUDA).
+
 ## Scope
 
 - Local `save_pretrained` / `from_pretrained` (`config.json` + `model.safetensors`).

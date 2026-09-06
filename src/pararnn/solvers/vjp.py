@@ -13,6 +13,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
+from pararnn.cells.para_cfc import ParaCfC, split_cfc_input
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
 from pararnn.cells.para_nlru import ParaNLRU
@@ -47,6 +48,8 @@ def _cell_vjp_body(
         return _gru_head_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaNLRU):
         return _nlru_vjp(cell, h_prev, x, mu)
+    if packed and isinstance(cell, ParaCfC):
+        return _cfc_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaLSTM):
         return _lstm_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaSLSTM) and cell.mix == "diag":
@@ -62,7 +65,7 @@ def uses_packed_vjp(cell: nn.Module) -> bool:
     """True when eq. 2.6 can skip Autograd on ``step``."""
     if isinstance(cell, ParaGRU):
         return cell.mix in ("diag", "head")
-    if isinstance(cell, ParaNLRU):
+    if isinstance(cell, (ParaNLRU, ParaCfC)):
         return True
     if isinstance(cell, ParaLSTM):
         return True
@@ -160,6 +163,36 @@ def _nlru_vjp(
     g_wx, g_u = nlru_recurrence_vjp(h_prev, wx, u, mu)
     g_u = g_u * _clip_mask(cell.u, cell.max_recurrent_norm)
     grad_x, grad_w, grad_b = _linear_vjp(cell.W_x, x, g_wx)
+    return _align_grads(
+        cell,
+        grad_x,
+        {
+            "u": g_u,
+            "W_x.weight": grad_w,
+            "W_x.bias": grad_b,
+        },
+    )
+
+
+def _cfc_vjp(
+    cell: ParaCfC, h_prev: Tensor, x: Tensor, mu: Tensor
+) -> tuple[Tensor, tuple[Tensor | None, ...]]:
+    """Eq. 2.6 cell VJP for ``ParaCfC`` (softplus·Δt gate; Δt last channel of ``x``)."""
+    from pararnn.cells.para_cfc import _DT_EPS
+    from pararnn.kernels.vjp_cfc import cfc_recurrence_vjp
+
+    u = cell.clipped_u()
+    feat, _dt = split_cfc_input(x)
+    wx = cell.project_wx(x)
+    g_wx, g_u = cfc_recurrence_vjp(h_prev, wx, u, mu)
+    g_u = g_u * _clip_mask(cell.u, cell.max_recurrent_norm)
+    g_fc = g_wx[..., : 2 * cell.d_h]
+    g_dt_b = g_wx[..., 2 * cell.d_h :]
+    grad_feat, grad_w, grad_b = _linear_vjp(cell.W_x, feat, g_fc)
+    # Δt was broadcast to d_h; clamp_min(_DT_EPS) zeros grad below the floor.
+    raw_dt = x[..., -1:]
+    grad_dt = g_dt_b.sum(dim=-1, keepdim=True) * (raw_dt >= _DT_EPS).to(dtype=g_dt_b.dtype)
+    grad_x = torch.cat((grad_feat, grad_dt), dim=-1)
     return _align_grads(
         cell,
         grad_x,

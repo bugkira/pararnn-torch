@@ -941,7 +941,10 @@ def _wx_if_analytic(cell: nn.Module, x: Tensor, jacobian: str) -> Tensor | None:
 
 
 def _input_affine(cell: nn.Module, x: Tensor) -> Tensor | None:
-    """``W_x(x)`` when the cell has a dense input map; else ``None`` (compute inside step)."""
+    """Input affine for Newton; ``project_wx`` when present (CfC packs Δt)."""
+    project = getattr(cell, "project_wx", None)
+    if callable(project):
+        return project(x)
     lin = getattr(cell, "W_x", None)
     if lin is None:
         return None

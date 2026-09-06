@@ -4,6 +4,21 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-06
+
+`ParaCfC`: Liquid-style closed-form continuous-time cell with irregular Δt
+and diagonal nonlinear mix (Newton Jacobian stays channelwise diagonal).
+
+### Added
+
+- `ParaCfC`: features in `x[..., :-1]`, Δt in `x[..., -1]` (`d_in >= 2`);
+  gate `a = σ(-softplus(f)·Δt)` and candidate `tanh(c + u⊙h)` with App. C.1
+  clip on `u`. Eager Newton, fused Triton Alg. 1 (`pararnn::newton_cfc_fused`,
+  3-wide `project_wx`), packed VJP (softplus·Δt chain; tile `tl.sum`, no
+  atomics), compile-safe fullgraph path. `scan_backend='auto'` picks fused on
+  CUDA.
+- Adoption: Liquid / irregular-Δt slot in [`docs/adoption.md`](docs/adoption.md).
+
 ## [0.13.0] - 2026-09-06
 
 Product entry (block / CausalLM) plus `ParaNLRU`: a nonlinear RG-LRU-style
@@ -384,7 +399,8 @@ installable surface.
 - Generic-cell autograd path and sequential reference solver.
 - Numerics tests: parallel vs sequential agreement, layer forward/backward.
 
-[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/bugkira/pararnn-torch/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/bugkira/pararnn-torch/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/bugkira/pararnn-torch/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/bugkira/pararnn-torch/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/bugkira/pararnn-torch/compare/v0.10.0...v0.11.0

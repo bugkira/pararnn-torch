@@ -9,6 +9,7 @@ from dataclasses import replace
 import torch
 from torch import Tensor, nn
 
+from pararnn.cells.para_cfc import ParaCfC
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
 from pararnn.cells.para_nlru import ParaNLRU
@@ -46,7 +47,7 @@ def _can_fuse(cell: nn.Module, x: Tensor) -> bool:
         if getattr(cell, "W_x", None) is None:
             return False
         return cell.mix in ("diag", "head")
-    if isinstance(cell, ParaNLRU):
+    if isinstance(cell, (ParaNLRU, ParaCfC)):
         return getattr(cell, "W_x", None) is not None
     if not isinstance(cell, ParaLSTM):
         return False
@@ -233,7 +234,7 @@ def _fused_error(cell: nn.Module, x: Tensor) -> str:
     if isinstance(cell, ParaGRU) and cell.mix not in ("diag", "head"):
         return f"scan_backend='fused' is mix='diag'|'head' for ParaGRU; got mix={cell.mix!r}"
     return (
-        "scan_backend='fused' needs CUDA ParaGRU/ParaLSTM/ParaSLSTM/ParaNLRU "
+        "scan_backend='fused' needs CUDA ParaGRU/ParaLSTM/ParaSLSTM/ParaNLRU/ParaCfC "
         f"in float16/float32/bfloat16 (got {type(cell).__name__} {x.dtype} {x.device})"
     )
 

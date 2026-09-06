@@ -22,6 +22,8 @@ Package **`pararnn-torch`**, import **`pararnn`**. **Alpha** — fused kernels a
 
 `ParaNLRU` is a nonlinear RG-LRU-style cell for Griffin / RecurrentGemma slots: input-only gate, diagonal mix \(u\), and \(\tanh\) inside the step, so the Newton Jacobian stays channelwise diagonal (fused Alg. 1).
 
+`ParaCfC` is a Liquid-style closed-form continuous-time cell: features in `x[..., :-1]`, irregular Δt in `x[..., -1]`, gate \(a=\sigma(-\mathrm{softplus}(f)\,\Delta t)\), and diagonal nonlinear mix \(u\) (fused Alg. 1).
+
 Implementation of the Newton+scan core follows [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450).
 
 ## Install
@@ -187,6 +189,25 @@ Fused Alg. 1 on CUDA (`scan_backend="auto"`). Smoke latency on RTX 3060,
 \(B{=}8\), \(T{=}2048\), \(d_h{=}256\), float32, \(K{=}3\): fused median
 **2.7 ms** vs sequential **549 ms** (\(\sim 200\times\)).
 
+### ParaCfC (Liquid / irregular Δt)
+
+Closed-form continuous-time slot with Δt as the last channel of `x`
+(`d_in = features + 1`). Gate \(a=\sigma(-\mathrm{softplus}(f)\,\Delta t)\) and
+candidate \(\tanh(c + u\odot h)\) keep a channelwise-diagonal Newton Jacobian:
+
+```python
+from pararnn import ParaCfC, ParaRNN
+
+# d_in=257 → 256 features + Δt
+cfc = ParaRNN(ParaCfC(257, 256), device=device)
+feat = torch.randn(4, 128, 256, device=device)
+dt = 0.05 + torch.rand(4, 128, 1, device=device)
+y = cfc(torch.cat((feat, dt), dim=-1))
+```
+
+Fused Alg. 1 on CUDA (`pararnn::newton_cfc_fused`); `project_wx` packs
+`(f, c, Δt)` as `(B, T, 3 d_h)`.
+
 ## Results
 
 Interactive API tour: [`notebooks/paraslstm_demo.ipynb`](notebooks/paraslstm_demo.ipynb)
@@ -245,7 +266,7 @@ API notes stay in [`docs/distributed.md`](docs/distributed.md).
 
 ## API overview
 
-- **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM`, `ParaM2RNN`, `ParaNLRU` — recurrent maps \(f(h_{t-1}, x_t)\). M²RNN state is `(B, T, K, V)`. ParaNLRU is the nonlinear RG-LRU-style diag cell.
+- **Cells:** `ParaGRU`, `ParaLSTM`, `ParaSLSTM`, `ParaM2RNN`, `ParaNLRU`, `ParaCfC` — recurrent maps \(f(h_{t-1}, x_t)\). M²RNN state is `(B, T, K, V)`. ParaNLRU is the nonlinear RG-LRU-style diag cell. ParaCfC is the Liquid irregular-Δt diag cell (`x[..., -1]` = Δt).
 - **Sequence module:** `ParaRNN(cell, config=NewtonConfig(max_iters=3))` — stacks one or more cells (`ParaM2RNN` also works through `newton_apply` / `sequential_apply` directly).
 - **Trunk block:** `ParaSLSTMBlock(d_model, mlp_ratio=4)` — RMSNorm + ParaSLSTM + SwiGLU residuals for LM stacks ([`docs/adoption.md`](docs/adoption.md), [`docs/xlstm.md`](docs/xlstm.md)).
 - **CausalLM / vLLM:** `ParaSLSTMForCausalLM` (`labels` CE, `generate`, `model.safetensors`) + `BlockStackPool` continuous batch +
@@ -271,7 +292,7 @@ h = sequential_apply(cell, x)
 - **`torch.compile`:** with the compile-safe preset (fixed K, no residual host sync), `newton_apply` traces as a single graph (`fullgraph=True`) on eager and fused paths (including `ParaM2RNN`). Fused Alg. 1 kernels are `pararnn::newton_*_fused` custom ops with `register_fake` (`tests/numerics/test_compile.py`, `kernels/custom_ops.py`). Eq. 2.6 stays on the module-level `Autograd.Function` (fused ops do not carry `W_x`).
 - **Precision / AMP:** put the module and `x` in fp16/bf16/fp32 explicitly. Under outer `torch.autocast`, Newton opts out and stays in the tensor dtype so the eq. 2.6 VJP keeps one dtype (`tests/numerics/test_autocast.py`).
 - **DDP / FSDP / checkpoint:** wrap `ParaRNN` with DDP or FSDP2 (`docs/distributed.md`, `examples/ddp_fsdp.py`). Non-reentrant `torch.utils.checkpoint` and `state_dict` round-trip: `tests/numerics/test_checkpoint.py`. For ultra-long train \(T\), `NewtonConfig(recompute=True)` rematerializes \(H^\star\) in the eq. 2.6 backward (`tests/numerics/test_recompute.py`).
-- **Deterministic algorithms:** packed eq. 2.6 VJP (diag GRU/LSTM/sLSTM, `ParaNLRU`, and `ParaM2RNN`) reduces with tile `tl.sum` then `.sum` where applicable — no Triton atomics on the packed path; parameter grads bit-match across identical calls (`tests/numerics/test_vjp_determinism.py`). With `torch.use_deterministic_algorithms(True)`, set `CUBLAS_WORKSPACE_CONFIG=:4096:8` for cuBLAS GEMMs (`W_x` / `∇x`); the first packed `cell_vjp` under that flag re-checks param grads once and logs a single warning if they drift (`pararnn.determinism`).
+- **Deterministic algorithms:** packed eq. 2.6 VJP (diag GRU/LSTM/sLSTM, `ParaNLRU`, `ParaCfC`, and `ParaM2RNN`) reduces with tile `tl.sum` then `.sum` where applicable — no Triton atomics on the packed path; parameter grads bit-match across identical calls (`tests/numerics/test_vjp_determinism.py`). With `torch.use_deterministic_algorithms(True)`, set `CUBLAS_WORKSPACE_CONFIG=:4096:8` for cuBLAS GEMMs (`W_x` / `∇x`); the first packed `cell_vjp` under that flag re-checks param grads once and logs a single warning if they drift (`pararnn.determinism`).
 
 ## Method
 

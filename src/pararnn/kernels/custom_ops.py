@@ -14,6 +14,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from pararnn.kernels.newton_cfc import _newton_cfc_fused_impl
 from pararnn.kernels.newton_gru import _newton_gru_fused_impl
 from pararnn.kernels.newton_gru_head import (
     _newton_gru_head_fused_impl,
@@ -210,6 +211,45 @@ def newton_nlru_fused(
 
 
 @newton_nlru_fused.register_fake
+def _(
+    wx: Tensor,
+    u: Tensor,
+    h0: Tensor | None = None,
+    cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
+    *,
+    max_iters: int,
+    omega: float,
+) -> Tensor:
+    del h0, cu_seqlens, block_table, max_iters, omega
+    batch, time, _ = wx.shape
+    return wx.new_empty(batch, time, int(u.numel()))
+
+
+@torch.library.custom_op("pararnn::newton_cfc_fused", mutates_args=())
+def newton_cfc_fused(
+    wx: Tensor,
+    u: Tensor,
+    h0: Tensor | None = None,
+    cu_seqlens: Tensor | None = None,
+    block_table: Tensor | None = None,
+    *,
+    max_iters: int,
+    omega: float,
+) -> Tensor:
+    """Fused Alg. 1 for ParaCfC. ``wx`` is ``project_wx(x)`` ``(B, T, 3 d_h)``."""
+    return _newton_cfc_fused_impl(
+        wx,
+        u,
+        max_iters=max_iters,
+        omega=omega,
+        h0=h0,
+        cu_seqlens=cu_seqlens,
+        block_table=block_table,
+    )
+
+
+@newton_cfc_fused.register_fake
 def _(
     wx: Tensor,
     u: Tensor,

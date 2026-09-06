@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 from torch import Tensor, nn
 
+from pararnn.cells.para_cfc import ParaCfC
 from pararnn.cells.para_gru import ParaGRU
 from pararnn.cells.para_lstm import ParaLSTM
 from pararnn.cells.para_nlru import ParaNLRU
@@ -80,7 +81,7 @@ def fused_newton(
         GRU with ``cu_seqlens`` or ``fused_early_exit``).
     """
     early = residual_fn is not None and early_exit_atol is not None
-    if isinstance(cell, ParaNLRU):
+    if isinstance(cell, (ParaNLRU, ParaCfC)):
         if log_coords:
             raise TypeError("fused log coords is ParaSLSTM only")
         if picard_iters:
@@ -90,6 +91,33 @@ def fused_newton(
         if fused_time_loop:
             raise TypeError("fused_time_loop is ParaSLSTM only")
         u = cell.clipped_u()
+        if isinstance(cell, ParaCfC):
+            if early:
+                from pararnn.kernels.newton_cfc import _newton_cfc_fused_impl
+
+                return _newton_cfc_fused_impl(
+                    wx,
+                    u,
+                    max_iters=max_iters,
+                    omega=omega,
+                    h0=h0,
+                    cu_seqlens=cu_seqlens,
+                    block_table=block_table,
+                    early_exit_atol=early_exit_atol,
+                    residual_fn=residual_fn,
+                    iters_done_out=iters_done_out,
+                )
+            from pararnn.kernels.custom_ops import newton_cfc_fused
+
+            return newton_cfc_fused(
+                wx,
+                u,
+                h0,
+                cu_seqlens,
+                block_table,
+                max_iters=max_iters,
+                omega=omega,
+            )
         if early:
             from pararnn.kernels.newton_nlru import _newton_nlru_fused_impl
 
@@ -323,5 +351,6 @@ def fused_newton(
             window_len=0 if fused_window_len is None else int(fused_window_len),
         )
     raise TypeError(
-        f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM/ParaNLRU only; got {type(cell).__name__}"
+        f"fused Newton is ParaGRU/ParaLSTM/ParaSLSTM/ParaNLRU/ParaCfC only; "
+        f"got {type(cell).__name__}"
     )

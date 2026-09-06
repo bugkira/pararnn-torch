@@ -67,9 +67,13 @@ def sequential_apply(
     step_fn = step or cell.step
     wx_all = None
     if step is None and _accepts_wx(cell.step):
-        lin = getattr(cell, "W_x", None)
-        if lin is not None:
-            wx_all = lin(x)
+        project = getattr(cell, "project_wx", None)
+        if callable(project):
+            wx_all = project(x)
+        else:
+            lin = getattr(cell, "W_x", None)
+            if lin is not None:
+                wx_all = lin(x)
     if step is None and time == 1 and not torch.is_grad_enabled() and _can_decode_triton(cell, x):
         from pararnn.kernels.decode import decode_step
 
