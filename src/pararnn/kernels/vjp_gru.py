@@ -149,9 +149,34 @@ def gru_head_recurrence_vjp_eager(
     n_heads: int,
     d_head: int,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Block-diagonal GRU VJP. ``a_*`` are ``(H, d_in, d_out)``; ``h @ A``.
+    """Eager block-diagonal GRU VJP (``mix='head'`` recurrence).
 
-    Returns ``g_wx`` ``(B, T, 3 d_h)`` and ``g_A_*`` ``(H, d, d)``.
+    ``a_*`` use layout ``(H, d_in, d_out)`` with ``y = h @ A``. Algebra in
+    fp32; outputs cast to ``h_prev.dtype``. Reference path for CPU and for
+    checking the CUDA SRAM / tiled kernels.
+
+    Parameters
+    ----------
+    h_prev : Tensor
+        Previous hidden. Tensor of shape ``(B, T, d_h)``.
+    wx : Tensor
+        Precomputed ``W_x(x)``. Tensor of shape ``(B, T, 3 d_h)``.
+    a_z, a_r, a_n : Tensor
+        Per-head recurrent matrices. Each of shape
+        ``(n_heads, d_head, d_head)``.
+    mu : Tensor
+        Upstream adjoint w.r.t. ``h_new``. Tensor of shape ``(B, T, d_h)``.
+    n_heads : int
+        Head count; ``d_h == n_heads * d_head``.
+    d_head : int
+        Width of each head block.
+
+    Returns
+    -------
+    g_wx : Tensor
+        Gradient w.r.t. ``wx``. Tensor of shape ``(B, T, 3 d_h)``.
+    g_az, g_ar, g_an : Tensor
+        Gradients w.r.t. ``A_*``. Each of shape ``(n_heads, d_head, d_head)``.
     """
     dt = h_prev.dtype
     prefix = h_prev.shape[:-1]
@@ -649,7 +674,41 @@ def gru_head_recurrence_vjp(
     n_heads: int,
     d_head: int,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """CUDA head VJP when possible; else eager. Deterministic tile/SRAM sums."""
+    """Head GRU VJP with CUDA SRAM / tiled kernels, eager on CPU.
+
+    ``d_head ≤ 64`` keeps ``∇A`` accumulators in SRAM and reduces over ``T``
+    inside one program per ``(batch, head)``. Larger heads use a tiled
+    pre-pass (gates + ``g_wx``) plus an outer-product write so ``∇A`` sums
+    are deterministic (one write per tile, no RMW races).
+
+    Parameters
+    ----------
+    h_prev : Tensor
+        Previous hidden. Tensor of shape ``(B, T, d_h)``.
+    wx : Tensor
+        Precomputed ``W_x(x)``. Tensor of shape ``(B, T, 3 d_h)``.
+    a_z, a_r, a_n : Tensor
+        Per-head recurrent matrices. Each of shape
+        ``(n_heads, d_head, d_head)``.
+    mu : Tensor
+        Upstream adjoint w.r.t. ``h_new``. Tensor of shape ``(B, T, d_h)``.
+    n_heads : int
+        Head count; ``d_h == n_heads * d_head``.
+    d_head : int
+        Width of each head block.
+
+    Returns
+    -------
+    g_wx : Tensor
+        Gradient w.r.t. ``wx``. Tensor of shape ``(B, T, 3 d_h)``.
+    g_az, g_ar, g_an : Tensor
+        Gradients w.r.t. ``A_*``. Each of shape ``(n_heads, d_head, d_head)``.
+
+    Raises
+    ------
+    ValueError
+        When ``d_h`` or ``a_*`` shapes disagree with ``n_heads`` / ``d_head``.
+    """
     if not h_prev.is_cuda:
         return gru_head_recurrence_vjp_eager(
             h_prev, wx, a_z, a_r, a_n, mu, n_heads=n_heads, d_head=d_head

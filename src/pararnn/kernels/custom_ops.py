@@ -50,7 +50,25 @@ def scan_dense_triton(
     residual: Tensor,
     cu_seqlens: Tensor | None = None,
 ) -> Tensor:
-    """CUDA dense ``d×d`` Newton scan (head GRU / head sLSTM)."""
+    """CUDA dense ``d×d`` inclusive Newton scan (head GRU / head sLSTM / DEER).
+
+    Parameters
+    ----------
+    jac : Tensor
+        Per-step Jacobians. Tensor of shape ``(B, T, d, d)`` with layout
+        ``[..., out, in]``.
+    residual : Tensor
+        Newton residual. Tensor of shape ``(B, T, d)``.
+    cu_seqlens : Tensor or None, default=None
+        Optional packed-time offsets; ragged packs use the eager segmented
+        path inside the impl.
+
+    Returns
+    -------
+    delta : Tensor
+        Inclusive scan ``δ_t = J_t δ_{t-1} + r_t``. Tensor of shape
+        ``(B, T, d)``.
+    """
     return _scan_dense_triton_impl(jac, residual, cu_seqlens=cu_seqlens)
 
 
@@ -66,7 +84,25 @@ def reverse_scan_dense_triton(
     partial: Tensor,
     cu_seqlens: Tensor | None = None,
 ) -> Tensor:
-    """CUDA dense ``d×d`` reverse Newton scan (eq. 2.6)."""
+    """CUDA dense ``d×d`` reverse Newton scan (eq. 2.6).
+
+    Parameters
+    ----------
+    jac : Tensor
+        Per-step Jacobians. Tensor of shape ``(B, T, d, d)`` with layout
+        ``[..., out, in]``.
+    partial : Tensor
+        Incoming reverse partial. Tensor of shape ``(B, T, d)``.
+    cu_seqlens : Tensor or None, default=None
+        Optional packed-time offsets; ragged packs use the eager segmented
+        path inside the impl.
+
+    Returns
+    -------
+    mu : Tensor
+        Reverse adjoint ``μ_t = J_{t+1}^T μ_{t+1} + g_t``. Tensor of shape
+        ``(B, T, d)``.
+    """
     return _reverse_dense_triton_impl(jac, partial, cu_seqlens=cu_seqlens)
 
 
@@ -159,8 +195,39 @@ def newton_gru_head_fused(
 ) -> Tensor:
     """Fused / factorized Alg. 1 for ``ParaGRU(mix='head')``.
 
-    ``a_*`` are ``(n_heads, d_head, d_head)``. ``wx`` is ``W_x(x)``
-    ``(B, T, 3 d_h)``. No dense ``d×d`` Jacobian buffer.
+    Rectangular CUDA batches use path tiers by ``d_head``: ``≤64`` full
+    fused SRAM; ``64 < d_head ≤128`` streamed-``A``; larger hybrid tiled
+    Triton (PyTorch gates + tiled factor scan). No dense ``d×d`` Jacobian
+    buffer. ``cu_seqlens`` is rejected at ``fused_newton`` / dispatch with
+    :exc:`TypeError` before this op; pad to a rectangular batch or use
+    ``scan_backend='eager'`` for ragged packs.
+
+    Parameters
+    ----------
+    wx : Tensor
+        Precomputed ``W_x(x)``. Tensor of shape ``(B, T, 3 d_h)``.
+    a_z, a_r, a_n : Tensor
+        Per-head recurrent matrices. Each of shape
+        ``(n_heads, d_head, d_head)`` with last dims ``(d_in, d_out)``.
+    h0 : Tensor or None, default=None
+        Optional initial hidden. Tensor of shape ``(B, d_h)``.
+    cu_seqlens : Tensor or None, default=None
+        Packed-time offsets. Callers via ``fused_newton`` pass ``None``;
+        that dispatcher raises :exc:`TypeError` when packs are requested.
+    max_iters : int
+        Newton steps ``K``.
+    omega : float
+        Step damping (``1.0`` = undamped).
+
+    Returns
+    -------
+    H : Tensor
+        Parallel Newton states. Tensor of shape ``(B, T, d_h)``.
+
+    Notes
+    -----
+    Training grads go through ``newton_apply`` / eq. 2.6
+    (``Autograd.Function``).
     """
     return _newton_gru_head_fused_impl(
         wx,
@@ -201,7 +268,29 @@ def reverse_gru_head_factor(
     a_r: Tensor,
     a_n: Tensor,
 ) -> Tensor:
-    """Eq. 2.6 factorized reverse for head ParaGRU (opaque to Dynamo)."""
+    """Eq. 2.6 factorized reverse for head ParaGRU (opaque to Dynamo).
+
+    Parameters
+    ----------
+    h_prev : Tensor
+        Prepended previous hidden (layout from the Newton reverse). Tensor
+        of shape ``(B, T, d_h)``.
+    wx : Tensor
+        Precomputed ``W_x(x)`` aligned with ``h_prev`` time. Tensor of shape
+        ``(B, T, 3 d_h)``.
+    partial : Tensor
+        Incoming reverse partial ``g`` / ``μ`` seed. Tensor of shape
+        ``(B, T, d_h)``.
+    a_z, a_r, a_n : Tensor
+        Per-head recurrent matrices. Each of shape
+        ``(n_heads, d_head, d_head)`` with last dims ``(d_in, d_out)``.
+
+    Returns
+    -------
+    mu : Tensor
+        Reverse adjoint ``μ_t = J_{t+1}^T μ_{t+1} + g_t``. Tensor of shape
+        ``(B, T, d_h)``.
+    """
     return _reverse_gru_head_factor_impl(h_prev, wx, partial, a_z, a_r, a_n)
 
 

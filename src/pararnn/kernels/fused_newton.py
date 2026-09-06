@@ -40,6 +40,44 @@ def fused_newton(
     residual_fn: Callable[[Tensor], float] | None = None,
     iters_done_out: list[int] | None = None,
 ) -> Tensor:
+    """Run fused Alg. 1 for supported cells (diag GRU/LSTM/sLSTM, head GRU).
+
+    ``ParaGRU(mix='head')`` dispatches to ``pararnn::newton_gru_head_fused``.
+    Packed ``cu_seqlens`` raises :exc:`TypeError` on the head path; pad to a
+    rectangular batch or use ``scan_backend='eager'``.
+
+    Parameters
+    ----------
+    cell : nn.Module
+        ``ParaGRU``, ``ParaLSTM``, or ``ParaSLSTM(mix='diag')``.
+    wx : Tensor
+        Precomputed input projection for the cell (shape depends on cell).
+    max_iters : int
+        Newton steps ``K``.
+    omega : float
+        Step damping.
+    h0 : Tensor or None
+        Optional initial state.
+    log_coords, picard_iters, scan_tile, fused_time_loop, fused_window_len
+        ParaSLSTM knobs; invalid for head GRU.
+    cu_seqlens : Tensor or None, default=None
+        Packed-time offsets (diag GRU / supported paths only).
+    block_table : Tensor or None, default=None
+        Optional sequence remap (diag paths).
+    early_exit_atol, residual_fn, iters_done_out
+        Experimental early-exit (diag only).
+
+    Returns
+    -------
+    H : Tensor
+        Parallel Newton states matching the cell state layout.
+
+    Raises
+    ------
+    TypeError
+        When the cell / knobs combination is unsupported (including head
+        GRU with ``cu_seqlens`` or ``fused_early_exit``).
+    """
     early = residual_fn is not None and early_exit_atol is not None
     if isinstance(cell, ParaGRU):
         if cell.mix == "head":

@@ -38,7 +38,23 @@ def gru_head_jvp(
     a_n: Tensor,
     v: Tensor,
 ) -> Tensor:
-    """``J @ v`` with ``J = ∂h'/∂h`` at the given gates (eq. 3.2a, block form)."""
+    """``J @ v`` with ``J = ∂h'/∂h`` at the given gates (eq. 3.2a, block form).
+
+    Parameters
+    ----------
+    h, z, r, n : Tensor
+        Head-local gate activations. Each of shape ``(..., n_heads, d_head)``.
+    a_z, a_r, a_n : Tensor
+        Per-head recurrent matrices. Each of shape
+        ``(n_heads, d_head, d_head)`` with last dims ``(d_in, d_out)``.
+    v : Tensor
+        Tangent vector. Tensor of shape ``(..., n_heads, d_head)``.
+
+    Returns
+    -------
+    Jv : Tensor
+        Jacobian-vector product. Tensor of shape ``(..., n_heads, d_head)``.
+    """
     z_p = _sigmoid_prime(z)
     r_p = _sigmoid_prime(r)
     n_p = _tanh_prime(n)
@@ -59,7 +75,24 @@ def gru_head_jt_mvp(
     a_n: Tensor,
     mu: Tensor,
 ) -> Tensor:
-    """``J^T @ μ`` at the given gates (for eq. 2.6 reverse scan)."""
+    """``J^T @ μ`` at the given gates (for eq. 2.6 reverse scan).
+
+    Parameters
+    ----------
+    h, z, r, n : Tensor
+        Head-local gate activations. Each of shape ``(..., n_heads, d_head)``.
+    a_z, a_r, a_n : Tensor
+        Per-head recurrent matrices. Each of shape
+        ``(n_heads, d_head, d_head)`` with last dims ``(d_in, d_out)``.
+    mu : Tensor
+        Cotangent vector. Tensor of shape ``(..., n_heads, d_head)``.
+
+    Returns
+    -------
+    Jt_mu : Tensor
+        Transposed Jacobian-vector product. Tensor of shape
+        ``(..., n_heads, d_head)``.
+    """
     z_p = _sigmoid_prime(z)
     r_p = _sigmoid_prime(r)
     n_p = _tanh_prime(n)

@@ -190,6 +190,22 @@ def _reverse_dense_triton_impl(
     *,
     cu_seqlens: Tensor | None = None,
 ) -> Tensor:
+    """Validate shapes and run the dense reverse scan (CUDA or eager pack).
+
+    Parameters
+    ----------
+    jac : Tensor
+        Per-step Jacobians. Tensor of shape ``(B, T, d, d)``.
+    partial : Tensor
+        Incoming reverse partial. Tensor of shape ``(B, T, d)``.
+    cu_seqlens : Tensor or None, default=None
+        When set, delegates to the eager segmented reverse.
+
+    Returns
+    -------
+    mu : Tensor
+        Reverse adjoint. Tensor of shape ``(B, T, d)``.
+    """
     if jac.dim() != 4 or partial.dim() != 3:
         raise ValueError(
             f"reverse_scan_dense_triton needs jac (B,T,d,d) partial (B,T,d); "
@@ -228,6 +244,22 @@ def _scan_dense_triton_impl(
     *,
     cu_seqlens: Tensor | None = None,
 ) -> Tensor:
+    """Validate shapes and run the dense inclusive scan (CUDA or eager pack).
+
+    Parameters
+    ----------
+    jac : Tensor
+        Per-step Jacobians. Tensor of shape ``(B, T, d, d)``.
+    residual : Tensor
+        Newton residual. Tensor of shape ``(B, T, d)``.
+    cu_seqlens : Tensor or None, default=None
+        When set, delegates to the eager segmented scan.
+
+    Returns
+    -------
+    delta : Tensor
+        Inclusive scan result. Tensor of shape ``(B, T, d)``.
+    """
     if jac.dim() != 4 or residual.dim() != 3:
         raise ValueError(
             f"scan_dense_triton needs jac (B,T,d,d) residual (B,T,d); "

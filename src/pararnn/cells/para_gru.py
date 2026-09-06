@@ -114,10 +114,11 @@ class ParaGRU(nn.Module):
             Cho gates only — LayerNorm in Dreamer LN-GRU sits outside this cell.
         n_heads : int or None, default=None
             Head count for ``mix='head'`` only; must divide ``hidden_size``.
-            Factorized Newton is linear in ``d_head`` matvecs (Triton tile
-            holds ``d_head×d_head`` for ``d_head≤64``; larger heads use eager
-            factorized matvecs). DreamerV3 often uses 8 blocks
-            (``d_head=64`` at width 512).
+            Factorized Newton is linear in ``d_head`` matvecs. CUDA path
+            tiers: ``d_head≤64`` full fused SRAM; ``64 < d_head ≤128``
+            streamed-``A``; larger heads use hybrid tiled Triton (PyTorch
+            gates + tiled factor scan / reverse). DreamerV3 often uses
+            8 blocks (``d_head=64`` at width 512).
         max_recurrent_norm : float or None, optional
             Elementwise clamp of recurrent entries to
             ``[-max_recurrent_norm, max_recurrent_norm]`` (App. C.1).
@@ -202,6 +203,12 @@ class ParaGRU(nn.Module):
         return s
 
     def reset_parameters(self) -> None:
+        """Initialize ``W_x`` (Kaiming) and recurrent ``a_*`` / ``A_*``.
+
+        Diagonal ``a_*`` use Xavier-Gaussian vectors. Head ``A_*`` use
+        orthogonal init per head at gain ``0.25`` (float32 workspace on
+        CUDA when the parameter dtype lacks ``geqrf``).
+        """
         kaiming_uniform_linear_(self.W_x.weight)
         nn.init.zeros_(self.W_x.bias)
         if self.a_z is not None:
@@ -217,6 +224,20 @@ class ParaGRU(nn.Module):
                 A[hd].data.copy_(w.to(dtype=A.dtype))
 
     def clipped_a(self) -> tuple[Tensor, Tensor, Tensor]:
+        """App. C.1 clamp of diagonal recurrent vectors (``mix='diag'``).
+
+        Returns
+        -------
+        a_z, a_r, a_n : Tensor
+            Each of shape ``(d_h,)``. When ``max_recurrent_norm`` is set,
+            entries are clamped to ``[-cap, cap]``; otherwise the raw
+            parameters are returned.
+
+        Raises
+        ------
+        TypeError
+            When ``mix != 'diag'`` (use :meth:`clipped_a_head`).
+        """
         if self.a_z is None:
             raise TypeError("clipped_a is for mix='diag'")
         if self.max_recurrent_norm is None:
@@ -229,6 +250,25 @@ class ParaGRU(nn.Module):
         )
 
     def clipped_a_head(self) -> tuple[Tensor, Tensor, Tensor]:
+        """App. C.1 clamp of per-head recurrent matrices (``mix='head'``).
+
+        Returns
+        -------
+        A_z, A_r, A_n : Tensor
+            Each of shape ``(n_heads, d_head, d_head)`` with last dims
+            ``(d_in, d_out)`` so ``y = h @ A``. When ``max_recurrent_norm``
+            is set (unusual for head; default is ``None``), entries are
+            clamped elementwise to ``[-cap, cap]``.
+
+        Raises
+        ------
+        TypeError
+            When ``mix != 'head'`` (use :meth:`clipped_a`).
+
+        See Also
+        --------
+        clipped_a : Diagonal counterpart for ``mix='diag'``.
+        """
         if self.A_z is None:
             raise TypeError("clipped_a_head is for mix='head'")
         if self.max_recurrent_norm is None:

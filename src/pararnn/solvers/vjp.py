@@ -146,6 +146,12 @@ def _gru_vjp(
 def _gru_head_vjp(
     cell: ParaGRU, h_prev: Tensor, x: Tensor, mu: Tensor
 ) -> tuple[Tensor, tuple[Tensor | None, ...]]:
+    """Eq. 2.6 cell VJP for ``ParaGRU(mix='head')`` (factorized ``∇A_*``).
+
+    Calls :func:`pararnn.kernels.vjp_gru.gru_head_recurrence_vjp`, applies
+    App. C.1 clip masks on ``A_*``, and packs grads in ``named_parameters``
+    order via :func:`_align_grads`.
+    """
     from pararnn.kernels.vjp_gru import gru_head_recurrence_vjp
 
     assert cell.n_heads is not None and cell.d_head is not None

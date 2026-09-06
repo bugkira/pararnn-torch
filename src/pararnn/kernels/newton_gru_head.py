@@ -45,7 +45,38 @@ def newton_gru_head_factorized(
     """Alg. 1 for block-diagonal ParaGRU without materializing ``J``.
 
     ``wx = cell.W_x(x)`` is computed outside (same split as diag fused).
-    Prefer ``pararnn::newton_gru_head_fused`` via ``fused_newton`` on CUDA.
+    On CUDA prefer ``pararnn::newton_gru_head_fused`` via ``fused_newton``.
+
+    Parameters
+    ----------
+    cell : ParaGRU
+        Cell with ``mix='head'`` and set ``n_heads`` / ``d_head``.
+    wx : Tensor
+        Precomputed ``W_x(x)``. Tensor of shape ``(B, T, 3 d_h)``.
+    max_iters : int
+        Newton steps ``K``.
+    omega : float
+        Step damping (``1.0`` = undamped).
+    h0 : Tensor or None, default=None
+        Optional initial hidden. Tensor of shape ``(B, d_h)``.
+    cu_seqlens : Tensor or None, default=None
+        Packed-time offsets. Rectangular CUDA tiers require ``None``;
+        packs fall back to factorized eager inside the impl.
+
+    Returns
+    -------
+    H : Tensor
+        Parallel Newton states. Tensor of shape ``(B, T, d_h)``.
+
+    Raises
+    ------
+    TypeError
+        When ``cell`` is not ``ParaGRU(mix='head')``.
+
+    Notes
+    -----
+    CUDA path tiers by ``d_head``: ``≤64`` fused SRAM; ``≤128`` streamed-``A``;
+    larger hybrid tiled Triton.
     """
     if cell.mix != "head" or cell.n_heads is None or cell.d_head is None:
         raise TypeError("newton_gru_head_factorized needs ParaGRU(mix='head')")
@@ -177,7 +208,27 @@ def reverse_factor_scan_gru_head(
     *,
     wx: Tensor,
 ) -> Tensor:
-    """Eq. 2.6 reverse with factorized ``J^T`` (no dense ``d×d``)."""
+    """Eq. 2.6 reverse with factorized ``J^T`` (no dense ``d×d``).
+
+    Parameters
+    ----------
+    cell : ParaGRU
+        Cell with ``mix='head'``; supplies clipped ``A_*``.
+    h_prev : Tensor
+        Prepended previous hidden for the reverse. Tensor of shape
+        ``(B, T, d_h)``.
+    partial : Tensor
+        Incoming reverse partial. Tensor of shape ``(B, T, d_h)``.
+    wx : Tensor
+        Precomputed ``W_x(x)`` aligned with ``h_prev``. Tensor of shape
+        ``(B, T, 3 d_h)``.
+
+    Returns
+    -------
+    mu : Tensor
+        Reverse adjoint ``μ_t = J_{t+1}^T μ_{t+1} + g_t``. Tensor of shape
+        ``(B, T, d_h)``.
+    """
     a_z, a_r, a_n = cell.clipped_a_head()
     if partial.is_cuda:
         from pararnn.kernels.custom_ops import reverse_gru_head_factor
@@ -222,7 +273,27 @@ def gru_head_t0_vjp(
     *,
     wx: Tensor,
 ) -> Tensor:
-    """``J_0^T μ_0`` for the paper ``h_0`` adjoint (factorized)."""
+    """``J_0^T μ_0`` for the paper ``h_0`` adjoint (factorized).
+
+    Parameters
+    ----------
+    cell : ParaGRU
+        Cell with ``mix='head'``; supplies clipped ``A_*``.
+    h_prev : Tensor
+        Hidden at the ``t=0`` reverse site (prepended layout). Tensor of
+        shape ``(B, T, d_h)``; only the first time index is used.
+    mu : Tensor
+        Reverse adjoint sequence. Tensor of shape ``(B, T, d_h)``; uses
+        ``μ[:, 0]``.
+    wx : Tensor
+        Precomputed ``W_x(x)`` aligned with ``h_prev``. Tensor of shape
+        ``(B, T, 3 d_h)``.
+
+    Returns
+    -------
+    g_h0 : Tensor
+        Gradient contribution into ``h_0``. Tensor of shape ``(B, d_h)``.
+    """
     a_z, a_r, a_n = cell.clipped_a_head()
     n_heads, d_head = cell.n_heads, cell.d_head
     assert n_heads is not None and d_head is not None
