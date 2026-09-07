@@ -65,11 +65,16 @@ md(
 code(
     """
 # Install: Colab only. Local editable installs already provide `pararnn`.
+# Pin numpy<2.3 so Colab's preinstalled numba stays happy (pip otherwise
+# pulls a newer numpy via torch and prints a red resolver conflict).
 import sys
 
 IN_COLAB = "google.colab" in sys.modules
 if IN_COLAB:
-    get_ipython().run_line_magic("pip", 'install -q "pararnn-torch>=0.17.4"')
+    get_ipython().run_line_magic(
+        "pip",
+        'install -q "pararnn-torch>=0.17.4" "numpy>=2.2.6,<2.3"',
+    )
 else:
     print("Local / non-Colab: expecting an existing pararnn install (uv sync).")
 """
