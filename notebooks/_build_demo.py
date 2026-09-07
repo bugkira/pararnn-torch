@@ -176,9 +176,15 @@ with torch.no_grad():
 
 md(
     """
-## 3. Latency
+## 3. Latency (CUDA fused)
 
-Same cell: sequential `step` unroll vs Newton (`scan_backend="auto"`). Median ms after warmup.
+Wall-clock win needs **Linux + NVIDIA + fused Triton**. On CPU / Mac,
+`scan_backend="auto"` uses **eager** Newton: \(K\) full scans vs one sequential
+pass, so Newton is *slower by design* there — use Trust above for numerics,
+not this table.
+
+On CUDA: same cell, sequential `step` unroll vs Newton (`scan_backend="fused"`).
+Median ms after warmup. Expect Newton ≪ sequential once \(T\) is a few hundred+.
 """
 )
 
@@ -203,18 +209,32 @@ def median_ms(fn, *, warmup=3, runs=9):
     return samples[len(samples) // 2]
 
 
-T_list = [64, 256, 1024, 2048] if device.type == "cuda" else [64, 128, 256]
-bench_dim, bench_B = (128, 8) if device.type == "cuda" else (64, 2)
-bench_cell = ParaSLSTM(bench_dim, bench_dim, mix="diag", device=device, dtype=dtype).eval()
+if device.type != "cuda":
+    print(
+        f"Skip latency: device={device}. "
+        "Runtime → Change runtime type → GPU, then re-run this cell. "
+        "CPU eager Newton is for agreement checks, not speedups."
+    )
+else:
+    # Fused path only — matches README / lab benches.
+    bench_cfg = NewtonConfig(max_iters=3, scan_backend="fused")
+    T_list = [256, 1024, 2048, 4096]
+    bench_dim, bench_B = 128, 8
+    bench_cell = ParaSLSTM(
+        bench_dim, bench_dim, mix="diag", device=device, dtype=dtype
+    ).eval()
 
-print(f"{'T':>6}  {'sequential_ms':>14}  {'newton_ms':>10}")
-print("-" * 36)
-with torch.no_grad():
-    for T in T_list:
-        xb = torch.randn(bench_B, T, bench_dim, device=device, dtype=dtype)
-        seq_ms = median_ms(lambda xb=xb: sequential_apply(bench_cell, xb))
-        newt_ms = median_ms(lambda xb=xb: newton_apply(bench_cell, xb, config=cfg))
-        print(f"{T:6d}  {seq_ms:14.2f}  {newt_ms:10.2f}")
+    print(f"{'T':>6}  {'sequential_ms':>14}  {'newton_ms':>10}  {'speedup':>8}")
+    print("-" * 46)
+    with torch.no_grad():
+        for T in T_list:
+            xb = torch.randn(bench_B, T, bench_dim, device=device, dtype=dtype)
+            seq_ms = median_ms(lambda xb=xb: sequential_apply(bench_cell, xb))
+            newt_ms = median_ms(
+                lambda xb=xb: newton_apply(bench_cell, xb, config=bench_cfg)
+            )
+            speed = seq_ms / max(newt_ms, 1e-9)
+            print(f"{T:6d}  {seq_ms:14.2f}  {newt_ms:10.2f}  {speed:7.1f}×")
 """
 )
 
