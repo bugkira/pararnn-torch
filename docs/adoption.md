@@ -91,8 +91,10 @@ a nonlinear slot with the same Newton path, with separate checkpoints.
 
 ## Liquid / irregular-Δt slot
 
-For closed-form continuous-time recurrence with irregular sampling intervals,
-use `ParaCfC`. Features live in `x[..., :-1]`; Δt is `x[..., -1]` (`d_in >= 2`):
+For a Liquid-**style** closed-form step with irregular sampling intervals,
+use `ParaCfC` (fidelity **research-variant** vs Hasani / ncps — see
+[architecture/para_cfc.md](architecture/para_cfc.md)). Features live in
+`x[..., :-1]`; Δt is `x[..., -1]` (`d_in >= 2`):
 
 ```python
 from pararnn import ParaCfC, ParaRNN

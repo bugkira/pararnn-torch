@@ -67,7 +67,9 @@ y = nlru(torch.randn(4, 128, 256, device=device))
 
 ## ParaCfC
 
-Liquid CfC; Δt is the last channel of `x`.
+Liquid-style CfC brick; Δt is the last channel of `x`. Spec (fidelity
+**research-variant** vs Hasani eq. 10 / ncps):
+[architecture/para_cfc.md](architecture/para_cfc.md).
 
 ```python
 from pararnn import ParaCfC

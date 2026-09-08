@@ -1,4 +1,7 @@
-"""ParaCfC — Liquid-style CfC with irregular Δt and diagonal nonlinear mix.
+"""ParaCfC — Liquid-style CfC brick with irregular Δt and diagonal nonlinear mix.
+
+Research-variant vs Hasani et al. 2022 eq. (10) / ``ncps.torch.CfCCell``:
+see ``docs/architecture/para_cfc.md``.
 
 ``x[..., :-1]`` are features; ``x[..., -1:]`` is ``Δt`` (``d_in >= 2``).
 

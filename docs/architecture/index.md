@@ -23,7 +23,8 @@ sequential oracle within the [numerics contract](../numerics-contract.md).
 | [`ParaSLSTM`](para_slstm.md) | yes | paper-faithful (`mix='diag'`); Beck-style head mix documented | Danieli et al. / xLSTM sLSTM lineage |
 | [`ParaNLRU`](para_nlru.md) | yes | research-variant vs linear Griffin RG-LRU | Griffin / RG-LRU + nonlinear slot (ours) |
 | [`ParaM2RNN`](para_m2rnn.md) | yes | research-variant / paper-core | Mishra et al. arXiv:2603.14360 |
-| ParaCfC, ParaHopfield, ParaRWKV7, ParaTitans | pending | unverified | see [cell catalog](../cells.md) |
+| [`ParaCfC`](para_cfc.md) | yes | research-variant | Hasani et al. Nat. Mach. Intell. 2022 / arXiv:2106.13898 eq. (10); ncps CfCCell |
+| ParaHopfield, ParaRWKV7, ParaTitans | pending | unverified | see [cell catalog](../cells.md) |
 
 ## How to challenge a cell
 

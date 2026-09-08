@@ -4,6 +4,14 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- Architecture fidelity spec for `ParaCfC`
+  ([`docs/architecture/para_cfc.md`](docs/architecture/para_cfc.md)):
+  **research-variant** vs Hasani et al. 2022 eq. (10) / `ncps` CfCCell
+  (update target, time gate, no backbone/heads); linked from the fidelity
+  index, cell catalog, and adoption Liquid slot.
+
 ## [0.17.4] - 2026-09-07
 
 Public GitHub launch, ParaSLSTM Zenodo v2, inference contract, wheel smoke.

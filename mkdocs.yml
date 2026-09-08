@@ -64,6 +64,7 @@ nav:
       - ParaSLSTM: architecture/para_slstm.md
       - ParaNLRU: architecture/para_nlru.md
       - ParaM2RNN: architecture/para_m2rnn.md
+      - ParaCfC: architecture/para_cfc.md
   - Cell catalog (API): cells.md
   - Numerics contract: numerics-contract.md
   - Inference: inference.md
