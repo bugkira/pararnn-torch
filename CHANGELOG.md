@@ -12,9 +12,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
   (update target, time gate, no backbone/heads); linked from the fidelity
   index, cell catalog, and adoption Liquid slot.
 - `ParaCfC(gate_mix='diag_h')`: liquid rate
-  \(a=\sigma(-\mathrm{softplus}(f+v\odot h)\,\Delta t)\) with channelwise
+  \(a=\exp(-\mathrm{softplus}(f+v\odot h)\,\Delta t)\) with channelwise
   Jacobian; fused Triton stays on `gate_mix='input'` (default); `diag_h`
   uses triton/eager scan + Autograd VJP.
+- `ParaCfC` decay gate is exponential
+  \(a=\exp(-\mathrm{softplus}(f)\,\Delta t)\) so \(\lim_{\Delta t\to 0}a=1\)
+  (fixes the prior \(\sigma(-\mathrm{softplus}\cdot\Delta t)\) amnesia bound
+  \(a\le 0.5\)). Fused Newton + packed VJP match the exp gate.
 
 ## [0.17.4] - 2026-09-07
 

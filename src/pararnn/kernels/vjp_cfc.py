@@ -1,10 +1,10 @@
-"""Triton / eager VJP of the ParaCfC recurrence (softplus·Δt gate + diag ``u``).
+"""Triton / eager VJP of the ParaCfC recurrence (exp softplus·Δt gate + diag ``u``).
 
 ``h_prev`` is detached (eq. 2.6 already applied ``J^T``). ``∇u`` reduces with
 per-batch fp32 tiles then ``.sum`` — no atomics.
 
 ``wx`` is ``(B, T, 3 d_h) = (f_pre, c_x, Δt)``. Gate chain matches Autograd on
-``a = σ(-softplus(f)·dt)``: ``∂softplus/∂f = σ(f)``.
+``a = exp(-softplus(f)·dt)``: ``∂a/∂soft = -dt·a``, ``∂softplus/∂f = σ(f)``.
 """
 
 from __future__ import annotations
@@ -77,13 +77,12 @@ def _cfc_vjp_kernel(
     u = load_acc(u_ptr + offs_d[None, :], dmask[None, :], 0.0)
 
     soft = tl.where(f_pre > 20.0, f_pre, tl.log(1.0 + tl.exp(f_pre)))
-    a = tl.sigmoid(-soft * dt)
+    a = tl.exp(-soft * dt)
     n = _nv_tanh(cx + u * h)
     d_h_da = mu * (h - n)
-    d_apre = d_h_da * a * (1.0 - a)
-    # softplus'(f) = σ(f); matches Autograd (σ(20)≈1 when soft≈f).
-    g_f = d_apre * (-dt) * tl.sigmoid(f_pre)
-    g_dt = d_apre * (-soft)
+    # ∂a/∂soft = -dt·a ; softplus'(f)=σ(f)
+    g_f = d_h_da * (-dt) * a * tl.sigmoid(f_pre)
+    g_dt = d_h_da * (-soft) * a
     d_npre = mu * (1.0 - a) * (1.0 - n * n)
 
     gout = gwx_ptr + pid_b * stride_gb + offs_t[:, None] * stride_gt
@@ -109,12 +108,11 @@ def cfc_recurrence_vjp_eager(
     mu = mu.float()
     f_pre, cx, dt = wx.chunk(3, dim=-1)
     soft = F.softplus(f_pre)
-    a = torch.sigmoid(-soft * dt)
+    a = torch.exp(-soft * dt)
     n = torch.tanh(cx + u * h_prev)
     d_h_da = mu * (h_prev - n)
-    d_apre = d_h_da * a * (1.0 - a)
-    g_f = d_apre * (-dt) * torch.sigmoid(f_pre)
-    g_dt = d_apre * (-soft)
+    g_f = d_h_da * (-dt) * a * torch.sigmoid(f_pre)
+    g_dt = d_h_da * (-soft) * a
     d_npre = mu * (1.0 - a) * (1.0 - n.square())
     g_wx = torch.cat((g_f, d_npre, g_dt), dim=-1)
     g_u = (d_npre * h_prev).sum(dim=(0, 1))

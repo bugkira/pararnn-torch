@@ -106,7 +106,7 @@ dt = ...  # (B, T, 1), positive
 y = core(torch.cat((feat, dt), dim=-1))
 ```
 
-Gate $`a=\sigma(-\mathrm{softplus}(f)\,\Delta t)`$ and diagonal mix $u$ keep
+Gate $`a=\exp(-\mathrm{softplus}(f)\,\Delta t)`$ and diagonal mix $u$ keep
 the Newton Jacobian channelwise diagonal (fused Alg. 1 on CUDA).
 
 ## Modern Hopfield / attractor slot

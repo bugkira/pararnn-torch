@@ -47,9 +47,9 @@ def _compose_diag(j_left, r_left, j_right, r_right):
 
 @triton.jit
 def _cfc_pred_j(h_prev, f_pre, cx, u, dt):
-    """CfC: a=σ(-softplus(f)·dt); J = a + (1-a)*(1-n^2)*u."""
+    """CfC: a=exp(-softplus(f)·dt); J = a + (1-a)*(1-n^2)*u."""
     soft = tl.where(f_pre > 20.0, f_pre, tl.log(1.0 + tl.exp(f_pre)))
-    a = tl.sigmoid(-soft * dt)
+    a = tl.exp(-soft * dt)
     n = _tanh(cx + u * h_prev)
     h_new = a * h_prev + (1.0 - a) * n
     n_p = 1.0 - n * n

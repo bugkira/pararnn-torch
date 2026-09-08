@@ -7,15 +7,16 @@ see ``docs/architecture/para_cfc.md``.
 
 Default (``gate_mix='input'``)::
 
-    a_t = σ(-softplus(f(x_t)) Δt_t)
+    a_t = exp(-softplus(f(x_t)) Δt_t)          # → 1 as Δt → 0 (ODE continuity)
     h_t = a_t ⊙ h_{t-1} + (1-a_t) ⊙ tanh(W_c x_t + u ⊙ h_{t-1})
 
 ``gate_mix='diag_h'`` (quasi-linear liquid rate; Jacobian stays channelwise diag)::
 
-    a_t = σ(-softplus(f(x_t) + v ⊙ h_{t-1}) Δt_t)
+    a_t = exp(-softplus(f(x_t) + v ⊙ h_{t-1}) Δt_t)
 
-For fused Newton (``gate_mix='input'`` only), ``project_wx`` returns
-``(B, T, 3 d_h) = (f, c, Δt)``. ``diag_h`` uses eager/triton + Autograd VJP.
+Earlier drafts used ``a = σ(-softplus·Δt)``, which forces ``a ≤ 0.5`` and
+erases memory as Δt → 0 (``σ(0)=0.5``). Fused Newton / packed VJP match the
+exponential gate.
 """
 
 from __future__ import annotations
@@ -150,8 +151,9 @@ class ParaCfC(nn.Module):
         # Candidate branch: (1-a) · n' · u.
         jac = acts.a + (1.0 - acts.a) * _tanh_prime_from_act(acts.n) * acts.u
         if acts.v is not None:
-            # ∂a/∂h = a(1-a)·(-dt)·softplus'(z)·v with z = f + v⊙h.
-            da_dh = acts.a * (1.0 - acts.a) * (-acts.dt) * acts.soft_prime * acts.v
+            # a = exp(-soft·dt), soft = softplus(f+v⊙h)
+            # ∂a/∂h = a · (-dt) · softplus'(z) · v
+            da_dh = acts.a * (-acts.dt) * acts.soft_prime * acts.v
             jac = jac + da_dh * (acts.h_prev - acts.n)
         return acts.h_new, jac
 
@@ -172,8 +174,9 @@ class ParaCfC(nn.Module):
         v = self.clipped_v()
         z = f_pre + v * h_prev if v is not None else f_pre
         soft = F.softplus(z)
-        soft_prime = torch.sigmoid(z)  # softplus'(z)
-        a = torch.sigmoid(-soft * dt)
+        soft_prime = torch.sigmoid(z)
+        # ODE continuity: lim_{Δt→0} a = 1 (sigmoid(-soft·Δt) forced a≤0.5).
+        a = torch.exp(-soft * dt)
         n = torch.tanh(cx + u * h_prev)
         h_new = a * h_prev + (1.0 - a) * n
         return _CfCActs(

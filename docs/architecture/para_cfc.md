@@ -12,20 +12,24 @@
 
 ## Recurrence (library)
 
-One `Linear` on features maps to \((f_{\mathrm{pre}}, c_x)\) with width \(2 d_h\). Diagonal recurrent vector \(u\in\mathbb{R}^{d_h}\) (App. C.1 clip, default `max_recurrent_norm=0.5`):
+Default (``gate_mix='input'``):
 
 \[
 \begin{aligned}
-a_t &= \sigma\bigl(-\mathrm{softplus}(f_{\mathrm{pre}}(x_t))\,\Delta t_t\bigr), \\
+a_t &= \exp\bigl(-\mathrm{softplus}(f_{\mathrm{pre}}(x_t))\,\Delta t_t\bigr), \\
 n_t &= \tanh\bigl(c_x(x_t) + u \odot h_{t-1}\bigr), \\
 h_t &= a_t \odot h_{t-1} + (1-a_t)\odot n_t.
 \end{aligned}
 \]
 
+As \(\Delta t\to 0\), \(a_t\to 1\) (ODE continuity). An earlier draft used
+\(\sigma(-\mathrm{softplus}\cdot\Delta t)\), which forced \(a_t\le 0.5\) and
+erased memory at vanishing \(\Delta t\).
+
 **`gate_mix='diag_h'`** (optional). Liquid rate also mixes previous state with a second diagonal vector \(v\) (same clip):
 
 \[
-a_t = \sigma\bigl(-\mathrm{softplus}(f_{\mathrm{pre}}(x_t) + v \odot h_{t-1})\,\Delta t_t\bigr).
+a_t = \exp\bigl(-\mathrm{softplus}(f_{\mathrm{pre}}(x_t) + v \odot h_{t-1})\,\Delta t_t\bigr).
 \]
 
 Jacobian stays channelwise diagonal
@@ -72,7 +76,7 @@ Newton + diagonal scan (Alg. 1). Default App. A guess \(h_t^{(0)}=f(0,x_t)\).
 Intentional design for a **diag-Newton brick** with irregular \(\Delta t\):
 
 - **Update target.** Library mixes previous state \(h_{t-1}\) with a candidate \(n_t\). Paper / ncps default mix two heads \(g\) and \(h\) (both functions of backbone features); previous \(h\) enters the ncps cell through the backbone input concat.
-- **Time gate.** Library uses \(\sigma(-\mathrm{softplus}(f_{\mathrm{pre}})\,\Delta t)\) with \(\Delta t\) as a data channel. Paper writes \(\sigma(-f\,t)\) with absolute / sample time \(t\). ncps default uses \(\sigma(t_a\,\mathrm{ts}+t_b)\).
+- **Time gate.** Library uses \(\exp(-\mathrm{softplus}(f_{\mathrm{pre}})\,\Delta t)\) with \(\Delta t\) as a data channel (ODE limit \(a\to 1\)). Paper writes \(\sigma(-f\,t)\) with absolute / sample time \(t\). ncps default uses \(\sigma(t_a\,\mathrm{ts}+t_b)\).
 - **Heads.** Single linear on features plus diagonal \(u\). Paper Fig. 4 uses a shared backbone branching into \(f,g,h\); ncps mirrors that with `ff1`/`ff2`/`time_*`.
 - **Scope.** This module is the recurrence only. NCP wirings and CfC-mmRNN live in outer stacks.
 - **softplus.** Forces a positive liquid rate before multiplying \(\Delta t\).
