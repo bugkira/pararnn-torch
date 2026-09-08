@@ -12,6 +12,8 @@
 **Train nonlinear RNNs in parallel over the sequence, decode one step at a
 time.** Package **`pararnn-torch`**, import **`pararnn`**.
 
+Docs (architecture fidelity + API): [bugkira.github.io/pararnn-torch](https://bugkira.github.io/pararnn-torch/).
+
 GRU/LSTM/sLSTM (and cousins) walk token-by-token at decode. ParaRNN trains
 the *same* cell with a few Newton updates + a parallel scan over time, so
 train wall-clock scales gently with sequence length `T`. `.eval()` keeps the
@@ -37,6 +39,7 @@ RTX 2080 Ti). **bf16 fused** needs Ampere+ (CC ≥ 8.0). Elsewhere
 - [Compatibility](#compatibility)
 - [Method](#method)
 - [Citation](#citation)
+- [Documentation site](https://bugkira.github.io/pararnn-torch/)
 
 ## News
 
