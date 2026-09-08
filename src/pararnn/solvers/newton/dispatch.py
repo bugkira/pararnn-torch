@@ -48,7 +48,12 @@ def _can_fuse(cell: nn.Module, x: Tensor) -> bool:
         if getattr(cell, "W_x", None) is None:
             return False
         return cell.mix in ("diag", "head")
-    if isinstance(cell, (ParaNLRU, ParaCfC, ParaTitans)):
+    if isinstance(cell, ParaCfC):
+        # Fused Alg. 1 implements gate_mix='input' only (no v⊙h in the rate).
+        if getattr(cell, "gate_mix", "input") != "input":
+            return False
+        return getattr(cell, "W_x", None) is not None
+    if isinstance(cell, (ParaNLRU, ParaTitans)):
         return getattr(cell, "W_x", None) is not None
     if not isinstance(cell, ParaLSTM):
         return False

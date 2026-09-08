@@ -48,7 +48,7 @@ def _cell_vjp_body(
         return _gru_head_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaNLRU):
         return _nlru_vjp(cell, h_prev, x, mu)
-    if packed and isinstance(cell, ParaCfC):
+    if packed and isinstance(cell, ParaCfC) and getattr(cell, "gate_mix", "input") == "input":
         return _cfc_vjp(cell, h_prev, x, mu)
     if packed and isinstance(cell, ParaLSTM):
         return _lstm_vjp(cell, h_prev, x, mu)
@@ -65,8 +65,11 @@ def uses_packed_vjp(cell: nn.Module) -> bool:
     """True when eq. 2.6 can skip Autograd on ``step``."""
     if isinstance(cell, ParaGRU):
         return cell.mix in ("diag", "head")
-    if isinstance(cell, (ParaNLRU, ParaCfC)):
+    if isinstance(cell, ParaNLRU):
         return True
+    if isinstance(cell, ParaCfC):
+        # Packed softplus·Δt VJP covers gate_mix='input' only; diag_h uses Autograd.
+        return getattr(cell, "gate_mix", "input") == "input"
     if isinstance(cell, ParaLSTM):
         return True
     if getattr(cell, "jac_structure", None) == "m2rnn":

@@ -11,6 +11,10 @@ All notable changes to this project are documented here. Format follows [Keep a 
   **research-variant** vs Hasani et al. 2022 eq. (10) / `ncps` CfCCell
   (update target, time gate, no backbone/heads); linked from the fidelity
   index, cell catalog, and adoption Liquid slot.
+- `ParaCfC(gate_mix='diag_h')`: liquid rate
+  \(a=\sigma(-\mathrm{softplus}(f+v\odot h)\,\Delta t)\) with channelwise
+  Jacobian; fused Triton stays on `gate_mix='input'` (default); `diag_h`
+  uses triton/eager scan + Autograd VJP.
 
 ## [0.17.4] - 2026-09-07
 

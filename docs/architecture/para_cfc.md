@@ -22,6 +22,16 @@ h_t &= a_t \odot h_{t-1} + (1-a_t)\odot n_t.
 \end{aligned}
 \]
 
+**`gate_mix='diag_h'`** (optional). Liquid rate also mixes previous state with a second diagonal vector \(v\) (same clip):
+
+\[
+a_t = \sigma\bigl(-\mathrm{softplus}(f_{\mathrm{pre}}(x_t) + v \odot h_{t-1})\,\Delta t_t\bigr).
+\]
+
+Jacobian stays channelwise diagonal
+\(J = a + (1-a)\odot(1-n^{\odot 2})\odot u + (\partial a/\partial h)\odot(h-n)\).
+Fused Triton covers `gate_mix='input'` only; `diag_h` uses triton/eager scan + Autograd VJP.
+
 `project_wx` packs \((f_{\mathrm{pre}}, c_x, \Delta t)\) as shape `(..., 3 d_h)` for the fused path.
 
 ## Paper / ncps reference (for comparison)
