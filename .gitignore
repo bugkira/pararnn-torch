@@ -5,6 +5,7 @@ __pycache__/
 .eggs/
 dist/
 build/
+site/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -20,6 +21,8 @@ data/
 datasets/
 checkpoints/
 results/
+evaluation_data/
+.cache/
 
 # experiment tracking
 mlruns/
@@ -34,21 +37,18 @@ notebooks/*.executed.ipynb
 # example smoke artifacts
 parity_curves.json
 
-# literature PDFs (local cache only)
-docs/sources/*.pdf
-docs/papers/*.pdf
+# literature PDF caches / positioning dumps (lab)
+docs/sources/
+docs/papers/
 
-# peer issue/PR friction dumps (large JSONL; keep on disk)
-docs/sources/positioning/user-friction/
-
-# Apple's official clone, if you keep one locally
+# local reference checkouts
 third_party/
 
-# lab notes, paper drafts, reviewer audits, agent rules (keep on disk, not in clones)
+# lab notes / agent rules (maintainer machine)
 docs/internal/
 .cursor/
 
-# LLM dumps dropped at repo root before they get moved under docs/internal/
+# LLM dumps at repo root
 /review1.md
 /IDEAS.md
 /NEW_IDEAS.md
@@ -63,6 +63,6 @@ docs/internal/
 .env
 .env.*
 
-# lab IMU smoke (local only; not a public example)
-scripts/imu_longseq_smoke.py
+# train configs that belong in lab if dropped here
+configs/train/babylm*.yaml
 configs/train/imu_*.yaml

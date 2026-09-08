@@ -1,42 +1,34 @@
 # Layout
 
-One trunk (`main`). Three layers:
+One trunk (`main`). Layers:
 
 1. **Ops** — `src/pararnn/kernels/`: Triton fused Newton and scans, selected with `NewtonConfig(scan_backend=)`.
 2. **Modules** — `cells/` is $f$ (`step`); `solvers/` is Alg. 1; `layers/ParaRNN` is the sequence `nn.Module` (Newton in `.train()`, sequential in `.eval()`).
-3. **Integrations** — `examples/` (onboarding), `scripts/` (benches / training; see [`scripts/README.md`](../scripts/README.md)), `notebooks/` (Colab demo).
+3. **Integrations** — `examples/` (onboarding), `notebooks/` (Colab demo).
+
+Maintainer benches, verification suites, and paper drafts live in the sibling
+`pararnn-lab` tree.
 
 ```
-ParaRNN/
-├── docs/
-│   ├── adoption.md             # drop-in block / CausalLM / RSSM slot
-│   ├── xlstm.md
-│   ├── distributed.md          # DDP / FSDP2 / TP / context-parallel scan
-│   ├── vllm.md                 # vLLM general_plugins + CausalLM
-│   ├── inference.md            # decode carry / decode_step / generate
-│   ├── structure.md
-│   ├── backward-scan-cap.md
-│   └── sources/                # upstream PDF cache (gitignored *.pdf)
+pararnn-torch/
+├── docs/                       # public API / adoption docs
 ├── src/pararnn/
-│   ├── cells/                  # ParaGRU, ParaLSTM, ParaSLSTM, ParaM2RNN, ParaNLRU
-│   ├── layers/                 # ParaRNN, ParaSLSTMBlock
-│   ├── models/                 # ParaSLSTMConfig + CausalLM
-│   ├── serve/                  # BlockStackPool continuous batch
-│   ├── vllm_plugin/            # ModelRegistry entry point
-│   ├── solvers/                # sequential, Newton, scan, VJP
-│   ├── kernels/                # Triton scans + fused Newton + T=1 decode_step
-│   ├── distributed.py          # warmup + unwrap for DDP/FSDP
-│   ├── tensor_parallel.py      # Megatron TP along d_h
-│   ├── speculative.py          # linear-draft verify (one Newton scan)
-│   ├── paged.py                # O(1) state slot pool (continuous batching)
+│   ├── cells/
+│   ├── layers/
+│   ├── models/
+│   ├── serve/
+│   ├── vllm_plugin/
+│   ├── solvers/
+│   ├── kernels/
+│   ├── distributed.py
+│   ├── tensor_parallel.py
+│   ├── speculative.py
+│   ├── paged.py
 │   ├── layout.py
-│   └── weight_init.py          # App. C.1
+│   └── weight_init.py
 ├── examples/
-├── tests/
-│   ├── unit/
-│   └── numerics/
 ├── configs/
-├── scripts/
+├── notebooks/
 ├── pyproject.toml              # package name pararnn-torch
 └── README.md
 ```
@@ -60,9 +52,6 @@ see Models in the README.
 
 Examples on `main`: CausalLM smoke, continuous batch, Dyck-1, Z₂ parity,
 NX-AI `sLSTMBlock` hybrid, DDP/FSDP2, linear-draft verify, T=1 `decode_step`.
-`PagedStatePool` / `block_table` and tensor / context-parallel APIs live in the
-library + numerics tests; two-card torchrun demos sit on branch
-[`archive/distributed-demos`](https://github.com/bugkira/pararnn-torch/tree/archive/distributed-demos).
 Architecture notes: [`docs/distributed.md`](distributed.md).
 
 ## Naming

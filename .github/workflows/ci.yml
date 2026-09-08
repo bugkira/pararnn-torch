@@ -11,8 +11,7 @@ concurrency:
 permissions:
   contents: read
 
-# Merge gate: lint + CPU tests only. Self-hosted CUDA lives in gpu.yml so an
-# offline lab box cannot leave this workflow queued / red forever.
+# Merge gate: lint + import smoke. Full pytest lives in the maintainer lab tree.
 
 jobs:
   lint:
@@ -28,7 +27,7 @@ jobs:
           uv run ruff check
           uv run ruff format --check
 
-  test:
+  smoke:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -39,9 +38,7 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Sync and test (CPU; CUDA tests deselected)
+      - name: Import smoke
         run: |
           uv sync --group dev
-          echo "CUDA-marked tests (deselected here; covered by gpu.yml):"
-          uv run pytest --collect-only -q -m cuda
-          uv run pytest -q -m "not cuda"
+          uv run python -c "import pararnn; print(pararnn.__version__)"

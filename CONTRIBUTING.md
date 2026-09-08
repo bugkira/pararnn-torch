@@ -16,30 +16,31 @@ Optional local hooks (same ruff gate as CI):
 uvx pre-commit install
 ```
 
-## Tests and lint
+## Lint and smoke
 
 ```bash
 uv run ruff check
 uv run ruff format --check
-uv run pytest -q -m "not cuda"
-uv run pytest -q -m cuda          # fused Triton; needs a GPU
+uv run python -c "import pararnn; print(pararnn.__version__)"
 ```
+
+Full pytest (unit + numerics, including CUDA) runs in the maintainer
+`pararnn-lab` tree against an editable checkout of this library.
 
 ## Numerics
 
 Solver, Jacobian, and scan changes keep sequential-vs-parallel agreement tests
-green. Document tolerances per dtype (float32 vs bfloat16) from unit roundoff.
+green in lab. Document tolerances per dtype (float32 vs bfloat16) from unit
+roundoff.
 
 ## Changelog and PRs
 
 User-visible changes go under `[Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md).
-Use the PR template checklist. Lab notes under `docs/internal/` stay local
-(gitignored). Apple trees under `third_party/` stay local reference only.
+Use the PR template checklist.
 
-Before a PyPI / tag cut: `bash scripts/check_wheel.sh` (build + twine +
-clean-venv import outside the repo).
+Before a PyPI / tag cut: `uv build` and confirm the wheel contains only the
+`pararnn` package (CI release job also greps for lab paths).
 
-## Scripts
+## Examples
 
-Benches and training entrypoints: [`scripts/README.md`](scripts/README.md).
 Keep `examples/` as short onboarding scripts.

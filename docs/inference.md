@@ -62,9 +62,9 @@ for _ in range(8):  # decode loop, T=1 each time
     carry = out_buf  # or keep writing into the same out_buf next step
 ```
 
-Bench + CUDAGraph: [`examples/decode_step.py`](../examples/decode_step.py).
-CausalLM smoke: [`examples/causal_lm_smoke.py`](../examples/causal_lm_smoke.py).
-Minimal carry loop: [`examples/recurrent_state_loop.py`](../examples/recurrent_state_loop.py).
+Bench + CUDAGraph: [`examples/decode_step.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/decode_step.py).
+CausalLM smoke: [`examples/causal_lm_smoke.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/causal_lm_smoke.py).
+Minimal carry loop: [`examples/recurrent_state_loop.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/recurrent_state_loop.py).
 
 ## `generate()` (CausalLM)
 

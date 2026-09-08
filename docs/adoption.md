@@ -49,8 +49,8 @@ model.save_pretrained("./ckpt")  # config.json + model.safetensors
 model = ParaSLSTMForCausalLM.from_pretrained("./ckpt")
 ```
 
-Smoke: [`examples/causal_lm_smoke.py`](../examples/causal_lm_smoke.py).
-Packed continuous batch: [`examples/continuous_batch.py`](../examples/continuous_batch.py).
+Smoke: [`examples/causal_lm_smoke.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/causal_lm_smoke.py).
+Packed continuous batch: [`examples/continuous_batch.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/continuous_batch.py).
 Serve: [`inference.md`](inference.md) (carry / `decode_step`) ·
 [`vllm.md`](vllm.md) (plugin).
 
@@ -72,7 +72,7 @@ rssm_h = ParaRNN(
 # .eval()  → sequential step (T=1 CUDA: decode_step)
 ```
 
-Smoke: [`examples/rssm_recurrent.py`](../examples/rssm_recurrent.py).
+Smoke: [`examples/rssm_recurrent.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/rssm_recurrent.py).
 
 ## Griffin / RecurrentGemma recurrent slot
 

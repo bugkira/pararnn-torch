@@ -35,5 +35,4 @@ are separate — see `docs/numerics-contract.md`)
 
 **Logs**
 (`newton_residual` / `report.to_dict()` / peak MiB from
-`docs/oom-cookbook.md` smoke / traceback; optional:
-`uv run python scripts/gpu.py`)
+`docs/oom-cookbook.md` smoke / traceback)

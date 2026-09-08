@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  smoke:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -20,13 +20,13 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Sync and test (CPU; CUDA tests deselected)
+      - name: Import smoke
         run: |
           uv sync --group dev
-          uv run pytest -q -m "not cuda"
+          uv run python -c "import pararnn; print(pararnn.__version__)"
 
   build:
-    needs: test
+    needs: smoke
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -47,6 +47,19 @@ jobs:
           fi
       - name: Build distributions
         run: uv build
+      - name: Wheel hygiene (no lab paths)
+        run: |
+          WHEEL=$(ls dist/*.whl | head -1)
+          uv run python - <<PY
+          import zipfile, sys
+          z = zipfile.ZipFile("$WHEEL")
+          names = z.namelist()
+          bad = [n for n in names if any(x in n for x in ("babylm", "docs/internal", "/tests/", "/scripts/"))]
+          if bad:
+              print("bad paths:", bad[:20])
+              sys.exit(1)
+          print("wheel ok", "$WHEEL", "files", len(names))
+          PY
       - name: Upload distributions
         uses: actions/upload-artifact@v7
         with:
@@ -55,7 +68,7 @@ jobs:
 
   publish:
     needs:
-      - test
+      - smoke
       - build
     runs-on: ubuntu-latest
     environment:

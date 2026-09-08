@@ -41,7 +41,7 @@ dependencies = [
 Homepage = "https://github.com/bugkira/pararnn-torch"
 Repository = "https://github.com/bugkira/pararnn-torch"
 Issues = "https://github.com/bugkira/pararnn-torch/issues"
-Documentation = "https://github.com/bugkira/pararnn-torch"
+Documentation = "https://bugkira.github.io/pararnn-torch/"
 
 [project.optional-dependencies]
 train = ["mlflow"]
@@ -75,6 +75,9 @@ dev = [
     "pyyaml>=6.0.3",
     "ruff>=0.9",
 ]
+docs = [
+    "mkdocs-material>=9.5",
+]
 
 [tool.uv]
 # PyTorch cu128 index also hosts an old `requests`; datasets needs a current one from PyPI.
@@ -86,22 +89,14 @@ url = "https://download.pytorch.org/whl/cu128"
 [tool.uv.build-backend]
 module-name = "pararnn"
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-markers = ["cuda: requires a CUDA device"]
-addopts = "--strict-markers"
-
 [tool.ruff]
-src = ["src", "tests", "examples", "scripts"]
+src = ["src", "examples"]
 target-version = "py310"
 # Triton kernels carry wide arithmetic expressions; the default 88 would shred them.
 line-length = 100
 extend-exclude = [
     "notebooks",
     "**/*.ipynb",
-    # Upstream README snapshots — do not reformat foreign prose/code fences.
-    "docs/sources/positioning/*.README.md",
 ]
 
 [tool.ruff.lint]
@@ -111,17 +106,13 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "C4", "PT"]
 ignore = ["RUF001", "RUF002", "RUF003", "E501"]
 
 [tool.ruff.lint.per-file-ignores]
-# Examples/scripts insert repo root on sys.path before importing pararnn.
-# scripts/gpu.py must set CUDA_DEVICE_ORDER before `import torch`.
+# Examples may insert repo root on sys.path before importing pararnn.
 "examples/**" = ["E402"]
-"scripts/**" = ["E402", "B023"]
 # Composite torch asserts (`x is not None and finite`) are intentional.
-"tests/**" = ["PT018"]
 "src/pararnn/cells/**" = ["PT018"]
 "src/pararnn/kernels/**" = ["PT018"]
 "src/pararnn/solvers/**" = ["PT018"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["pararnn", "examples", "scripts"]
-known-local-folder = ["gpu"]
+known-first-party = ["pararnn", "examples"]
 

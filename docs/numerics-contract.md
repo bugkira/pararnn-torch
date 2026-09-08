@@ -56,7 +56,7 @@ This echelon stops **explosions**. Agreement still goes through echelon 3
 Measured once (or on nightly lab jobs). Paper App. A is the starting guess;
 tables in this repo are the authority for shipped cells.
 
-- Script: [`scripts/bench_k_star.py`](../scripts/bench_k_star.py)
+- K* campaigns (`scripts/bench_k_star.py`) run in the maintainer lab; this page is the numerics contract for interpreting results.
 - Envelopes: `pararnn.solvers.newton.k_star`
 - Train: `NewtonConfig(max_iters=None)` picks \(K\) from the table for current \(T\)
 - Manual pin: `newton_iters_by_t={64: 2, 1024: 3, …}` or `max_iters=int`
@@ -85,7 +85,7 @@ assert report.ok  # or raise_on_fail=True
 
 ### 4. Docs / product claim
 
-This file, [`FAQs.md`](../FAQs.md), README glossary, and the bug-report
+This file, [`FAQs.md`](https://github.com/bugkira/pararnn-torch/blob/main/FAQs.md), README glossary, and the bug-report
 template. Public claim: parallel ≡ sequential at τ under \(K^*(T)\).
 The residual gate is the explosion fuse; agreement is a separate check.
 
@@ -106,6 +106,6 @@ BabyLM’s train script already logs `newton_residual` each step.
 
 - [`oom-cookbook.md`](oom-cookbook.md) — long-T VRAM: `recompute`, Hopfield
   \(d_h\), RWKV slim heads
-- [`FAQs.md`](../FAQs.md) — Turing / K* / `verify_agreement` paste
+- [`FAQs.md`](https://github.com/bugkira/pararnn-torch/blob/main/FAQs.md) — Turing / K* / `verify_agreement` paste
 - [`backward-scan-cap.md`](backward-scan-cap.md) — long-T scan limits
 - Observability: residual, wall time, device, dtype on solver boundaries

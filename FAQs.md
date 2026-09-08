@@ -79,8 +79,8 @@ T). RWKV-7 is an exact parallel scan, so K\*=0. Set
 - Pin with `NewtonConfig(max_iters=3)` for ParaGRU / ParaLSTM-style cells
   (Danieli et al. 2025 §2.1 / App. A empirical agreement).
 - Use `max_iters=None` for measured K\*(T) auto schedules
-  (`pararnn.solvers.newton.k_star`); campaign through T=131072 via
-  `scripts/bench_k_star.py`.
+  (`pararnn.solvers.newton.k_star`); campaign through T=131072 with the
+  maintainer lab `bench_k_star` script when measuring envelopes.
 - Override with `newton_iters_by_t={64: 2, 1024: 3, …}` when you have a table.
 
 If residual stays high, try Picard warm-start (`picard_iters`) before raising
@@ -149,10 +149,5 @@ The worker allocates mamba temporal pages `(C, 4, d_h)` and
 
 ## Where are benches?
 
-[`scripts/`](scripts/README.md) (source tree; absent from the wheel). Index:
-[`scripts/README.md`](scripts/README.md).
-
-## Is Apple ml-pararnn in this package?
-
-`third_party/ml-pararnn` is a local read-only reference under Apple’s
-license. Public MIT code is reimplemented from the paper equations.
+Maintainer benches and verification suites live in the sibling `pararnn-lab`
+tree. They are absent from the PyPI wheel.

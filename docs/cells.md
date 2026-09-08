@@ -1,7 +1,7 @@
 # Cell catalog
 
-Snippets for each cell in the Models table. README keeps block → CausalLM →
-`ParaRNN`; this page is the zoo.
+Call-site snippets for the Models table. Equation-level contracts:
+[architecture fidelity](architecture/index.md).
 
 Shared pattern: wrap with `ParaRNN` or call `newton_apply` / `sequential_apply`.
 `.train()` → parallel Newton · `.eval()` → sequential `step` · CUDA `T=1` →
@@ -38,14 +38,8 @@ rssm_h = ParaRNN(ParaGRU(512, 512, mix="head", n_heads=8), device=device)
 y = rssm_h(torch.randn(4, 64, 512, device=device))
 ```
 
-Smoke: [`examples/rssm_recurrent.py`](../examples/rssm_recurrent.py). Head fused
-medians (`scripts/bench_gru_head.py`, 2080 Ti, K=3):
-
-| setup | `d_head` | Newton | fwd+bwd |
-|------:|---------:|-------:|-------:|
-| `B=4`, `T=128` | 64 | 2.4 | — |
-| `B=1`, `T=4096` | 64 | 51 | 83 |
-| `B=1`, `T=4096` | 96 | 220 | 293 |
+Smoke: [`examples/rssm_recurrent.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/rssm_recurrent.py). Spec:
+[architecture/para_gru.md](architecture/para_gru.md).
 
 ## ParaM2RNN (research)
 
@@ -57,7 +51,8 @@ x = 0.15 * torch.randn(2, 128, 32, device=device)
 h_par = newton_apply(m2, x, NewtonConfig(max_iters=8, residual_atol=1e-5))
 ```
 
-State `(B, T, K, V)`. Critical depth: `scripts/bench_m2rnn_k_scale.py`.
+State `(B, T, K, V)`. Spec (incl. paper-block deviations):
+[architecture/para_m2rnn.md](architecture/para_m2rnn.md).
 
 ## ParaNLRU
 
