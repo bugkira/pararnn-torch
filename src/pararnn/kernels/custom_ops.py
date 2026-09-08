@@ -238,7 +238,7 @@ def newton_cfc_fused(
     max_iters: int,
     omega: float,
 ) -> Tensor:
-    """Fused Alg. 1 for ParaCfC. ``wx`` is ``project_wx(x)`` ``(B, T, 3 d_h)``."""
+    """Fused Alg. 1 for ParaCfC. ``wx`` is ``project_wx(x)`` ``(B, T, 4 d_h)``."""
     return _newton_cfc_fused_impl(
         wx,
         u,

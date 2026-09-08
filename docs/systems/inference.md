@@ -91,6 +91,6 @@ may use packed `cu_seqlens`; decode indexes `block_table` / `slot_ids`. See
 ## Related
 
 - [`vllm.md`](vllm.md) — plugin: `MambaBase` / `mamba_type=MAMBA1`
-- [`shapes-layout.md`](shapes-layout.md) — `T=1` / packing
-- [`xlstm.md`](xlstm.md) — cell / block
-- [`compile-amp.md`](compile-amp.md) — compile around serve loops
+- [`shapes_layout.md`](../getting_started/shapes_layout.md) — `T=1` / packing
+- [`xlstm_notes.md`](../audit/xlstm_notes.md) — cell / block
+- [`compile_amp.md`](compile_amp.md) — compile around serve loops

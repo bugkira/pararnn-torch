@@ -79,4 +79,4 @@ __all__ = [
 try:
     __version__ = version("pararnn-torch")
 except PackageNotFoundError:
-    __version__ = "0.17.3"
+    __version__ = "0.17.5"

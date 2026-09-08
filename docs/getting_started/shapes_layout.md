@@ -51,7 +51,7 @@ Pad to a rectangular batch when you need head-fused speed on variable lengths.
 
 `.eval()` / `solver='sequential'` on CUDA with `T=1` uses Triton
 `decode_step` when available. Keep the single-token layout contiguous;
-see [`inference.md`](inference.md) / [`vllm.md`](vllm.md) for serve packing.
+see [`inference.md`](../systems/inference.md) / [`vllm.md`](../systems/vllm.md) for serve packing.
 
 ## Smoke (paste into a bug)
 
@@ -76,7 +76,7 @@ Packed / head / fused failures: include `scan_backend`, `mix`, and whether
 
 ## Related
 
-- [`backward-scan-cap.md`](backward-scan-cap.md) — long-T tile pads
-- [`oom-cookbook.md`](oom-cookbook.md) — VRAM geometry
-- [`numerics-contract.md`](numerics-contract.md) — agreement and residual
-- [`compile-amp.md`](compile-amp.md) — `verify_first_step` skips packed `cu_seqlens`
+- [`backward_scan.md`](../core/backward_scan.md) — long-T tile pads
+- [`oom_cookbook.md`](../systems/oom_cookbook.md) — VRAM geometry
+- [`numerics_contract.md`](../core/numerics_contract.md) — agreement and residual
+- [`compile_amp.md`](../systems/compile_amp.md) — `verify_first_step` skips packed `cu_seqlens`

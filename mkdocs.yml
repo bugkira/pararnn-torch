@@ -56,24 +56,46 @@ extra_javascript:
 
 nav:
   - Home: index.md
-  - Architecture:
-      - Fidelity index: architecture/index.md
-      - Spec template: architecture/TEMPLATE.md
-      - ParaGRU: architecture/para_gru.md
-      - ParaLSTM: architecture/para_lstm.md
-      - ParaSLSTM: architecture/para_slstm.md
-      - ParaNLRU: architecture/para_nlru.md
-      - ParaM2RNN: architecture/para_m2rnn.md
-      - ParaCfC: architecture/para_cfc.md
-  - Cell catalog (API): cells.md
-  - Numerics contract: numerics-contract.md
-  - Inference: inference.md
-  - Adoption: adoption.md
-  - Distributed: distributed.md
-  - vLLM: vllm.md
-  - OOM cookbook: oom-cookbook.md
-  - Compile / AMP: compile-amp.md
-  - Shapes / layout: shapes-layout.md
-  - Backward scan: backward-scan-cap.md
-  - xLSTM notes: xlstm.md
-  - Repo layout: structure.md
+
+  - Getting Started:
+      - Quickstart: getting_started/quickstart.md
+      - Adoption guide: getting_started/adoption.md
+      - Shapes & layout: getting_started/shapes_layout.md
+
+  - Core Architecture:
+      - Newton + scan: core/newton_scan.md
+      - Jacobian classes: core/jacobian_classes.md
+      - Backward scan: core/backward_scan.md
+      - Numerics & agreement: core/numerics_contract.md
+
+  - Cell Catalog:
+      - Overview: cells/index.md
+      - Spec template: cells/spec_template.md
+      - Fidelity labels: cells/fidelity.md
+      - Audit matrix: cells/audit_matrix.md
+      - Classic gated:
+          - ParaGRU: cells/classic/para_gru.md
+          - ParaLSTM: cells/classic/para_lstm.md
+      - Normalized & resonant:
+          - ParaNLRU: cells/normalized/para_nlru.md
+          - ParaSLSTM: cells/normalized/para_slstm.md
+      - Matrix & associative memory:
+          - ParaHopfield: cells/matrix/para_hopfield.md
+          - ParaM2RNN: cells/matrix/para_m2rnn.md
+          - ParaRWKV7: cells/matrix/para_rwkv7.md
+          - ParaTitans: cells/matrix/para_titans.md
+      - Continuous & liquid (ODE):
+          - ParaCfC: cells/continuous/para_cfc.md
+      - API snippets: cells/api.md
+
+  - Systems & Scaling:
+      - Inference: systems/inference.md
+      - vLLM: systems/vllm.md
+      - Distributed: systems/distributed.md
+      - Compile & AMP: systems/compile_amp.md
+      - OOM cookbook: systems/oom_cookbook.md
+
+  - Audit & Verification:
+      - Verification suite: audit/verification.md
+      - xLSTM notes: audit/xlstm_notes.md
+      - Repository layout: audit/repo_layout.md

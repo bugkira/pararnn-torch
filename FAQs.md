@@ -8,7 +8,7 @@ green when changing Jacobians, scans, or fused kernels. Float32 and bfloat16
 have separate budgets.
 
 Full contract (residual gate, agreement τ, four echelons):
-[`docs/numerics-contract.md`](docs/numerics-contract.md).
+[`docs/core/numerics_contract.md`](docs/core/numerics_contract.md).
 
 Before opening a bug, run:
 
@@ -47,8 +47,8 @@ Usually geometry (width / heads / stored H*). Cheat sheet:
 2. Hopfield → keep `d_h ≤ 32`.
 3. RWKV-7 on long text (12 GiB) → slim `n_heads=1`, `d_head=16`.
 
-Decision tree + peak-mem smoke: [`docs/oom-cookbook.md`](docs/oom-cookbook.md).
-Silent wrong answers: [`docs/numerics-contract.md`](docs/numerics-contract.md).
+Decision tree + peak-mem smoke: [`docs/systems/oom_cookbook.md`](docs/systems/oom_cookbook.md).
+Silent wrong answers: [`docs/core/numerics_contract.md`](docs/core/numerics_contract.md).
 
 ## What about Turing GPUs (e.g. RTX 2080 Ti)?
 
@@ -103,7 +103,7 @@ before a long train if you want the same gate early. Fallback:
 ## Does `torch.compile` / autocast work?
 
 Yes under the documented wrappers —
-[`docs/compile-amp.md`](docs/compile-amp.md).
+[`docs/systems/compile_amp.md`](docs/systems/compile_amp.md).
 
 - **`fullgraph=True`:** `compile_safe_config()` (fixed `K`, no residual host
   sync). Fused ops are Dynamo-opaque (`custom_op` + `register_fake`).
@@ -125,7 +125,7 @@ fn = torch.compile(lambda z: newton_apply(cell, z, cfg), fullgraph=True)
 Fused paths copy to contiguous before Triton. Head-mix + pack: `auto` →
 eager; explicit `fused` raises `TypeError`. Diag GRU packs in fused kernels.
 
-Matrix + smoke: [`docs/shapes-layout.md`](docs/shapes-layout.md).
+Matrix + smoke: [`docs/getting_started/shapes_layout.md`](docs/getting_started/shapes_layout.md).
 
 ## train() vs eval()?
 
@@ -139,7 +139,7 @@ Fixed-size carry `(slots, d_h)` per layer — size stays constant as you
 generate. Prefill with `sequential_apply` / Newton, then `decode_wx` +
 `decode_step(..., out=)` for each `T=1` token. CausalLM:
 `ParaSLSTMForCausalLM.generate`. CUDA Graph: pin `wx` / state buffers (see
-`examples/decode_step.py`). Contract: [`docs/inference.md`](docs/inference.md).
+`examples/decode_step.py`). Contract: [`docs/systems/inference.md`](docs/systems/inference.md).
 
 ## Why Mamba1 metadata for the vLLM plugin?
 

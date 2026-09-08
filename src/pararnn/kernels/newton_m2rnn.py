@@ -63,6 +63,7 @@ def newton_m2rnn_factorized(
     force_eager: bool = False,
     residual_atol: float | None = None,
     frozen_w_init: bool = False,
+    backtrack: bool = False,
 ) -> Tensor:
     """Alg. 1 for M²RNN with factorized ``J δ``.
 
@@ -88,6 +89,8 @@ def newton_m2rnn_factorized(
         If True and ``states is None``, warm-start with ``m2rnn_frozen_w_scan``
         (``W=0`` linear scan) before Newton. Wired from
         ``NewtonConfig.picard_iters >= 1`` for ``ParaM2RNN``.
+    backtrack : bool
+        Reject / shrink steps that raise ``max|F|`` (host loop only).
     """
     if not isinstance(cell, ParaM2RNN):
         raise TypeError(f"newton_m2rnn_factorized needs ParaM2RNN, got {type(cell).__name__}")
@@ -101,6 +104,7 @@ def newton_m2rnn_factorized(
 
     use_fused = (
         not force_eager
+        and not backtrack
         and residual_history is None
         and states is None
         and can_fuse_m2rnn(k_dim, v_dim, x)
@@ -132,6 +136,7 @@ def newton_m2rnn_factorized(
                 residual_atol=residual_atol,
                 residual_history=None,
                 frozen_w_init=frozen_w_init,
+                backtrack=backtrack,
             )
         else:
             out = _newton_m2rnn_hybrid_tiled(
@@ -145,6 +150,7 @@ def newton_m2rnn_factorized(
                 residual_atol=residual_atol,
                 residual_history=None,
                 frozen_w_init=frozen_w_init,
+                backtrack=backtrack,
             )
         if not torch.compiler.is_compiling() and log.isEnabledFor(logging.DEBUG):
             log.debug(
@@ -161,6 +167,22 @@ def newton_m2rnn_factorized(
             )
         return out
 
+    # Backtrack / residual history: host loop (SRAM early or eager).
+    if backtrack and can_fuse_m2rnn(k_dim, v_dim, x) and _sram_ok(k_dim, v_dim) and not force_eager:
+        return _newton_m2rnn_sram_early(
+            k,
+            v,
+            f,
+            w,
+            h0,
+            max_iters=max_iters,
+            omega=omega,
+            residual_atol=residual_atol if residual_atol is not None else 0.0,
+            residual_history=residual_history,
+            frozen_w_init=frozen_w_init,
+            backtrack=True,
+        )
+
     return _newton_m2rnn_eager(
         k,
         v,
@@ -175,7 +197,43 @@ def newton_m2rnn_factorized(
         v_dim=v_dim,
         residual_atol=residual_atol,
         frozen_w_init=frozen_w_init,
+        backtrack=backtrack,
     )
+
+
+def _apply_newton_delta(
+    states: Tensor,
+    delta: Tensor,
+    *,
+    omega: float,
+    k: Tensor,
+    v: Tensor,
+    f: Tensor,
+    w: Tensor,
+    h0: Tensor | None,
+    res_before: float,
+    backtrack: bool,
+) -> Tensor:
+    """Accept ``states + ω δ``; if ``backtrack`` and residual rose, shrink ``ω``."""
+    if not backtrack:
+        return states + omega * delta
+    omega_try = float(omega)
+    best = states
+    best_res = res_before
+    for _ in range(8):
+        cand = states + omega_try * delta
+        h_prev = prepend_state(cand, h0)
+        pred, _ = m2rnn_gates(h_prev, k, v, f, w)
+        res_c = float((pred - cand).detach().abs().amax())
+        if res_c <= res_before:
+            return cand
+        if res_c < best_res:
+            best, best_res = cand, res_c
+        omega_try *= 0.5
+        if omega_try < 1e-4:
+            break
+    # No improving step: keep previous states (reject).
+    return states if best_res >= res_before else best
 
 
 def _newton_m2rnn_eager(
@@ -193,6 +251,7 @@ def _newton_m2rnn_eager(
     v_dim: int,
     residual_atol: float | None = None,
     frozen_w_init: bool = False,
+    backtrack: bool = False,
 ) -> Tensor:
     batch, time = k.shape[0], k.shape[1]
     if states is None:
@@ -213,7 +272,18 @@ def _newton_m2rnn_eager(
         if residual_atol is not None and res_amax < residual_atol:
             break
         delta = _factor_scan(acts["z"], acts["f"], acts["w"], residual)
-        states = states + omega * delta
+        states = _apply_newton_delta(
+            states,
+            delta,
+            omega=omega,
+            k=k,
+            v=v,
+            f=f,
+            w=w,
+            h0=h0,
+            res_before=res_amax,
+            backtrack=backtrack,
+        )
     return states
 
 
@@ -690,6 +760,7 @@ def _newton_m2rnn_hybrid_tiled(
     residual_atol: float | None = None,
     residual_history: list[float] | None = None,
     frozen_w_init: bool = False,
+    backtrack: bool = False,
 ) -> Tensor:
     """``K,V > 64``: cuBLAS gates + Triton tiled factor scan (Alg. 1).
 
@@ -714,7 +785,18 @@ def _newton_m2rnn_hybrid_tiled(
         if residual_atol is not None and res_amax < residual_atol:
             break
         delta = _factor_scan_tiled_triton(acts["z"], acts["f"], w, residual)
-        states = states + omega * delta
+        states = _apply_newton_delta(
+            states,
+            delta,
+            omega=omega,
+            k=k,
+            v=v,
+            f=f,
+            w=w,
+            h0=h0,
+            res_before=res_amax,
+            backtrack=backtrack,
+        )
     return states
 
 
@@ -730,6 +812,7 @@ def _newton_m2rnn_sram_early(
     residual_atol: float,
     residual_history: list[float] | None = None,
     frozen_w_init: bool = False,
+    backtrack: bool = False,
 ) -> Tensor:
     """SRAM path with host residual early-stop (one Newton iter per launch)."""
     batch, time, k_dim = k.shape
@@ -756,7 +839,18 @@ def _newton_m2rnn_sram_early(
             delta = _factor_scan_tiled_triton(acts["z"], acts["f"], w, residual)
         else:
             delta = _factor_scan(acts["z"], acts["f"], w, residual)
-        states = states + omega * delta
+        states = _apply_newton_delta(
+            states,
+            delta,
+            omega=omega,
+            k=k,
+            v=v,
+            f=f,
+            w=w,
+            h0=h0,
+            res_before=res_amax,
+            backtrack=backtrack,
+        )
     return states
 
 

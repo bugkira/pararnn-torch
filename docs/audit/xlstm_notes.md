@@ -33,7 +33,7 @@ materializing `(4 d_head)²`; the dense-J oracle remains available via
 
 `ParaSLSTMBlock` is the library drop-in trunk layer (RMSNorm → `ParaRNN(ParaSLSTM)`
 → residual → RMSNorm → SwiGLU → residual). Short adoption path (CausalLM,
-torchtitan-style swap, RSSM slot): [`docs/adoption.md`](adoption.md).
+torchtitan-style swap, RSSM slot): [`adoption.md`](../getting_started/adoption.md).
 
 ```python
 from pararnn import NewtonConfig, ParaSLSTMBlock
@@ -115,7 +115,7 @@ fused scan, one AllReduce on the output projection. Context parallel splits
 time (`scan_diag_context_parallel`). Recipe:
 [`docs/distributed.md`](distributed.md).
 
-See also [`structure.md`](structure.md) for kernel file layout.
+See also [`repo_layout.md`](repo_layout.md) for kernel file layout.
 
 ### Backward
 

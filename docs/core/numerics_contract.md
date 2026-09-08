@@ -104,8 +104,10 @@ BabyLM’s train script already logs `newton_residual` each step.
 
 ## Related
 
-- [`oom-cookbook.md`](oom-cookbook.md) — long-T VRAM: `recompute`, Hopfield
+- [`cells/`](../cells/index.md) — per-cell Diff + Strict Spec YAML
+  (slice order, init, ε, weight bridge). Shared τ lives here; packing details live there.
+- [`oom_cookbook.md`](../systems/oom_cookbook.md) — long-T VRAM: `recompute`, Hopfield
   \(d_h\), RWKV slim heads
 - [`FAQs.md`](https://github.com/bugkira/pararnn-torch/blob/main/FAQs.md) — Turing / K* / `verify_agreement` paste
-- [`backward-scan-cap.md`](backward-scan-cap.md) — long-T scan limits
+- [`backward_scan.md`](backward_scan.md) — long-T scan limits
 - Observability: residual, wall time, device, dtype on solver boundaries

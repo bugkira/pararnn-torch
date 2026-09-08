@@ -11,7 +11,7 @@ Maintainer benches, verification suites, and paper drafts live in the sibling
 
 ```
 pararnn-torch/
-├── docs/                       # public API / adoption docs
+├── docs/                       # MkDocs: getting_started/core/cells/systems/audit
 ├── src/pararnn/
 │   ├── cells/
 │   ├── layers/

@@ -77,7 +77,7 @@ Nonlinear recurrent cells with one train / decode API (paper Alg. 1):
   `max_iters=None` reads those tables
 - **Train path** — packed VJP, `compile_safe_config()`, DDP / FSDP2
 
-**Swap paths** ([`docs/adoption.md`](docs/adoption.md)):
+**Swap paths** ([`docs/getting_started/adoption.md`](docs/getting_started/adoption.md)):
 
 - Attention trunk → `ParaSLSTMBlock`
 - Dreamer RSSM → `ParaGRU(mix='head', n_heads=8)`
@@ -97,7 +97,7 @@ Nonlinear recurrent cells with one train / decode API (paper Alg. 1):
 | **Residual gate** | `max|F(H)|`. Explosion fuse (`residual_fail=1.0` → `NewtonDivergenceError`). |
 | **Fused** | Triton CUDA kernel for Newton+scan (Linux + NVIDIA; bf16 needs Ampere+). |
 | **Jacobian class** | Structure of ∂f/∂h — `diag` / `head` / `dense` / matrix-state — picks which kernel/scan we use. |
-| **`verify_agreement`** | One-batch Newton vs sequential check ([numerics contract](docs/numerics-contract.md)). |
+| **`verify_agreement`** | One-batch Newton vs sequential check ([numerics contract](docs/core/numerics_contract.md)). |
 
 More on iterations: [`FAQs.md`](FAQs.md#what-is-critical-newton-depth-k).
 
@@ -105,16 +105,16 @@ More on iterations: [`FAQs.md`](FAQs.md#what-is-critical-newton-depth-k).
 
 | Cell | Jacobian | Parallel path | Notes |
 |---|---|---|---|
-| [`ParaSLSTM`](docs/cells.md#paraslstm-xlstm-style) | diag / head | fused Newton | main xLSTM-style path (`mix='diag'`) |
-| [`ParaGRU`](docs/cells.md#paragru--paralstm-dreamer-style-block-gru) / `ParaLSTM` | diag / head | fused / factorized | Dreamer: `mix='head', n_heads=8` |
-| [`ParaM2RNN`](docs/cells.md#param2rnn-research) | factor K×V | factorized Newton | matrix state; iterations grow ~log T |
-| [`ParaNLRU`](docs/cells.md#paranlru) | diag | fused | Griffin / RG-LRU-style nonlinear slot |
-| [`ParaCfC`](docs/cells.md#paracfc) | diag | fused | Liquid CfC; Δt = last channel of `x` |
-| [`ParaHopfield`](docs/cells.md#parahopfield) | dense | dense scan | Modern Hopfield; keep d_h ≤ 32 |
-| [`ParaRWKV7`](docs/cells.md#pararwkv7) | linear monoid | exact `(G,U)` scan | RWKV-7 Goose; **no Newton** (K\*=0) |
-| [`ParaTitans`](docs/cells.md#paratitans) | diag | fused | shallow L=1 surprise-GD memory |
+| [`ParaSLSTM`](docs/cells/api.md#paraslstm-xlstm-style) | diag / head | fused Newton | main xLSTM-style path (`mix='diag'`) |
+| [`ParaGRU`](docs/cells/api.md#paragru--paralstm-dreamer-style-block-gru) / `ParaLSTM` | diag / head | fused / factorized | Dreamer: `mix='head', n_heads=8` |
+| [`ParaM2RNN`](docs/cells/api.md#param2rnn-research) | factor K×V | factorized Newton | matrix state; iterations grow ~log T |
+| [`ParaNLRU`](docs/cells/api.md#paranlru) | diag | fused | Griffin / RG-LRU-style nonlinear slot |
+| [`ParaCfC`](docs/cells/api.md#paracfc) | diag | fused | Liquid CfC; Δt = last channel of `x` |
+| [`ParaHopfield`](docs/cells/api.md#parahopfield) | dense | dense scan | Modern Hopfield; keep d_h ≤ 32 |
+| [`ParaRWKV7`](docs/cells/api.md#pararwkv7) | linear monoid | exact `(G,U)` scan | RWKV-7 Goose; **no Newton** (K\*=0) |
+| [`ParaTitans`](docs/cells/api.md#paratitans) | diag | fused | shallow L=1 surprise-GD memory |
 
-Full snippets: [`docs/cells.md`](docs/cells.md). Core algorithm:
+Full snippets: [`docs/cells/api.md`](docs/cells/api.md). Core algorithm:
 [Danieli et al., ICLR 2026](https://arxiv.org/abs/2510.21450). HF wrappers and
 serve hooks are this repo’s extras.
 
@@ -261,7 +261,7 @@ uv run python scripts/slstm_vs_flashrnn.py --config configs/bench/newton_slstm_f
 
 ## Usage
 
-Cell zoo: [`docs/cells.md`](docs/cells.md).
+Cell zoo: [`docs/cells/api.md`](docs/cells/api.md).
 
 ### sLSTM / xLSTM-style
 
@@ -287,7 +287,7 @@ Smoke: [`examples/rssm_recurrent.py`](examples/rssm_recurrent.py).
 ### Research cells
 
 `ParaM2RNN`, `ParaNLRU`, `ParaCfC`, `ParaHopfield`, `ParaRWKV7`, `ParaTitans` —
-see [`docs/cells.md`](docs/cells.md). Pin Newton depth with `max_iters=int`,
+see [`docs/cells/api.md`](docs/cells/api.md). Pin Newton depth with `max_iters=int`,
 use `max_iters=None` for auto schedules from measured K\*(T), or pass
 `newton_iters_by_t={…}`.
 
@@ -326,18 +326,18 @@ More: [`scripts/README.md`](scripts/README.md). Distributed demos:
 
 ## API overview
 
-- **Cells** — [`docs/cells.md`](docs/cells.md); wrap with `ParaRNN` or call
+- **Cells** — [`docs/cells/api.md`](docs/cells/api.md); wrap with `ParaRNN` or call
   `newton_apply` / `sequential_apply` (`ParaM2RNN`, `ParaRWKV7`).
-- **Trunk** — `ParaSLSTMBlock(d_model, mlp_ratio=4)` ([`docs/adoption.md`](docs/adoption.md)).
+- **Trunk** — `ParaSLSTMBlock(d_model, mlp_ratio=4)` ([`docs/getting_started/adoption.md`](docs/getting_started/adoption.md)).
 - **CausalLM / serve** — `ParaSLSTMForCausalLM`, `BlockStackPool`,
-  `vllm.general_plugins` ([`docs/inference.md`](docs/inference.md),
+  `vllm.general_plugins` ([`docs/systems/inference.md`](docs/systems/inference.md),
   [`docs/vllm.md`](docs/vllm.md)).
 - **Solver** — `NewtonConfig(scan_backend="auto", max_iters=None|int)`;
   `picard_iters` warms the first guess for sLSTM / M²RNN;
   `verify_first_step=True` for a one-shot agreement smoke on `ParaRNN`;
   `compile_safe_config()` for `torch.compile(..., fullgraph=True)`.
 - **Numerics check** — `verify_agreement(module, x)` → `AgreementReport`;
-  full contract: [`docs/numerics-contract.md`](docs/numerics-contract.md).
+  full contract: [`docs/core/numerics_contract.md`](docs/core/numerics_contract.md).
 - **Speculative** — `verify_linear_draft`.
 - **Paged** — `PagedStatePool` / `paged_apply`.
 - **Decode** — `decode_step`, `decode_wx`, `can_decode_step`.
@@ -349,28 +349,28 @@ h = newton_apply(cell, x)
 h = sequential_apply(cell, x)
 ```
 
-**Docs:** adoption · cells · [`xlstm.md`](docs/xlstm.md) ·
+**Docs:** adoption · cells · [`xlstm_notes.md`](docs/audit/xlstm_notes.md) ·
 [`distributed.md`](docs/distributed.md) · [`vllm.md`](docs/vllm.md) ·
-[`numerics-contract.md`](docs/numerics-contract.md) ·
-[`oom-cookbook.md`](docs/oom-cookbook.md) ·
-[`compile-amp.md`](docs/compile-amp.md) ·
-[`shapes-layout.md`](docs/shapes-layout.md) ·
-[`inference.md`](docs/inference.md) ·
-[`structure.md`](docs/structure.md) · [`INSTALL.md`](INSTALL.md) ·
+[`numerics_contract.md`](docs/core/numerics_contract.md) ·
+[`oom_cookbook.md`](docs/systems/oom_cookbook.md) ·
+[`compile_amp.md`](docs/systems/compile_amp.md) ·
+[`shapes_layout.md`](docs/getting_started/shapes_layout.md) ·
+[`inference.md`](docs/systems/inference.md) ·
+[`repo_layout.md`](docs/audit/repo_layout.md) · [`INSTALL.md`](INSTALL.md) ·
 [`FAQs.md`](FAQs.md).
 
 ## Compatibility
 
-- **`torch.compile` / AMP:** [`docs/compile-amp.md`](docs/compile-amp.md) —
+- **`torch.compile` / AMP:** [`docs/systems/compile_amp.md`](docs/systems/compile_amp.md) —
   `compile_safe_config()` for `fullgraph=True`; Newton opts out of outer
   autocast (explicit `.to(dtype)` for half). Tests:
   `tests/numerics/test_{compile,autocast}.py`.
 - **DDP / FSDP / checkpoint:** [`docs/distributed.md`](docs/distributed.md);
   ultra-long train VRAM → `NewtonConfig(recompute=True)` and the
-  [OOM cookbook](docs/oom-cookbook.md) (Hopfield `d_h` cap, RWKV slim heads).
-- **Shapes / packing:** [`docs/shapes-layout.md`](docs/shapes-layout.md) —
+  [OOM cookbook](docs/systems/oom_cookbook.md) (Hopfield `d_h` cap, RWKV slim heads).
+- **Shapes / packing:** [`docs/getting_started/shapes_layout.md`](docs/getting_started/shapes_layout.md) —
   contiguous copies on fused paths; `cu_seqlens` support matrix.
-- **Inference / carry:** [`docs/inference.md`](docs/inference.md) —
+- **Inference / carry:** [`docs/systems/inference.md`](docs/systems/inference.md) —
   `decode_step` + `out=`, `generate()`, vLLM via Mamba1 pages.
 - **Determinism:** packed VJP uses tile `tl.sum` then `.sum` (no `tl.atomic*`);
   set `CUBLAS_WORKSPACE_CONFIG=:4096:8` under

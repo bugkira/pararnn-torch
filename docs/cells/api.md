@@ -1,7 +1,7 @@
-# Cell catalog
+# API snippets
 
 Call-site snippets for the Models table. Equation-level contracts:
-[architecture fidelity](architecture/index.md).
+[Cell catalog overview](index.md) · [fidelity](fidelity.md).
 
 Shared pattern: wrap with `ParaRNN` or call `newton_apply` / `sequential_apply`.
 `.train()` → parallel Newton · `.eval()` → sequential `step` · CUDA `T=1` →
@@ -25,7 +25,7 @@ slstm = ParaRNN(ParaSLSTM(64, 64, mix="diag"), device=device)
 y = slstm(torch.randn(4, 128, 64, device=device))
 ```
 
-Stacking / API notes: [`xlstm.md`](xlstm.md).
+Stacking / API notes: [`xlstm_notes.md`](../audit/xlstm_notes.md).
 
 ## ParaGRU / ParaLSTM (Dreamer-style block GRU)
 
@@ -39,7 +39,7 @@ y = rssm_h(torch.randn(4, 64, 512, device=device))
 ```
 
 Smoke: [`examples/rssm_recurrent.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/rssm_recurrent.py). Spec:
-[architecture/para_gru.md](architecture/para_gru.md).
+[para_gru](classic/para_gru.md).
 
 ## ParaM2RNN (research)
 
@@ -52,7 +52,7 @@ h_par = newton_apply(m2, x, NewtonConfig(max_iters=8, residual_atol=1e-5))
 ```
 
 State `(B, T, K, V)`. Spec (incl. paper-block deviations):
-[architecture/para_m2rnn.md](architecture/para_m2rnn.md).
+[para_m2rnn](matrix/para_m2rnn.md).
 
 ## ParaNLRU
 
@@ -69,7 +69,7 @@ y = nlru(torch.randn(4, 128, 256, device=device))
 
 Liquid-style CfC brick; Δt is the last channel of `x`. Spec (fidelity
 **research-variant** vs Hasani eq. 10 / ncps):
-[architecture/para_cfc.md](architecture/para_cfc.md).
+[para_cfc](continuous/para_cfc.md).
 
 ```python
 from pararnn import ParaCfC
@@ -83,7 +83,7 @@ y = cfc(torch.cat((feat, dt), dim=-1))
 ## ParaHopfield
 
 Modern Hopfield; keep d_h ≤ 32 for the dense Jacobian path.
-VRAM / long-T: [`oom-cookbook.md`](oom-cookbook.md).
+VRAM / long-T: [`oom_cookbook.md`](../systems/oom_cookbook.md).
 
 ```python
 from pararnn import ParaHopfield
@@ -113,7 +113,7 @@ y = cell.scan_apply(x)  # (B, T, n_heads*d_head) readout
 
 On 12 GiB cards, wall-clock at T ≳ 64k prefers slim
 `n_heads=1, d_head=16` (state is `(B,T,H,D,D)`). See
-[`oom-cookbook.md`](oom-cookbook.md).
+[`oom_cookbook.md`](../systems/oom_cookbook.md).
 
 ## ParaTitans
 

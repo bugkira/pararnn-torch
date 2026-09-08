@@ -72,5 +72,5 @@ Paste:
 - module dtype and autocast dtype
 - `torch._dynamo.explain(...)` graph-break summary if compile fails
 
-Related: [`numerics-contract.md`](numerics-contract.md),
-[`oom-cookbook.md`](oom-cookbook.md), README Compatibility.
+Related: [`numerics_contract.md`](../core/numerics_contract.md),
+[`oom_cookbook.md`](oom_cookbook.md), README Compatibility.

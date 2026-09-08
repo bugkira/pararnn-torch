@@ -4,21 +4,64 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.17.5] - 2026-09-09
+
+Docs reproduce-from-spec DoD, cell catalog by state/Jacobian, ParaCfC \(W_b\) pack.
+
 ### Added
 
+- Cell docs **reproduce-from-spec DoD**: Diff **Kind**
+  (`author` | `para` | `numerics`); Jacobian sections with real \(J\) /
+  \(J[\Delta]\) operators; pack-order Reproduce snippets that reimplement
+  `step` without calling the library cell. Specs for all nine public cells
+  including [`para_hopfield`](docs/cells/matrix/para_hopfield.md),
+  [`para_rwkv7`](docs/cells/matrix/para_rwkv7.md),
+  [`para_titans`](docs/cells/matrix/para_titans.md). Hub
+  [`jacobian_classes.md`](docs/core/jacobian_classes.md) lists operator
+  sketches. Template / fidelity / audit matrix updated.
+
+- Cell docs **shapes + linear-solve contract**: every cell page documents
+  tensor shapes / broadcasts and the Newton primitive
+  (\(\delta_t=J_t[\delta_{t-1}]+F_t\) via associative scan or factorized JVP
+  walk). Explicit: no Sylvester / CG / `linalg.solve` on \((Td)\times(Td)\).
+  [`newton_scan.md`](docs/core/newton_scan.md) states residual \(F=f-H\).
+
+- Cell docs **Agreement check** blocks are copy-paste runnable
+  (`verify_agreement` + `assert res.ok`); ParaM2RNN pins `max_iters=5`.
+
+- Cell catalog regrouped by **state / Jacobian**: Classic gated ·
+  Normalized & resonant · Matrix & associative memory · Continuous & liquid
+  (folders `classic/`, `normalized/`, `matrix/`, `continuous/`).
+
+- Docs information architecture: nav clusters **Getting Started / Core /
+  Cell Catalog (by family) / Systems / Audit**; files under
+  `docs/{getting_started,core,cells,systems,audit}/`. Cells sorted by family
+  (Classic gated → Normalized → Matrix → Continuous) with alphabetical listing
+  on the catalog overview.
+
+- Architecture docs rebuild: **Diff** (upstream → Para-native) + **Strict Spec
+  Contract** (YAML) lead every cell page; apology-style `Deviations` removed.
+  Exemplar [`para_cfc.md`](docs/cells/continuous/para_cfc.md); template
+  [`TEMPLATE.md`](docs/cells/spec_template.md); zoo index
+  [`audit-matrix.md`](docs/cells/audit_matrix.md). MkDocs nav grouped
+  **Engine / Cells / Systems**.
+- Per-cell pack/init/τ contracts (earlier) folded into the YAML blocks;
+  shared τ remains [`numerics-contract.md`](docs/core/numerics_contract.md)
+  (fp32 `atol=1e-4`).
 - Architecture fidelity spec for `ParaCfC`
-  ([`docs/architecture/para_cfc.md`](docs/architecture/para_cfc.md)):
+  ([`docs/cells/continuous/para_cfc.md`](docs/cells/continuous/para_cfc.md)):
   **research-variant** vs Hasani et al. 2022 eq. (10) / `ncps` CfCCell
   (update target, time gate, no backbone/heads); linked from the fidelity
   index, cell catalog, and adoption Liquid slot.
 - `ParaCfC(gate_mix='diag_h')`: liquid rate
-  \(a=\exp(-\mathrm{softplus}(f+v\odot h)\,\Delta t)\) with channelwise
-  Jacobian; fused Triton stays on `gate_mix='input'` (default); `diag_h`
-  uses triton/eager scan + Autograd VJP.
-- `ParaCfC` decay gate is exponential
-  \(a=\exp(-\mathrm{softplus}(f)\,\Delta t)\) so \(\lim_{\Delta t\to 0}a=1\)
-  (fixes the prior \(\sigma(-\mathrm{softplus}\cdot\Delta t)\) amnesia bound
-  \(a\le 0.5\)). Fused Newton + packed VJP match the exp gate.
+  \(a=\sigma(-(\mathrm{softplus}(f+v\odot h)\,\Delta t+W_b(x)))\)
+  with channelwise Jacobian; fused Triton stays on `gate_mix='input'`
+  (default); `diag_h` uses triton/eager scan + Autograd VJP.
+- `ParaCfC` time bias is input-conditioned
+  \(b=W_b(\mathrm{feat})\) (bias init \(-3\)); gate
+  \(a=\sigma(-(\mathrm{softplus}(f)\,\Delta t+b))\). Fused pack is
+  `(f_pre, c_x, Δt, b)` = `4 d_h`. Jacobian stays diag because \(b\)
+  omits \(h\).
 
 ## [0.17.4] - 2026-09-07
 
@@ -79,7 +122,7 @@ launch.
 - `NewtonConfig(verify_first_step=True)` — one-shot `verify_agreement` on the
   first `ParaRNN` Newton forward (skipped under `torch.compile` / packed
   `cu_seqlens`); `ParaRNN.reset_agreement_check()` to re-arm.
-- [`docs/numerics-contract.md`](docs/numerics-contract.md) — brand invariant:
+- [`docs/core/numerics_contract.md`](docs/core/numerics_contract.md) — brand invariant:
   residual gate (`max|F|`) and agreement τ; four echelons (runtime / K*(T) /
   opt-in oracle / docs).
 - Bug report template: env one-liner (torch / CUDA / Triton / GPU) plus
@@ -135,7 +178,7 @@ channelwise-diagonal Newton Jacobian). Deep multi-layer MLP memory is parked.
   $`u\odot\tanh(W_n x+r\odot h)`$; gates from `Linear(d_in → 5 d_h)`;
   analytic diag `step_with_jacobian`; eager / Triton diag scan; fused Alg. 1
   (`pararnn::newton_titans_fused`); Autograd eq. 2.6 VJP. Adoption slot in
-  [`docs/adoption.md`](docs/adoption.md).
+  [`docs/getting_started/adoption.md`](docs/getting_started/adoption.md).
 
 ## [0.16.0] - 2026-09-06
 
@@ -154,7 +197,7 @@ factorized apply + associative scan; Newton redirects).
   $(G,U)$ monoid (`scan_apply` / `newton_apply` default).
   `newton_apply` redirects to the linear scan (or `sequential_apply` when
   `scan_backend='eager'`). Adoption slot in
-  [`docs/adoption.md`](docs/adoption.md).
+  [`docs/getting_started/adoption.md`](docs/getting_started/adoption.md).
 
 ## [0.15.0] - 2026-09-06
 
@@ -168,7 +211,7 @@ and `scan_dense` (small d_h).
   `Linear(d_in → 2 d_h²)`; default $`\beta=1/\sqrt{d_h}`$; analytic dense
   `step_with_jacobian`; eager / Triton `scan_dense` (no fused cell+scan yet);
   Autograd eq. 2.6 VJP (`uses_packed_vjp` false). Docs/tests cap d_h ≤ 32
-  (warn above). Adoption slot in [`docs/adoption.md`](docs/adoption.md).
+  (warn above). Adoption slot in [`docs/getting_started/adoption.md`](docs/getting_started/adoption.md).
   Honest smoke (`scripts/bench_hopfield.py`, CUDA events min, B=8,
   T=2048, d_h=16): measured K*=2 (~1e-7 vs sequential);
   recipe `max_iters=3`. RTX 3060 Triton `scan_dense` ~12.5 ms vs sequential
@@ -196,7 +239,7 @@ and diagonal nonlinear mix (Newton Jacobian stays channelwise diagonal).
   K=2 already reaches ~1e-7 agreement; packed VJP ~8× vs eager formula on
   3060. At short T (`T≤8`) fused still beats sequential; eager Newton loses
   to sequential below ~T=32.
-- Adoption: Liquid / irregular-Δt slot in [`docs/adoption.md`](docs/adoption.md).
+- Adoption: Liquid / irregular-Δt slot in [`docs/getting_started/adoption.md`](docs/getting_started/adoption.md).
 - Lab: [`scripts/bench_cfc.py`](scripts/bench_cfc.py) (seq / eager / triton /
   fused + residual-vs-K + optional fwd+bwd / packed VJP).
 
@@ -213,7 +256,7 @@ diag cell for Griffin / RecurrentGemma slots.
   fullgraph path. Smoke (RTX 3060, B=8, T=2048, d_h=256,
   K=3): fused ~2.7 ms vs sequential ~549 ms.
 - Product entry path: README Quickstart leads with `ParaSLSTMBlock` /
-  `ParaSLSTMForCausalLM`; [`docs/adoption.md`](docs/adoption.md) covers
+  `ParaSLSTMForCausalLM`; [`docs/getting_started/adoption.md`](docs/getting_started/adoption.md) covers
   Attention swap, CausalLM, Dreamer RSSM slot, and the Griffin / NLRU slot.
 - `ParaSLSTMForCausalLM.forward(..., labels=)` returns shifted CE loss;
   `save_pretrained` / `from_pretrained` write and prefer `model.safetensors`

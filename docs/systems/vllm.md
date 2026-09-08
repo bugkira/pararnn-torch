@@ -74,6 +74,6 @@ worker; we consume the same indices. Speculative decoding slots are unread
 ## Related
 
 - [`inference.md`](inference.md) — `decode_step` / `generate` / carry size
-- [`xlstm.md`](xlstm.md) — cell / block API
+- [`xlstm_notes.md`](../audit/xlstm_notes.md) — cell / block API
 - [`distributed.md`](distributed.md) — paging notes
 - `src/pararnn/vllm_plugin/`, `src/pararnn/serve/`, `src/pararnn/kernels/decode.py`

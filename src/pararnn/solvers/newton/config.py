@@ -182,6 +182,9 @@ class NewtonConfig:
     # Opt-in numerics smoke on ParaRNN: first Newton forward calls
     # verify_agreement(..., raise_on_fail=True). Skipped under torch.compile.
     verify_first_step: bool = False
+    # ParaM2RNN: reject Newton steps that increase max|F| (host backtracking).
+    # Forces the early/eager host loop (skips one-shot fused K). Default False.
+    newton_backtrack: bool = False
 
 
 # Lengths compiled as Triton BLOCK_T in the fused walk kernel. Not Apple App. C.

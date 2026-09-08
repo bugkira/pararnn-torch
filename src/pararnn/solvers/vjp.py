@@ -180,7 +180,7 @@ def _nlru_vjp(
 def _cfc_vjp(
     cell: ParaCfC, h_prev: Tensor, x: Tensor, mu: Tensor
 ) -> tuple[Tensor, tuple[Tensor | None, ...]]:
-    """Eq. 2.6 cell VJP for ``ParaCfC`` (softplus·Δt gate; Δt last channel of ``x``)."""
+    """Eq. 2.6 cell VJP for ``ParaCfC`` (σ(-(soft·Δt+W_b(feat))); Δt last of ``x``)."""
     from pararnn.cells.para_cfc import _DT_EPS
     from pararnn.kernels.vjp_cfc import cfc_recurrence_vjp
 
@@ -190,9 +190,11 @@ def _cfc_vjp(
     g_wx, g_u = cfc_recurrence_vjp(h_prev, wx, u, mu)
     g_u = g_u * _clip_mask(cell.u, cell.max_recurrent_norm)
     g_fc = g_wx[..., : 2 * cell.d_h]
-    g_dt_b = g_wx[..., 2 * cell.d_h :]
-    grad_feat, grad_w, grad_b = _linear_vjp(cell.W_x, feat, g_fc)
-    # Δt was broadcast to d_h; clamp_min(_DT_EPS) zeros grad below the floor.
+    g_dt_b = g_wx[..., 2 * cell.d_h : 3 * cell.d_h]
+    g_b = g_wx[..., 3 * cell.d_h :]
+    grad_feat_x, grad_w, grad_bias = _linear_vjp(cell.W_x, feat, g_fc)
+    grad_feat_b, grad_wb, grad_bb = _linear_vjp(cell.W_b, feat, g_b)
+    grad_feat = grad_feat_x + grad_feat_b
     raw_dt = x[..., -1:]
     grad_dt = g_dt_b.sum(dim=-1, keepdim=True) * (raw_dt >= _DT_EPS).to(dtype=g_dt_b.dtype)
     grad_x = torch.cat((grad_feat, grad_dt), dim=-1)
@@ -202,7 +204,9 @@ def _cfc_vjp(
         {
             "u": g_u,
             "W_x.weight": grad_w,
-            "W_x.bias": grad_b,
+            "W_x.bias": grad_bias,
+            "W_b.weight": grad_wb,
+            "W_b.bias": grad_bb,
         },
     )
 

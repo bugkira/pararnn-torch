@@ -1,7 +1,7 @@
 # Adoption: drop-in recurrent trunk
 
 Short path from install to a working stack. Cell APIs:
-[`docs/cells.md`](cells.md), [`docs/xlstm.md`](xlstm.md).
+[`cells/api.md`](../cells/api.md), [`xlstm_notes.md`](../audit/xlstm_notes.md).
 
 ## Replace an Attention block
 
@@ -51,7 +51,7 @@ model = ParaSLSTMForCausalLM.from_pretrained("./ckpt")
 
 Smoke: [`examples/causal_lm_smoke.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/causal_lm_smoke.py).
 Packed continuous batch: [`examples/continuous_batch.py`](https://github.com/bugkira/pararnn-torch/blob/main/examples/continuous_batch.py).
-Serve: [`inference.md`](inference.md) (carry / `decode_step`) ·
+Serve: [`inference.md`](../systems/inference.md) (carry / `decode_step`) ·
 [`vllm.md`](vllm.md) (plugin).
 
 ## Dreamer / RSSM recurrent slot
@@ -93,7 +93,7 @@ a nonlinear slot with the same Newton path, with separate checkpoints.
 
 For a Liquid-**style** closed-form step with irregular sampling intervals,
 use `ParaCfC` (fidelity **research-variant** vs Hasani / ncps — see
-[architecture/para_cfc.md](architecture/para_cfc.md)). Features live in
+[para_cfc](../cells/continuous/para_cfc.md)). Features live in
 `x[..., :-1]`; Δt is `x[..., -1]` (`d_in >= 2`):
 
 ```python
@@ -106,7 +106,8 @@ dt = ...  # (B, T, 1), positive
 y = core(torch.cat((feat, dt), dim=-1))
 ```
 
-Gate $`a=\exp(-\mathrm{softplus}(f)\,\Delta t)`$ and diagonal mix $u$ keep
+Gate $`a=\sigma(-(\mathrm{softplus}(f)\,\Delta t+W_b(x)))`$
+(input-conditioned time bias, ``W_b.bias`` init $-3$) and diagonal mix $u$ keep
 the Newton Jacobian channelwise diagonal (fused Alg. 1 on CUDA).
 
 ## Modern Hopfield / attractor slot

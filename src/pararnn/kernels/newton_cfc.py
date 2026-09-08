@@ -1,8 +1,8 @@
 """Fused ParaCfC Newton: cell + diagonal J + scan (Alg. 1).
 
-``project_wx(x)`` is ``(B, T, 3 d_h)`` = ``(f_pre, c_x, Δt)``. Recurrent mix
-is the diagonal vector ``u``. CUDA fp16/fp32 (bf16 on CC ≥ 8.0); cell+scan
-algebra in fp32.
+``project_wx(x)`` is ``(B, T, 4 d_h)`` = ``(f_pre, c_x, Δt, b)`` where ``b``
+is the input-conditioned time bias ``W_b(feat)``. Recurrent mix is diagonal
+``u``. CUDA fp16/fp32 (bf16 on CC ≥ 8.0); cell+scan algebra in fp32.
 """
 
 from __future__ import annotations
@@ -46,10 +46,10 @@ def _compose_diag(j_left, r_left, j_right, r_right):
 
 
 @triton.jit
-def _cfc_pred_j(h_prev, f_pre, cx, u, dt):
-    """CfC: a=exp(-softplus(f)·dt); J = a + (1-a)*(1-n^2)*u."""
+def _cfc_pred_j(h_prev, f_pre, cx, u, b, dt):
+    """CfC: a=σ(-(softplus(f)·dt + b)); J = a + (1-a)*(1-n^2)*u."""
     soft = tl.where(f_pre > 20.0, f_pre, tl.log(1.0 + tl.exp(f_pre)))
-    a = tl.exp(-soft * dt)
+    a = tl.sigmoid(-(soft * dt + b))
     n = _tanh(cx + u * h_prev)
     h_new = a * h_prev + (1.0 - a) * n
     n_p = 1.0 - n * n
@@ -63,7 +63,8 @@ def _load_wx(wx_ptr, pid_b, offs_t, offs_d, d_h, mask, sb, st, sd):
     f_pre = load_acc(base + offs_d[None, :] * sd, mask, 0.0)
     cx = load_acc(base + (offs_d[None, :] + d_h) * sd, mask, 0.0)
     dt = load_acc(base + (offs_d[None, :] + 2 * d_h) * sd, mask, 1.0)
-    return f_pre, cx, dt
+    b = load_acc(base + (offs_d[None, :] + 3 * d_h) * sd, mask, 0.0)
+    return f_pre, cx, dt, b
 
 
 @triton.jit
@@ -100,7 +101,7 @@ def _cfc_init_kernel(
     offs_d = d0 + tl.arange(0, BLOCK_D)
     mask = (offs_t[:, None] < time) & (offs_d[None, :] < d_h)
     dmask = offs_d < d_h
-    f_pre, cx, dt = _load_wx(
+    f_pre, cx, dt, b = _load_wx(
         wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd
     )
     u = load_acc(u_ptr + offs_d, dmask, 0.0)
@@ -123,7 +124,7 @@ def _cfc_init_kernel(
         row = _bt_row(pid_b, bt_ptr, HAS_BT)
         h0 = load_acc(h0_ptr + row * stride_h0b + offs_d * stride_h0d, dmask, 0.0)
         h_prev = tl.where((offs_t == 0)[:, None], h0[None, :], 0.0)
-    h_new, _ = _cfc_pred_j(h_prev, f_pre, cx, u, dt)
+    h_new, _ = _cfc_pred_j(h_prev, f_pre, cx, u, b, dt)
     store_acc(
         h_ptr + pid_b * stride_hb + offs_t[:, None] * stride_ht + offs_d[None, :] * stride_hd,
         h_new,
@@ -218,11 +219,11 @@ def _cfc_cell_local_scan_kernel(
         )
     else:
         h_prev = tl.where((offs_t == 0)[:, None], h0[None, :], h_prev)
-    f_pre, cx, dt = _load_wx(
+    f_pre, cx, dt, b = _load_wx(
         wx_ptr, pid_b, offs_t, offs_d, d_h, mask, stride_wb, stride_wt, stride_wd
     )
     u = load_acc(u_ptr + offs_d, dmask, 0.0)
-    h_new, j = _cfc_pred_j(h_prev, f_pre, cx, u, dt)
+    h_new, j = _cfc_pred_j(h_prev, f_pre, cx, u, b, dt)
     residual = h_new - h
     if HAS_CU:
         j = tl.where(head[:, None], 0.0, j)
@@ -339,10 +340,10 @@ def _newton_cfc_fused_impl(
     """Alg. 1 for diagonal ParaCfC. Public entry: ``pararnn::newton_cfc_fused``."""
     wx = wx.contiguous()
     u = u.contiguous()
-    batch, time, three_d = wx.shape
+    batch, time, four_d = wx.shape
     d_h = u.numel()
-    if three_d != 3 * d_h:
-        raise ValueError(f"wx last dim {three_d} != 3 * d_h={3 * d_h}")
+    if four_d != 4 * d_h:
+        raise ValueError(f"wx last dim {four_d} != 4 * d_h={4 * d_h}")
     has_cu = cu_seqlens is not None
     if has_cu:
         if batch != 1:

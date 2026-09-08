@@ -1026,6 +1026,7 @@ def _newton_m2rnn(
         force_eager=force_eager,
         residual_atol=None if compiling else config.residual_atol,
         frozen_w_init=frozen_w,
+        backtrack=bool(getattr(config, "newton_backtrack", False)),
     )
     if not compiling:
         cfg = replace(config, scan_backend=backend_tag)

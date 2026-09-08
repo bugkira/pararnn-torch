@@ -6,12 +6,13 @@ Package [`pararnn-torch`](https://pypi.org/project/pararnn-torch/) · import `pa
 
 ## Start here
 
-| Page | Purpose |
-|------|---------|
-| [Architecture fidelity](architecture/index.md) | Which cells match which paper equations, and where we diverge |
-| [Spec template](architecture/TEMPLATE.md) | Contract for a cell write-up |
-| [Cell catalog](cells.md) | Call-site snippets |
-| [Numerics contract](numerics-contract.md) | Agreement τ vs Newton residual |
+| Section | Purpose |
+|---------|---------|
+| [Quickstart](getting_started/quickstart.md) | Install, mental model, first `verify_agreement` |
+| [Cell catalog](cells/index.md) | Zoo by state / Jacobian (Classic gated · Normalized · Matrix · Continuous) |
+| [Newton + scan](core/newton_scan.md) | Parallel recurrence foundation |
+| [Numerics contract](core/numerics_contract.md) | Agreement τ vs Newton residual |
+| [Inference](systems/inference.md) | Decode / serve |
 
 ## Install
 
@@ -23,10 +24,12 @@ uv add pararnn-torch
 
 Fused Triton kernels: Linux + NVIDIA CUDA. Elsewhere `NewtonConfig(scan_backend="auto")` selects the eager Newton+scan path.
 
-## Quick mental model
+## Doc map
 
-1. A **cell** defines \(h_t = f(h_{t-1}, x_t)\) and a Jacobian structure.
-2. **Train:** a few Newton iterations + parallel scan over \(T\) (paper Alg. 1).
-3. **Decode:** sequential `step`; CUDA \(T{=}1\) uses `decode_step`.
+1. **Getting Started** — quickstart, adoption, shapes  
+2. **Core Architecture** — Newton, Jacobians, numerics  
+3. **Cell Catalog** — Diff + YAML per cell, grouped by family  
+4. **Systems & Scaling** — inference, vLLM, DDP, compile, OOM  
+5. **Audit & Verification** — oracles, xLSTM notes, repo layout  
 
 Architecture pages stay at the algorithm level. Kernel / Triton notes live in the repo and maintainer lab.

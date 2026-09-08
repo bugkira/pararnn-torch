@@ -23,7 +23,7 @@ Median latency (ms), float32, RTX 2080 Ti, ``K=3``, ``scripts/bench_gru_head.py`
 Packed ``cu_seqlens``: head-mix cells — explicit ``scan_backend='fused'``
 raises ``TypeError``; ``auto`` remaps to ``eager`` with a ``UserWarning``.
 Diag ``ParaGRU`` packs in fused kernels. Full matrix:
-[`shapes-layout.md`](shapes-layout.md). Use ``eager`` for head+ragged packs
+[`shapes_layout.md`](../getting_started/shapes_layout.md). Use ``eager`` for head+ragged packs
 or pad to a rectangular batch.
 
 ## Remaining
@@ -36,4 +36,4 @@ sequence-parallel remain complementary. Windowed fused sLSTM
 (``fused_time_loop``) keeps its own tile pad. Host-loop superchunks on the
 diagonal path are polish at T≫10⁶.
 
-User-facing long-T / OOM cheat sheet: [`oom-cookbook.md`](oom-cookbook.md).
+User-facing long-T / OOM cheat sheet: [`oom_cookbook.md`](../systems/oom_cookbook.md).

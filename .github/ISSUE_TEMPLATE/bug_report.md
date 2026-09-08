@@ -31,7 +31,7 @@ from pararnn import verify_agreement
 **Expected**
 (e.g. `verify_agreement(...).ok` with fp32 atol 1e-4; or a clean
 `NewtonDivergenceError` when residual ≥ 1. Residual gate and agreement τ
-are separate — see `docs/numerics-contract.md`)
+are separate — see `docs/core/numerics_contract.md`)
 
 **Logs**
 (`newton_residual` / `report.to_dict()` / peak MiB from

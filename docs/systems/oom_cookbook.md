@@ -4,7 +4,7 @@ A `CUDA out of memory` on the first train steps usually means the cell’s
 memory geometry exceeds the card (hidden width, heads, or stored \(H^*\)).
 Cheat sheet before you open an issue.
 
-Silent wrong answers (Newton ↔ sequential): [`numerics-contract.md`](numerics-contract.md).
+Silent wrong answers (Newton ↔ sequential): [`numerics_contract.md`](../core/numerics_contract.md).
 
 ## Cheat sheet
 
@@ -51,7 +51,7 @@ OOM / near-OOM?
 │     └─ NewtonConfig(recompute=True)
 │           optional: outer torch.utils.checkpoint on blocks
 │           optional: chunk_len / fused_time_loop (windowed solve;
-│                     check agreement — see numerics-contract)
+│                     check agreement — see numerics_contract)
 └─ head-mix GRU / sLSTM ──────────── factorized path is already leaner
                                       than dense J; still store H* unless
                                       recompute=True
@@ -71,8 +71,8 @@ Measured on this repo’s cards. Use as triage envelopes.
 | RWKV-7 fat `4×16` @ `T≳64k` | OOM risk on 12 GiB |
 | Diag-sLSTM / GRU long-T | K* often flat; VRAM of \(H^*\) still grows with \(T\) |
 
-More scan/T limits: [`backward-scan-cap.md`](backward-scan-cap.md).
-Cell snippets: [`cells.md`](cells.md).
+More scan/T limits: [`backward_scan.md`](../core/backward_scan.md).
+Cell snippets: [`cells/api.md`](../cells/api.md).
 
 ## Peak-memory smoke (paste into a bug)
 

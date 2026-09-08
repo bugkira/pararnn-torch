@@ -1,10 +1,11 @@
-"""Triton / eager VJP of the ParaCfC recurrence (exp softplus·Δt gate + diag ``u``).
+"""Triton / eager VJP of the ParaCfC recurrence (σ(-(soft·Δt+b)) + diag ``u``).
 
 ``h_prev`` is detached (eq. 2.6 already applied ``J^T``). ``∇u`` reduces with
 per-batch fp32 tiles then ``.sum`` — no atomics.
 
-``wx`` is ``(B, T, 3 d_h) = (f_pre, c_x, Δt)``. Gate chain matches Autograd on
-``a = exp(-softplus(f)·dt)``: ``∂a/∂soft = -dt·a``, ``∂softplus/∂f = σ(f)``.
+``wx`` is ``(B, T, 4 d_h) = (f_pre, c_x, Δt, b)``. Gate chain matches Autograd
+on ``a = σ(-(softplus(f)·dt + b))``: ``∂a/∂soft = a(1-a)·(-dt)``,
+``∂softplus/∂f = σ(f)``, ``∂a/∂b = a(1-a)·(-1)``.
 """
 
 from __future__ import annotations
@@ -74,24 +75,27 @@ def _cfc_vjp_kernel(
     f_pre = load_acc(base + offs_d[None, :] * stride_wd, mask, 0.0)
     cx = load_acc(base + (offs_d[None, :] + d_h) * stride_wd, mask, 0.0)
     dt = load_acc(base + (offs_d[None, :] + 2 * d_h) * stride_wd, mask, 1.0)
+    b = load_acc(base + (offs_d[None, :] + 3 * d_h) * stride_wd, mask, 0.0)
     u = load_acc(u_ptr + offs_d[None, :], dmask[None, :], 0.0)
 
     soft = tl.where(f_pre > 20.0, f_pre, tl.log(1.0 + tl.exp(f_pre)))
-    a = tl.exp(-soft * dt)
+    a = tl.sigmoid(-(soft * dt + b))
     n = _nv_tanh(cx + u * h)
     d_h_da = mu * (h - n)
-    # ∂a/∂soft = -dt·a ; softplus'(f)=σ(f)
-    g_f = d_h_da * (-dt) * a * tl.sigmoid(f_pre)
-    g_dt = d_h_da * (-soft) * a
+    a1a = a * (1.0 - a)
+    g_f = d_h_da * a1a * (-dt) * tl.sigmoid(f_pre)
+    g_dt = d_h_da * a1a * (-soft)
+    g_b = d_h_da * a1a * (-1.0)
     d_npre = mu * (1.0 - a) * (1.0 - n * n)
 
     gout = gwx_ptr + pid_b * stride_gb + offs_t[:, None] * stride_gt
     store_acc(gout + offs_d[None, :] * stride_gd, g_f, mask)
     store_acc(gout + (offs_d[None, :] + d_h) * stride_gd, d_npre, mask)
     store_acc(gout + (offs_d[None, :] + 2 * d_h) * stride_gd, g_dt, mask)
+    store_acc(gout + (offs_d[None, :] + 3 * d_h) * stride_gd, g_b, mask)
 
-    off = pid_b * stride_ub + pid_c * stride_uc + offs_d * stride_ud
-    store_acc(gu_ptr + off, tl.sum(tl.where(mask, d_npre * h, 0.0), 0), dmask)
+    off_u = pid_b * stride_ub + pid_c * stride_uc + offs_d * stride_ud
+    store_acc(gu_ptr + off_u, tl.sum(tl.where(mask, d_npre * h, 0.0), 0), dmask)
 
 
 def cfc_recurrence_vjp_eager(
@@ -100,21 +104,23 @@ def cfc_recurrence_vjp_eager(
     u: Tensor,
     mu: Tensor,
 ) -> tuple[Tensor, Tensor]:
-    """CfC VJP. Returns ``(∇wx, ∇u)`` in ``h_prev.dtype``; ``wx`` is 3-wide."""
+    """CfC VJP. Returns ``(∇wx, ∇u)`` in ``h_prev.dtype``; ``wx`` is 4-wide."""
     dt_dtype = h_prev.dtype
     h_prev = h_prev.float()
     wx = wx.float()
     u = u.float()
     mu = mu.float()
-    f_pre, cx, dt = wx.chunk(3, dim=-1)
+    f_pre, cx, dt, b = wx.chunk(4, dim=-1)
     soft = F.softplus(f_pre)
-    a = torch.exp(-soft * dt)
+    a = torch.sigmoid(-(soft * dt + b))
     n = torch.tanh(cx + u * h_prev)
     d_h_da = mu * (h_prev - n)
-    g_f = d_h_da * (-dt) * a * torch.sigmoid(f_pre)
-    g_dt = d_h_da * (-soft) * a
+    a1a = a * (1.0 - a)
+    g_f = d_h_da * a1a * (-dt) * torch.sigmoid(f_pre)
+    g_dt = d_h_da * a1a * (-soft)
+    g_b = d_h_da * a1a * (-1.0)
     d_npre = mu * (1.0 - a) * (1.0 - n.square())
-    g_wx = torch.cat((g_f, d_npre, g_dt), dim=-1)
+    g_wx = torch.cat((g_f, d_npre, g_dt, g_b), dim=-1)
     g_u = (d_npre * h_prev).sum(dim=(0, 1))
     return g_wx.to(dt_dtype), g_u.to(dt_dtype)
 
@@ -134,11 +140,11 @@ def cfc_recurrence_vjp(
     u = u.contiguous()
     mu = mu.contiguous()
     batch, time, d_h = h_prev.shape
-    if wx.shape[-1] != 3 * d_h:
-        raise ValueError(f"wx last dim {wx.shape[-1]} != 3*d_h={3 * d_h}")
+    if wx.shape[-1] != 4 * d_h:
+        raise ValueError(f"wx last dim {wx.shape[-1]} != 4*d_h={4 * d_h}")
     n_chunks = triton.cdiv(time, _BLOCK_T)
     n_dtiles = triton.cdiv(d_h, _BLOCK_D)
-    g_wx = wx.new_empty(batch, time, 3 * d_h)
+    g_wx = wx.new_empty(batch, time, 4 * d_h)
     gu_tiles = wx.new_empty(batch, n_chunks, d_h)
     _cfc_vjp_kernel[(batch, n_chunks, n_dtiles)](
         h_prev,
